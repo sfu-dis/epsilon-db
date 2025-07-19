@@ -65,7 +65,7 @@ int main(int argc, char** argv)
                                     : FLAGS_target_gib * 1024 * 1024 * 1024 * 1.0 / 2.0 / (sizeof(YCSBKey) + sizeof(YCSBPayload));
    // Insert values
    const u64 n = ycsb_tuple_count;
-   db.startProfilingThread();
+   // db.startProfilingThread();
    // -------------------------------------------------------------------------------------
    if (FLAGS_tmp4) {
       // -------------------------------------------------------------------------------------
@@ -144,13 +144,15 @@ int main(int argc, char** argv)
    auto zipf_random = std::make_unique<utils::ScrambledZipfGenerator>(0, ycsb_tuple_count, FLAGS_zipf_factor);
    auto rjzipf = RejectionInversionZipfSampler(ycsb_tuple_count, FLAGS_zipf_factor);
    std::vector<u64> updatePattern;
-   updatePattern.resize(ycsb_tuple_count);
-   for (uint64_t i = 0; i < updatePattern.size(); i++) {
-      updatePattern[i] = i;
+   if (FLAGS_zipf_factor != 0) { // Uniform
+     updatePattern.resize(ycsb_tuple_count);
+     for (uint64_t i = 0; i < updatePattern.size(); i++) {
+        updatePattern[i] = i;
+     }
+     std::random_device rd;
+     std::mt19937_64 g(rd());
+     std::shuffle(updatePattern.begin(), updatePattern.end(), g);
    }
-   std::random_device rd;
-   std::mt19937_64 g(rd());
-   std::shuffle(updatePattern.begin(), updatePattern.end(), g);
    cout << setprecision(4);
    // -------------------------------------------------------------------------------------
    cout << "~Transactions" << endl;

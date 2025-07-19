@@ -20,7 +20,6 @@
 #include <unistd.h>
 
 #include <chrono>
-#include <fstream>
 #include <iomanip>
 #include <set>
 // -------------------------------------------------------------------------------------
@@ -70,6 +69,8 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
 // -------------------------------------------------------------------------------------
 void BufferManager::startBackgroundThreads()
 {
+   //  Reclaim unit monitor thread
+   // reclaim_unit_usage_mgr.StartRUThread(); 
    // Page Provider threads
    if (FLAGS_pp_threads) {  // make it optional for pure in-memory experiments
       std::vector<std::thread> pp_threads;
@@ -167,6 +168,13 @@ Partition& BufferManager::randomPartition()
    auto rand_partition_i = utils::RandomGenerator::getRand<u64>(0, partitions_count);
    return getPartition(rand_partition_i);
 }
+Partition& BufferManager::roundRobinPartition()
+{
+   // TODO(mfd) : currently I am implementing with a single page provider.
+   //  when using more than one take care of synchronizing these.
+   static u64 rand_partition_i = 0;
+   return getPartition(rand_partition_i = (rand_partition_i + 1) % partitions_count);
+}
 // -------------------------------------------------------------------------------------
 BufferFrame& BufferManager::randomBufferFrame()
 {
@@ -190,6 +198,8 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.pid = free_pid;
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
+   free_bf.page.reclaim_unit = 0;
+   partition.insert_frame_in_ru(&free_bf);
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK() { WorkerCounters::myCounters().allocate_operations_counter++; }
@@ -200,6 +210,7 @@ BufferFrame& BufferManager::allocatePage()
 void BufferManager::evictLastPage()
 {
    if (FLAGS_worker_page_eviction && last_read_bf) {
+      ensure(false);
       jumpmuTry()
       {
          BMOptimisticGuard o_guard(last_read_bf->header.latch);
@@ -315,6 +326,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
       readPageSync(pid, bf.page);
+      /** What I can do now is issue the read asychrounously that update the 
+      ruhsi stats meanwhile before starting to spin on completion. */
+      partition.insert_frame_in_ru(&bf);
       // -------------------------------------------------------------------------------------
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
       COUNTERS_BLOCK()

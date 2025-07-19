@@ -3,11 +3,14 @@
 #include "BufferFrame.hpp"
 #include "DTRegistry.hpp"
 #include "FreeList.hpp"
+#include "../../utils/Misc.hpp"
 #include "Partition.hpp"
 #include "Swip.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 #include "PerfEvent.hpp"
+// -------------------------------------------------------------------------------------
+#include <fdp.h>
 // -------------------------------------------------------------------------------------
 #include <libaio.h>
 #include <sys/mman.h>
@@ -70,6 +73,7 @@ struct FreedBfsBatch {
 class BufferManager
 {
   private:
+   friend struct AsyncWriteBuffer;
    friend class leanstore::LeanStore;
    friend class leanstore::profiling::BMTable;
    // -------------------------------------------------------------------------------------
@@ -96,13 +100,90 @@ class BufferManager
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();
+   Partition& roundRobinPartition();
    BufferFrame& randomBufferFrame();
    Partition& getPartition(PID);
    u64 getPartitionID(PID);
    // -------------------------------------------------------------------------------------
    // Temporary hack: let workers evict the last page they used
    static thread_local BufferFrame* last_read_bf;
+   // -------------------------------------------------------------------------------------
+   // Management of the FDP device
+   // think of moving this to the libfdp so that it will be used by all other engines
+   // offer the interface : fdp_get_open_ru_number(plid_t, optional thread affinity)
+   struct ReclaimUnitUsageMgr {
+   	  fdp_dev_t fdp_dev; // from libfdp
+      // std::mutex reclaim_units_mutex;
+      // std::unique_ptr<u64[]> reclaim_units_usage;
+      // std::vector<u64> reclaim_units_usage;
+      std::thread timer_thread;
+      std::atomic<bool> timer_thread_keep_running;
+      std::atomic<u64> current_open_reclaim_unit;
+      u64 last_seen_remaining_media_writes;
+      
+      ReclaimUnitUsageMgr() {
+         // read the reclaim unit size from the device.
+         // just start with an io management recieve command
+         // this should be issued just immediately after initializing the device.
 
+         // open the fdp device
+         int err = fdp_open(FLAGS_ssd_path.c_str(), &this->fdp_dev);   
+         ensure(err == 0);
+         last_seen_remaining_media_writes = fdp_get_remaining_bytes_in_ru(&fdp_dev, 0); 
+         std::cout << "Last Seen remaining media writes :  " << last_seen_remaining_media_writes
+             << std::endl;
+         current_open_reclaim_unit = 0;
+         fdp_register_gc_callback(&fdp_dev, []() { std::cerr << "GC Triggered !!!!" << std::endl;});
+      }
+
+      ~ReclaimUnitUsageMgr() {
+         std::cerr << "~ReclaimUnitUsageMgr()\n";
+         timer_thread_keep_running.store(false);
+      }
+
+      void StartRUThread() {
+        timer_thread_keep_running.store(true);
+        timer_thread = std::thread([this](){ this->TimerThread(); });
+        timer_thread.detach();
+      }
+
+      // Timer thread method
+      void TimerThread() {
+         utils::pinThisThread(((FLAGS_pin_threads) ? FLAGS_worker_threads : 0) + FLAGS_wal + FLAGS_pp_threads);
+         fprintf(stderr, "Open new RU #%lu with error %f%%\n", current_open_reclaim_unit.load(std::memory_order_relaxed), (3193344U - last_seen_remaining_media_writes)*100.0f/3193344);
+         // FILE *fp = fopen("ru_usage.log", "w");
+         // ensure(fp != nullptr);
+         while (timer_thread_keep_running) {
+            // issue an io management recieve command
+            u64 remaining_media_writes = fdp_get_remaining_bytes_in_ru(&fdp_dev, 0);
+            // FIXME(mfd) : because of fluctuations we will use this heuristic
+            // if (remaining_media_writes < 100000) {
+            if (remaining_media_writes > last_seen_remaining_media_writes ) {
+               // the open RU was written to capacity, we
+               // std::lock_guard lock(reclaim_units_mutex);
+               current_open_reclaim_unit.fetch_add(1U);
+               ensure(remaining_media_writes <= 3193344U);
+               fprintf(stderr, "Open new RU #%lu with error (%lu) ruamw = %lu > %lu\n", current_open_reclaim_unit.load(std::memory_order_relaxed), 3193344U - remaining_media_writes, remaining_media_writes, last_seen_remaining_media_writes);
+            }
+            last_seen_remaining_media_writes = remaining_media_writes;
+            // fprintf(fp, "%lu\n", remaining_media_writes);
+            // usleep(500 * 1000); // 1ms
+			sleep(1);
+         }
+      }
+
+      void RUInspectorDeamon() {
+        printf("[INFO] Staerting the inspector Deamon\n");
+        //std::ofstream trace_file;
+        //trace_file.open("buffer_pool.ru_state.csv", std::ios::out | std::ios::trunc);
+        while (1) {
+          
+          sleep(60);
+        }
+      }
+   };
+
+   ReclaimUnitUsageMgr reclaim_unit_usage_mgr;
   public:
    // -------------------------------------------------------------------------------------
    BufferManager(s32 ssd_fd);

@@ -34,7 +34,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
    leanstore::cr::CRManager::global->registerMeAsSpecialWorker();
    // -------------------------------------------------------------------------------------
    // Init AIO Context
-   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size);
+   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size, &reclaim_unit_usage_mgr.fdp_dev);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
    // -------------------------------------------------------------------------------------
    auto next_bf_range = [&]() {
@@ -47,6 +47,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       }
       return;
    };
+   sleep(10);
    // -------------------------------------------------------------------------------------
    while (bg_threads_keep_running) {
       // Phase 1: unswizzle pages (put in the cooling stage)
@@ -55,14 +56,22 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       COUNTERS_BLOCK() { phase_1_begin = std::chrono::high_resolution_clock::now(); }
       volatile u64 failed_attempts =
           0;  // [corner cases]: prevent starving when free list is empty and cooling to the required level can not be achieved
+      std::vector<BufferFrame *> put_back;
 #define repickIf(cond)                       \
    if (cond) {                               \
       failed_attempts = failed_attempts + 1; \
       jumpmu_continue;                       \
    }
-      auto& current_partition = randomPartition();
+      // auto& current_partition = randomPartition();
+      auto& current_partition = roundRobinPartition();
       if ((current_partition.dram_free_list.counter < current_partition.free_bfs_limit) && failed_attempts < 10) {
-         next_bf_range();
+         // if (current_partition.ru_status.size() < 10) {
+         //   next_bf_range();
+         // } else {
+         const u64 BATCH_SIZE = FLAGS_replacement_chunk_size;
+         cool_candidate_bfs.clear();
+         current_partition.get_n_frames_from_ru(BATCH_SIZE, cool_candidate_bfs);
+         // }
          while (cool_candidate_bfs.size()) {
             jumpmuTry()
             {
@@ -76,7 +85,8 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
                // -------------------------------------------------------------------------------------
                if (r_buffer->header.state == BufferFrame::STATE::COOL) {
                   evict_candidate_bfs.push_back(reinterpret_cast<BufferFrame*>(r_buffer));
-                  repickIf(true);  // TODO: maybe without failed_attempts
+                  // repickIf(true);  // TODO: maybe without failed_attempts
+                  jumpmu_continue;
                }
                repickIf(r_buffer->header.state != BufferFrame::STATE::HOT);
                r_guard.recheck();
@@ -195,6 +205,10 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
          const PID evicted_pid = bf.header.pid;
          parent_handler.swip.evict(evicted_pid);
          // -------------------------------------------------------------------------------------
+         // Just before reclaiming the buffer frame
+         if (bf.page.reclaim_unit >= 0) {
+           current_partition.remove_frame_from_ru(&bf);
+         }
          // Reclaim buffer frame
          bf.reset();
          bf.header.latch->fetch_add(LATCH_EXCLUSIVE_BIT, std::memory_order_release);

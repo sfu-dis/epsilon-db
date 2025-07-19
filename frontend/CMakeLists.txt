@@ -1,13 +1,13 @@
 add_executable(frontend frontend.cpp)
 add_dependencies(frontend leanstore)
-target_link_libraries(frontend leanstore)
+target_link_libraries(frontend leanstore uring fdp)
 
 add_executable(bulk_loading mix/bulk_loading.cpp)
-target_link_libraries(bulk_loading leanstore Threads::Threads)
+target_link_libraries(bulk_loading leanstore Threads::Threads uring fdp)
 target_include_directories(bulk_loading PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
 add_executable(ycsb ycsb/ycsb.cpp)
-target_link_libraries(ycsb leanstore Threads::Threads)
+target_link_libraries(ycsb leanstore Threads::Threads uring fdp)
 target_include_directories(ycsb PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
 add_executable(deterministic ycsb/deterministic.cpp)
@@ -15,7 +15,7 @@ target_link_libraries(deterministic leanstore Threads::Threads)
 target_include_directories(deterministic PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
 add_executable(tpcc tpc-c/tpcc.cpp)
-target_link_libraries(tpcc leanstore Threads::Threads)
+target_link_libraries(tpcc leanstore Threads::Threads uring fdp)
 target_include_directories(tpcc PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
 add_executable(graveyard micro-benchmarks/graveyard.cpp)
@@ -34,10 +34,10 @@ add_executable(scaled_example scaled-example/main.cpp)
 target_link_libraries(scaled_example leanstore Threads::Threads)
 target_include_directories(scaled_example PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
-add_executable(rocksdb_tpcc tpc-c/rocksdb_tpcc.cpp shared/rocksdb.cpp)
-target_link_libraries(rocksdb_tpcc leanstore rocksdb Threads::Threads dl z libbz2.a lz4 snappy zstd uring)
-target_include_directories(rocksdb_tpcc PRIVATE ${SHARED_INCLUDE_DIRECTORY})
-target_compile_definitions(rocksdb_tpcc PUBLIC ROCKSDB_ADAPTER)
+#add_executable(rocksdb_tpcc tpc-c/rocksdb_tpcc.cpp shared/rocksdb.cpp)
+#target_link_libraries(rocksdb_tpcc leanstore rocksdb Threads::Threads dl z libbz2.a lz4 snappy zstd uring)
+#target_include_directories(rocksdb_tpcc PRIVATE ${SHARED_INCLUDE_DIRECTORY})
+#target_compile_definitions(rocksdb_tpcc PUBLIC ROCKSDB_ADAPTER)
 
 add_executable(rocksdb_ycsb ycsb/rocksdb_ycsb.cpp shared/rocksdb.cpp)
 target_link_libraries(rocksdb_ycsb leanstore rocksdb Threads::Threads dl z libbz2.a lz4 snappy zstd uring)
@@ -45,9 +45,9 @@ target_include_directories(rocksdb_ycsb PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 target_compile_definitions(rocksdb_ycsb PUBLIC ROCKSDB_ADAPTER)
 # sudo apt-get install libsnappy-dev  zlib1g-dev libbz2-dev liblz4-dev libzstd-dev librocksdb-dev
 
-add_executable(wiredtiger_tpcc tpc-c/wiredtiger_tpcc.cpp)
-target_link_libraries(wiredtiger_tpcc leanstore wiredtiger Threads::Threads dl z libbz2.a lz4 snappy)
-target_include_directories(wiredtiger_tpcc PRIVATE ${SHARED_INCLUDE_DIRECTORY})
+#add_executable(wiredtiger_tpcc tpc-c/wiredtiger_tpcc.cpp)
+#target_link_libraries(wiredtiger_tpcc leanstore wiredtiger Threads::Threads dl z libbz2.a lz4 snappy)
+#target_include_directories(wiredtiger_tpcc PRIVATE ${SHARED_INCLUDE_DIRECTORY})
 
 add_executable(wiredtiger_ycsb ycsb/wiredtiger_ycsb.cpp)
 target_link_libraries(wiredtiger_ycsb leanstore wiredtiger Threads::Threads dl z libbz2.a lz4 snappy)

@@ -1,5 +1,7 @@
 #include "AsyncWriteBuffer.hpp"
 #include "Tracing.hpp"
+// #include "Partition.hpp"
+#include "BufferManager.hpp"
 
 #include "Exceptions.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -9,6 +11,7 @@
 #include <signal.h>
 
 #include <cstring>
+// #include <fdp.h>
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(insistence_limit, 1, "");
 // -------------------------------------------------------------------------------------
@@ -17,7 +20,7 @@ namespace leanstore
 namespace storage
 {
 // -------------------------------------------------------------------------------------
-AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : fd(fd), page_size(page_size), batch_max_size(batch_max_size)
+AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, fdp_dev_t *dev) : fd(fd), page_size(page_size), batch_max_size(batch_max_size)
 {
    write_buffer = make_unique<BufferFrame::Page[]>(batch_max_size);
    write_buffer_commands = make_unique<WriteCommand[]>(batch_max_size);
@@ -30,6 +33,27 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
    if (ret != 0) {
       throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
    }
+   estimated_ruamw = fdp_get_remaining_bytes_in_ru(dev, 0);
+   printf("AsyncWriteBuffer() : ruamw at start = %lu\n", estimated_ruamw);
+   remaining_valid.reserve(65536);
+   remaining_valid.push_back(estimated_ruamw);
+   // register the callback here that will print to a file the status of ruhs
+   // open the file here where will we write the status
+   trace_file.open("death_histogram.csv", std::ios::out | std::ios::trunc);
+/*
+   std::thread daemon;
+   daemon = std::thread( [this, &trace_file](){
+     printf("[INFO] Started deamon thread for collecting global ru valid status\n");
+     while (true) {
+       for(const auto& ru : remaining_valid) {
+         trace_file << ru << ",";
+       }
+       trace_file << std::endl;
+       sleep(60);
+     }
+   });
+   daemon.detach();
+*/
 }
 // -------------------------------------------------------------------------------------
 bool AsyncWriteBuffer::full()
@@ -63,6 +87,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto slot = pending_requests++;
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
+   write_buffer_commands[slot].last_ru_written_to = bf.page.reclaim_unit;
    bf.page.magic_debugging_number = pid;
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
@@ -77,9 +102,50 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
 // -------------------------------------------------------------------------------------
 u64 AsyncWriteBuffer::submit()
 {
+   // determine the remaining bytes in the current ruh
+   // loop through all pages in the slots and assign an ru id to them 
+   static u64 tot_invalidating_writes = 0; // just for stats
    if (pending_requests > 0) {
+      if (estimated_ruamw <= pending_requests) {
+		estimated_ruamw = ru_size - pending_requests + estimated_ruamw;
+		remaining_valid.push_back(estimated_ruamw);
+		printf("[INFO] Estimate open new RU #%lu\n", ++open_ru);
+        ensure(remaining_valid.size() == u64(open_ru));
+      }
+      for (u32 slot = 0; slot < pending_requests; ++slot) {
+		write_buffer[slot].reclaim_unit = open_ru;
+      }
+      estimated_ruamw -= pending_requests;
+      ensure(estimated_ruamw > 0);
       int ret_code = io_submit(aio_context, pending_requests, iocbs_ptr.get());
       ensure(ret_code == s32(pending_requests));
+      // use the time after submission but before spinning for completion to 
+      // update application level metadata for the fdp device.
+      for (u32 slot = 0; slot < pending_requests; ++slot) {
+        WriteCommand &cmd = write_buffer_commands[slot];
+        s64 ru = cmd.last_ru_written_to;
+        PID pid = cmd.pid;
+        // determine from which partition the page is taken 
+        // Partition &partition = BMC::global_bf->getPartition(pid);
+        // partition.remove_page_from_ru(pid, ru);
+        if ( ru == 0 ) {
+          /** this database page is written for the first time.
+          so it does not invalidate any copy. No metadata to update.*/
+          static u64 new_pages = 0;
+          if (++new_pages  % 1048576 == 0) printf("[INFO] %luGB Currently have been newly written\n", 4*new_pages/1048576);
+        } else {
+          ensure(ru <= open_ru); 
+          // if (ru == open_ru) printf("[WARNING] Invalidating a page from the currently open ru\n");
+          // THINK(mfd) : Could this possibly ever goes below zero ?
+          --remaining_valid[ru];
+          if (tot_invalidating_writes++ % 1048576 == 0) {
+            for(const auto& ru : remaining_valid) {
+              trace_file << ru << ",";
+            }
+            trace_file << std::endl;
+          }  
+        }
+      }
       return pending_requests;
    }
    // write trace to file if it's full
