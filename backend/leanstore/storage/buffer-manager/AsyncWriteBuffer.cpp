@@ -63,6 +63,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto slot = pending_requests++;
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
+   write_buffer_commands[slot].valid_page_in_ru = bf.page.reclaim_unit;
    bf.page.magic_debugging_number = pid;
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
@@ -78,6 +79,17 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
 u64 AsyncWriteBuffer::submit()
 {
    if (pending_requests > 0) {
+      /** XXX(mfd) : Actually some of those page are in open_ru and the other
+      will fall into open_ru+1 but I can't know so that's fine.*/
+      for (u32 slot = 0; slot < pending_requests; ++slot) {
+        write_buffer[slot].reclaim_unit = open_ru;
+      }
+      estimated_ruamw -= pending_requests;
+      if (estimated_ruamw <= 0) {
+         estimated_ruamw = ru_size;
+         printf("[INFO] Estimate open new RU #%lu\n", ++open_ru);
+      }
+      ensure(estimated_ruamw > 0);
       int ret_code = io_submit(aio_context, pending_requests, iocbs_ptr.get());
       ensure(ret_code == s32(pending_requests));
       return pending_requests;

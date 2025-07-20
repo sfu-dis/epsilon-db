@@ -69,7 +69,8 @@ struct BufferFrame {
       LID GSN = 0;
       DTID dt_id = 9999;                                                                               // INIT: datastructure id
       u64 magic_debugging_number;                                                                      // ATTENTION
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number)];  // Datastruture BE CAREFUL HERE !!!!!
+      u64 reclaim_unit;
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) - sizeof(reclaim_unit)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------

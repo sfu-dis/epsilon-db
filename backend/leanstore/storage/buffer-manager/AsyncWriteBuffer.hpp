@@ -21,11 +21,18 @@ class AsyncWriteBuffer
    struct WriteCommand {
       BufferFrame* bf;
       PID pid;
+      RUID valid_page_in_ru;
    };
    io_context_t aio_context;
    int fd;
    u64 page_size, batch_max_size;
    u64 pending_requests = 0;
+   // -------------------------------------------------------------------------------------
+   // start from 1 because 0 will represent frames that are not yet persisted.
+   RUID open_ru = 1;
+   // XXX(mfd) : hard coded for now, later read it from the device controller
+   static constexpr u64 ru_size = 3194433ULL;
+   u64 estimated_ruamw = ru_size;
    // -------------------------------------------------------------------------------------
    struct IOTracing {
       struct IOTraceEvent{

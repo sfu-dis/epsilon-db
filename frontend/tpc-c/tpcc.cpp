@@ -131,7 +131,7 @@ int main(int argc, char** argv)
                                        FLAGS_order_wdc_index, FLAGS_tpcc_warehouse_count, FLAGS_tpcc_remove,
                                        should_tpcc_driver_handle_isolation_anomalies, FLAGS_tpcc_warehouse_affinity);
    // -------------------------------------------------------------------------------------
-   db.startProfilingThread();
+   // db.startProfilingThread();
    if (!FLAGS_recover) {
       cout << "Loading TPC-C" << endl;
       crm.scheduleJobSync(0, [&]() {
@@ -143,7 +143,7 @@ int main(int argc, char** argv)
       std::atomic<u32> g_w_id = 1;
       for (u32 t_i = 0; t_i < FLAGS_worker_threads; t_i++) {
          crm.scheduleJobAsync(t_i, [&]() {
-            cout << "rand seed: " << leanstore::utils::RandomGenerator::getRand(0, 1000000) << endl;
+            // cout << "rand seed: " << leanstore::utils::RandomGenerator::getRand(0, 1000000) << endl;
             while (true) {
                u32 w_id = g_w_id++;
                if (w_id > FLAGS_tpcc_warehouse_count) {

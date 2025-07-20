@@ -190,6 +190,7 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.pid = free_pid;
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
+   free_bf.page.reclaim_unit = 0;
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK() { WorkerCounters::myCounters().allocate_operations_counter++; }
