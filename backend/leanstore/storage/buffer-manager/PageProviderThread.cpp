@@ -34,7 +34,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
    leanstore::cr::CRManager::global->registerMeAsSpecialWorker();
    // -------------------------------------------------------------------------------------
    // Init AIO Context
-   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size);
+   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size, thread_name);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
    // WAF aware replacement policy
    /** XXX(mfd) : a set is used for now to avoid issues with page chosen randomly
@@ -47,7 +47,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       /** Picking randomo frames is not free, adaptively choose the number
       of frames to add to the cooling stage to keep the 
       ru_cooling_map size within a multiple of the BATCH_SIZE. */
-      for (u64 i = 0; i < 2 * BATCH_SIZE; i++) {
+      for (u64 i = 0; i < BATCH_SIZE + 8; i++) {
          BufferFrame* r_bf = &randomBufferFrame();
          DO_NOT_OPTIMIZE(r_bf->header.state);
          RUID ruid = r_bf->page.reclaim_unit;

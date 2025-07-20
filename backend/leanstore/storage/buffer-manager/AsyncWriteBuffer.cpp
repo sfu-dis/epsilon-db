@@ -17,7 +17,7 @@ namespace leanstore
 namespace storage
 {
 // -------------------------------------------------------------------------------------
-AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : fd(fd), page_size(page_size), batch_max_size(batch_max_size)
+AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, const std::string &pp_name) : fd(fd), page_size(page_size), batch_max_size(batch_max_size)
 {
    write_buffer = make_unique<BufferFrame::Page[]>(batch_max_size);
    write_buffer_commands = make_unique<WriteCommand[]>(batch_max_size);
@@ -30,6 +30,15 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
    if (ret != 0) {
       throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
    }
+   remaining_valid.reserve(65536);
+   /** XXX(mfd) The estimate value is now assumed by default to be the 
+   reclaim unit nominal size. In other words we assume device reset
+   before running benchmarks.*/
+   remaining_valid.push_back(0); // first one is dummy
+   remaining_valid.push_back(estimated_ruamw);
+   std::ostringstream oss;
+   oss << "death_histogram" << pp_name << ".csv";
+   trace_file.open(oss.str().c_str(), std::ios::out | std::ios::trunc);
 }
 // -------------------------------------------------------------------------------------
 bool AsyncWriteBuffer::full()
@@ -78,6 +87,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
 // -------------------------------------------------------------------------------------
 u64 AsyncWriteBuffer::submit()
 {
+   static u64 tot_invalidating_writes = 0; // just for stats
    if (pending_requests > 0) {
       /** XXX(mfd) : Actually some of those page are in open_ru and the other
       will fall into open_ru+1 but I can't know so that's fine.*/
@@ -88,10 +98,28 @@ u64 AsyncWriteBuffer::submit()
       if (estimated_ruamw <= 0) {
          estimated_ruamw = ru_size;
          printf("[INFO] Estimate open new RU #%lu\n", ++open_ru);
+         remaining_valid.push_back(estimated_ruamw);
+         ensure(remaining_valid.size() == u64(open_ru + 1));
       }
       ensure(estimated_ruamw > 0);
       int ret_code = io_submit(aio_context, pending_requests, iocbs_ptr.get());
       ensure(ret_code == s32(pending_requests));
+      /** Use the time after submission but before spinning for completion
+      to update application level metadata for the fdp device. */
+      for (u32 slot = 0; slot < pending_requests; ++slot) {
+        WriteCommand &cmd = write_buffer_commands[slot];
+        s64 ru = cmd.valid_page_in_ru;
+        if (ru > 0) {
+          ensure(ru <= open_ru);
+          --remaining_valid[ru];
+          if (tot_invalidating_writes++ % 1048576 == 0) {
+            for(const auto& ru : remaining_valid) {
+              trace_file << ru << ",";
+            }
+            trace_file << std::endl;
+          }
+        }
+      }
       return pending_requests;
    }
    // write trace to file if it's full

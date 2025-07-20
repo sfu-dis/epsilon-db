@@ -32,7 +32,9 @@ class AsyncWriteBuffer
    RUID open_ru = 1;
    // XXX(mfd) : hard coded for now, later read it from the device controller
    static constexpr u64 ru_size = 3194433ULL;
-   u64 estimated_ruamw = ru_size;
+   s64 estimated_ruamw = ru_size;
+   std::vector<s64> remaining_valid;
+   std::ofstream trace_file; // XXX(mfd) : Just temporary for tracing, remove later
    // -------------------------------------------------------------------------------------
    struct IOTracing {
       struct IOTraceEvent{
@@ -57,7 +59,7 @@ class AsyncWriteBuffer
    // -------------------------------------------------------------------------------------
    // Debug
    // -------------------------------------------------------------------------------------
-   AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size);
+   AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, const std::string &pp_name);
    // Caller takes care of sync
    bool full();
    void add(BufferFrame& bf, PID pid);
