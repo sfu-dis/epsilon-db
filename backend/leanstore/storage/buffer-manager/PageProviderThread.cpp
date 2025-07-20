@@ -36,15 +36,45 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
    // Init AIO Context
    AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
+   // WAF aware replacement policy
+   /** XXX(mfd) : a set is used for now to avoid issues with page chosen randomly
+   more than one time, but a deck seems a more efficient choice.*/
+   std::map<RUID, std::unordered_set<BufferFrame*>> ru_cooling_map;
    // -------------------------------------------------------------------------------------
    auto next_bf_range = [&]() {
       const u64 BATCH_SIZE = FLAGS_replacement_chunk_size;
       cool_candidate_bfs.clear();
-      for (u64 i = 0; i < BATCH_SIZE; i++) {
+      /** Picking randomo frames is not free, adaptively choose the number
+      of frames to add to the cooling stage to keep the 
+      ru_cooling_map size within a multiple of the BATCH_SIZE. */
+      for (u64 i = 0; i < 2 * BATCH_SIZE; i++) {
          BufferFrame* r_bf = &randomBufferFrame();
          DO_NOT_OPTIMIZE(r_bf->header.state);
-         cool_candidate_bfs.push_back(r_bf);
+         RUID ruid = r_bf->page.reclaim_unit;
+         ru_cooling_map[ruid].insert(r_bf);
       }
+      u64 count = 0;
+      std::vector<u64> counts;
+      for (auto&e : ru_cooling_map) {
+        auto &set = e.second;
+        auto it = set.begin();
+        u64 cnt = 0;
+        while (count < BATCH_SIZE && !set.empty()) {
+         cool_candidate_bfs.push_back(*it);
+         it = set.erase(it);
+         ++cnt;++count;
+        }
+        if (cnt) counts.push_back(cnt);
+        if (count >= BATCH_SIZE) break;
+        // remove the set if it is empty
+      }
+#if 0 
+      if (counts.size() > 3) {
+        std::cerr << "[WARN] ";
+        for (const auto &c : counts) std::cerr << c << ",";
+        std::cerr << std::endl;
+      }
+#endif
       return;
    };
    // -------------------------------------------------------------------------------------
