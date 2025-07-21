@@ -56,7 +56,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       for (u64 i = 0; i < BATCH_SIZE + 8; i++) {
          BufferFrame* r_bf = &randomBufferFrame(bp_rng_begin, bp_rng_end);
          DO_NOT_OPTIMIZE(r_bf->header.state);
-         RUID ruid = r_bf->page.reclaim_unit;
+         RUID ruid = r_bf->page.reclaim_unit.ru;
          ru_cooling_map[ruid].insert(r_bf);
       }
       u64 count = 0;

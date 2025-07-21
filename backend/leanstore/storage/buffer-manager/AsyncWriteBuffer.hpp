@@ -22,7 +22,7 @@ class AsyncWriteBuffer
    struct WriteCommand {
       BufferFrame* bf;
       PID pid;
-      RUID valid_page_in_ru;
+      ReclaimUnit valid_page_in_ru;
    };
    // io_context_t aio_context;
    struct io_uring ring;
@@ -30,15 +30,16 @@ class AsyncWriteBuffer
    u64 page_size, batch_max_size;
    u64 pending_requests = 0;
    // -------------------------------------------------------------------------------------
-   plid_t plid = 0; // Each page provider writes to his own plid.
+   plid_t plid = -1; // Each page provider writes to his own plid.
    // start from 1 because 0 will represent frames that are not yet persisted.
    RUID open_ru = 1;
    // XXX(mfd) : hard coded for now, later read it from the device controller
    static constexpr u64 ru_size = 3194433ULL;
+   // remaining media bytes in the currently open RU.
    s64 estimated_ruamw = ru_size;
    size_t max_seen_ru;
-   std::vector<s64> remaining_valid;
-   std::ofstream trace_file; // XXX(mfd) : Just temporary for tracing, remove later
+   std::unique_ptr<std::vector<s32>[]> invalidated_per_ruh;
+   std::unique_ptr<std::ofstream[]> trace_file_per_ruh; // XXX(mfd) : Just temporary for tracing, remove later
    // -------------------------------------------------------------------------------------
    struct IOTracing {
       struct IOTraceEvent{

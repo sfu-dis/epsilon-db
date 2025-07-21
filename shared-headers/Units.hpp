@@ -35,7 +35,12 @@ using PID = u64;
 using LID = u64;   // Log ID
 using TTS = u64;   // Transaction Time Stamp
 using DTID = s64;  // Datastructure ID
-using RUID = s64;  // Reclaim Unit ID
+using RUHID = s32; // Reclaim Unit Handle ID
+using RUID = s32;  // Reclaim Unit ID
+struct ReclaimUnit {
+  RUHID ruh;
+  RUID ru;
+};
 // -------------------------------------------------------------------------------------
 using WORKERID = u16;
 using TXID = u64;

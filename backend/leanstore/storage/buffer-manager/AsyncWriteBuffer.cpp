@@ -40,17 +40,23 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, co
    if (rc != 0) {
       throw ex::GenericException("io_uring_queue_init failed, ret code = " + std::to_string(rc));
    }
-   remaining_valid.resize(4096, ru_size);
-   /** XXX(mfd) The estimate value is now assumed by default to be the 
-   reclaim unit nominal size. In other words we assume device reset
-   before running benchmarks.*/
-   // remaining_valid.push_back(0); // first one is dummy
-   remaining_valid[0] = -1;
+   invalidated_per_ruh = make_unique<std::vector<s32>[]>(FLAGS_pp_threads);
+   for (u64 ruh = 0; ruh < FLAGS_pp_threads; ++ruh) {
+     /* Just for now assume and assert that #RUs won't exceed
+     4095 to avoid dealing with corneer cases. (It will take ~5 days 
+     running to reach close to ru 4000). */
+     invalidated_per_ruh[ruh].resize(4096, 0);
+     invalidated_per_ruh[ruh][0] = -1; // We'll use this later to identify house owners
+   }
+   /* Used for stats dumping. We need one per ruhs but maintain the max
+   among all for simplicity.*/
    max_seen_ru = 1;
-   // remaining_valid.push_back(estimated_ruamw);
-   std::ostringstream oss;
-   oss << "death_histogram" << pp_id << ".csv";
-   trace_file.open(oss.str().c_str(), std::ios::out | std::ios::trunc);
+   trace_file_per_ruh = std::make_unique<std::ofstream[]>(FLAGS_pp_threads);
+   for (u64 ruh = 0; ruh < FLAGS_pp_threads; ++ruh) {
+     std::ostringstream oss;
+     oss << "death_histogram_" << pp_id << "_ruh_"<< ruh << ".csv";
+     trace_file_per_ruh[ruh].open(oss.str().c_str(), std::ios::out | std::ios::trunc);
+   }
    // Each provider thread will write to it's own RUH.
    plid = plid_t(pp_id);
 }
@@ -86,10 +92,12 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto slot = pending_requests++;
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
+   // which RU the current valid page is 
    write_buffer_commands[slot].valid_page_in_ru = bf.page.reclaim_unit;
+   // which RU will the valid page be on
+   write_buffer[slot].reclaim_unit = { .ruh = plid, .ru = open_ru};
    bf.page.magic_debugging_number = pid;
    std::memcpy(&write_buffer[slot], bf.page, page_size);
-   write_buffer[slot].reclaim_unit = open_ru;
    void* write_buffer_slot_ptr = &write_buffer[slot];
    // io_prep_pwrite(&iocbs[slot], fd, write_buffer_slot_ptr, page_size, page_size * pid);
    // iocbs[slot].data = write_buffer_slot_ptr;
@@ -111,7 +119,7 @@ u64 AsyncWriteBuffer::submit()
       estimated_ruamw -= pending_requests;
       if (estimated_ruamw <= 0) {
          estimated_ruamw = ru_size;
-         printf("[INFO] Estimate open new RU #%lu\n", ++open_ru);
+         printf("[INFO] Estimate open new RU #%d\n", ++open_ru);
          // `remaining_valid.push_back(estimated_ruamw);
          max_seen_ru++;
          // ensure(remaining_valid.size() == u64(open_ru + 1));
@@ -124,15 +132,19 @@ u64 AsyncWriteBuffer::submit()
       to update application level metadata for the fdp device. */
       for (u32 slot = 0; slot < pending_requests; ++slot) {
         WriteCommand &cmd = write_buffer_commands[slot];
-        s64 ru = cmd.valid_page_in_ru;
-        if (ru > 0) {
-          ensure(ru < 4096);
-          --remaining_valid[ru];
-          if (tot_invalidating_writes++ % 1048576 == 0) {
-            for(u64 i = 1; i < max_seen_ru; i++) {
-              trace_file << remaining_valid[i] << ",";
+        ReclaimUnit ru = cmd.valid_page_in_ru;
+        if (ru.ru > 0) {
+          ensure(ru.ruh >= 0);
+          ensure(ru.ru < 4096);
+          ensure(++invalidated_per_ruh[ru.ruh][ru.ru] <= ru_size);
+          if (ru.ru > max_seen_ru) max_seen_ru = ru.ru;
+          if (tot_invalidating_writes++ % 16 * 1048576 == 0) {
+            for (u64 ruh = 0; ruh < FLAGS_pp_threads; ++ruh) {
+              for(u64 i = 1; i < max_seen_ru; i++) {
+                trace_file_per_ruh[ruh] << invalidated_per_ruh[ruh][i] << ",";
+              }
+              trace_file_per_ruh[ruh] << std::endl;
             }
-            trace_file << std::endl;
           }
         }
       }
