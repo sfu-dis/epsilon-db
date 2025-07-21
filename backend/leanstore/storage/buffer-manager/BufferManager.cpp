@@ -168,9 +168,9 @@ Partition& BufferManager::randomPartition()
    return getPartition(rand_partition_i);
 }
 // -------------------------------------------------------------------------------------
-BufferFrame& BufferManager::randomBufferFrame()
+BufferFrame& BufferManager::randomBufferFrame(u64 begin, u64 end)
 {
-   auto rand_buffer_i = utils::RandomGenerator::getRand<u64>(0, dram_pool_size);
+   auto rand_buffer_i = utils::RandomGenerator::getRand<u64>(begin, end);
    return bfs[rand_buffer_i];
 }
 // -------------------------------------------------------------------------------------

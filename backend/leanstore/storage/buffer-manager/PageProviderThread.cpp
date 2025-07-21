@@ -34,7 +34,13 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
    leanstore::cr::CRManager::global->registerMeAsSpecialWorker();
    // -------------------------------------------------------------------------------------
    // Init AIO Context
-   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size, thread_name);
+   u64 partitions_per_thread = partitions_count / FLAGS_pp_threads;
+   ensure(p_begin % partitions_per_thread == 0);
+   u64 pp_id = p_begin / partitions_per_thread;
+   u64 bp_rng_size_per_thread = dram_pool_size / FLAGS_pp_threads;
+   u64 bp_rng_begin = pp_id * bp_rng_size_per_thread; 
+   u64 bp_rng_end = (pp_id == FLAGS_pp_threads-1) ? dram_pool_size : (pp_id+1) * bp_rng_size_per_thread; 
+   AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size, pp_id);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
    // WAF aware replacement policy
    /** XXX(mfd) : a set is used for now to avoid issues with page chosen randomly
@@ -48,7 +54,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       of frames to add to the cooling stage to keep the 
       ru_cooling_map size within a multiple of the BATCH_SIZE. */
       for (u64 i = 0; i < BATCH_SIZE + 8; i++) {
-         BufferFrame* r_bf = &randomBufferFrame();
+         BufferFrame* r_bf = &randomBufferFrame(bp_rng_begin, bp_rng_end);
          DO_NOT_OPTIMIZE(r_bf->header.state);
          RUID ruid = r_bf->page.reclaim_unit;
          ru_cooling_map[ruid].insert(r_bf);
@@ -93,6 +99,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       auto& current_partition = randomPartition();
       if ((current_partition.dram_free_list.counter < current_partition.free_bfs_limit) && failed_attempts < 10) {
          next_bf_range();
+         assert(cool_candidate_bfs.size() <= FLAGS_replacement_chunk_size);
          while (cool_candidate_bfs.size()) {
             jumpmuTry()
             {

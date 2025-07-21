@@ -7,6 +7,7 @@
 #include <functional>
 #include <list>
 #include <unordered_map>
+#include <fdp.h>
 #include <fstream>
 #include <mutex>
 // -------------------------------------------------------------------------------------
@@ -23,16 +24,19 @@ class AsyncWriteBuffer
       PID pid;
       RUID valid_page_in_ru;
    };
-   io_context_t aio_context;
+   // io_context_t aio_context;
+   struct io_uring ring;
    int fd;
    u64 page_size, batch_max_size;
    u64 pending_requests = 0;
    // -------------------------------------------------------------------------------------
+   plid_t plid = 0; // Each page provider writes to his own plid.
    // start from 1 because 0 will represent frames that are not yet persisted.
    RUID open_ru = 1;
    // XXX(mfd) : hard coded for now, later read it from the device controller
    static constexpr u64 ru_size = 3194433ULL;
    s64 estimated_ruamw = ru_size;
+   size_t max_seen_ru;
    std::vector<s64> remaining_valid;
    std::ofstream trace_file; // XXX(mfd) : Just temporary for tracing, remove later
    // -------------------------------------------------------------------------------------
@@ -53,13 +57,14 @@ class AsyncWriteBuffer
   public:
    std::unique_ptr<BufferFrame::Page[]> write_buffer;
    std::unique_ptr<WriteCommand[]> write_buffer_commands;
-   std::unique_ptr<struct iocb[]> iocbs;
-   std::unique_ptr<struct iocb*[]> iocbs_ptr;
-   std::unique_ptr<struct io_event[]> events;
+   // std::unique_ptr<struct iocb[]> iocbs;
+   // std::unique_ptr<struct iocb*[]> iocbs_ptr;
+   // std::unique_ptr<struct io_event[]> events;
+   std::unique_ptr<struct io_uring_cqe *[]> events;
    // -------------------------------------------------------------------------------------
    // Debug
    // -------------------------------------------------------------------------------------
-   AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, const std::string &pp_name);
+   AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size, const u64 pp_id);
    // Caller takes care of sync
    bool full();
    void add(BufferFrame& bf, PID pid);
