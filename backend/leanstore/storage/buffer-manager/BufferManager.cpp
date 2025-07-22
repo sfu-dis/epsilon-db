@@ -65,6 +65,9 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
             p_i = (p_i + 1) % partitions_count;
          }
       });
+      if (FLAGS_iostat) {
+         per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads); 
+      }
    }
 }
 // -------------------------------------------------------------------------------------
@@ -99,6 +102,34 @@ void BufferManager::startBackgroundThreads()
       for (auto& thread : pp_threads) {
          thread.detach();
       }
+   }
+   if (FLAGS_iostat) {
+      std::thread iostat_timer;
+      if (FLAGS_pin_threads) {
+         utils::pinThisThread(FLAGS_worker_threads + FLAGS_wal + FLAGS_pp_threads + 1);
+      } else {
+         //utils::pinThisThread(FLAGS_wal + FLAGS_pp_threads);
+      }
+      CPUCounters::registerThread("iostat_timer");
+      if (FLAGS_root) {
+         posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);
+      }
+      iostat_timer = std::thread( [&] () {
+      std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+      while (bg_threads_keep_running) {
+         u64 tot_page_evicted = 0;
+         // grab the sum for each thread
+         for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
+           u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
+           ensure(new_value >= last_seen[pp_id]);
+           u64 diff = new_value - last_seen[pp_id];
+           tot_page_evicted += diff;
+           last_seen[pp_id] = new_value;
+         }
+         printf("[iostat] : %lu kb_written/s\n", tot_page_evicted * PAGE_SIZE / 1024); 
+         sleep(1);
+      }});
+      iostat_timer.detach();
    }
 }
 // -------------------------------------------------------------------------------------

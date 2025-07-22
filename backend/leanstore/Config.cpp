@@ -124,5 +124,6 @@ DEFINE_string(recover_file, "./leanstore.json", "Where should the recover config
 // -------------------------------------------------------------------------------------
 DEFINE_bool(io_trace, false, "");
 DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");
+DEFINE_bool(iostat, false, "iostat at the application level for the passthrough interface");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");

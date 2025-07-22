@@ -119,5 +119,6 @@ DECLARE_string(recover_file);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(io_trace);
 DECLARE_string(io_trace_file);
+DECLARE_bool(iostat);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
