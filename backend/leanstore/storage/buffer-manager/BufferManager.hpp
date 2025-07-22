@@ -90,6 +90,11 @@ class BufferManager
 
    // -------------------------------------------------------------------------------------
    // Threads managements
+   struct alignas(64) padded_iostat {
+     atomic<u64> io_counter = 0;
+     u64 pad[7];
+   };
+   std::unique_ptr<padded_iostat[]> per_pp_iostats;
    void pageProviderThread(u64 p_begin, u64 p_end);  // [p_begin, p_end)
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
