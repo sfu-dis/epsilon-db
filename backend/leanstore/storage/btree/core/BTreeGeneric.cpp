@@ -34,8 +34,10 @@ void BTreeGeneric::create(DTID dtid, Config config)
    meta_page->upper = root_write_guard.bf();  // HACK: use upper of meta node as a swip to the storage root
    // -------------------------------------------------------------------------------------
    // TODO: write WALs
-   root_write_guard.incrementGSN();
-   meta_page.incrementGSN();
+   if (FLAGS_wal) {
+     root_write_guard.incrementGSN();
+     meta_page.incrementGSN();
+   }
 }
 // -------------------------------------------------------------------------------------
 void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)

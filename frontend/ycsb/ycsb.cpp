@@ -28,6 +28,8 @@ DEFINE_bool(ycsb_count_unique_lookup_keys, true, "");
 DEFINE_bool(ycsb_warmup, true, "");
 DEFINE_uint32(ycsb_sleepy_thread, 0, "");
 DEFINE_uint32(ycsb_ops_per_tx, 1, "");
+// DEFINE_uint32(ycsb_nb_tables, 1, "Use multiple tables");
+DEFINE_bool(ycsb_worker_per_table, false, "Each worker is assigned a table to work on, This will turn off CC");
 // -------------------------------------------------------------------------------------
 using namespace leanstore;
 // -------------------------------------------------------------------------------------
@@ -51,19 +53,30 @@ int main(int argc, char** argv)
    // Always init with the maximum number of threads (FLAGS_worker_threads)
    LeanStore db;
    auto& crm = db.getCRManager();
-   LeanStoreAdapter<KVTable> table;
-   crm.scheduleJobSync(0, [&]() { table = LeanStoreAdapter<KVTable>(db, "YCSB"); });
+   std::vector<LeanStoreAdapter<KVTable>> tables;
+   // LeanStoreAdapter<KVTable> &table = tables[0];
+   const u64 ycsb_n_tables = FLAGS_ycsb_worker_per_table ? FLAGS_worker_threads : 1UL;
+   tables.reserve(ycsb_n_tables);
+   for (u64 t_id = 0; t_id < ycsb_n_tables; t_id++) {
+      std::string table_name = "YCSB" + std::to_string(t_id);
+      // tables[t_id] = LeanStoreAdapter<KVTable>(db, table_name);
+      tables.emplace_back(db, table_name);
+      std::cout << "Created Table " << table_name << std::endl;
+   }
+   // crm.scheduleJobSync(0, [&]() { table = LeanStoreAdapter<KVTable>(db, "YCSB"); });
    db.registerConfigEntry("ycsb_read_ratio", FLAGS_ycsb_read_ratio);
    db.registerConfigEntry("ycsb_threads", FLAGS_ycsb_threads);
    db.registerConfigEntry("ycsb_ops_per_tx", FLAGS_ycsb_ops_per_tx);
    // -------------------------------------------------------------------------------------
    leanstore::TX_ISOLATION_LEVEL isolation_level = leanstore::parseIsolationLevel(FLAGS_isolation_level);
+   if (FLAGS_ycsb_worker_per_table) isolation_level = TX_ISOLATION_LEVEL::READ_UNCOMMITTED;
    const TX_MODE tx_type = TX_MODE::OLTP;
    // -------------------------------------------------------------------------------------
-   const u64 ycsb_tuple_count = (FLAGS_ycsb_tuple_count)
+   u64 ycsb_tuple_count = (FLAGS_ycsb_tuple_count)
                                     ? FLAGS_ycsb_tuple_count
                                     : FLAGS_target_gib * 1024 * 1024 * 1024 * 1.0 / 2.0 / (sizeof(YCSBKey) + sizeof(YCSBPayload));
    // Insert values
+   if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = ycsb_tuple_count / FLAGS_worker_threads;
    const u64 n = ycsb_tuple_count;
    // db.startProfilingThread();
    // -------------------------------------------------------------------------------------
@@ -102,7 +115,8 @@ int main(int argc, char** argv)
                   for (u64 i = begin; i < end; i++) {
                      YCSBPayload result;
                      // cr::Worker::my().startTX(tx_type, isolation_level);
-                     table.lookup1({static_cast<YCSBKey>(i)}, [&](const KVTable& record) { result = record.my_payload; });
+                     u64 t_id = utils::RandomGenerator::getRandU64(0, ycsb_tuple_count);
+                     tables[0].lookup1({static_cast<YCSBKey>(i)}, [&](const KVTable& record) { result = record.my_payload; });
                      // cr::Worker::my().commitTX();
                   }
                });
@@ -118,18 +132,34 @@ int main(int argc, char** argv)
    } else {
       cout << "Inserting " << ycsb_tuple_count << " values" << endl;
       begin = chrono::high_resolution_clock::now();
-      utils::Parallelize::range(FLAGS_ycsb_insert_threads ? FLAGS_ycsb_insert_threads : FLAGS_worker_threads, n, [&](u64 t_i, u64 begin, u64 end) {
-         crm.scheduleJobAsync(t_i, [&, begin, end]() {
-            for (u64 i = begin; i < end; i++) {
-               YCSBPayload payload;
-               utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
-               YCSBKey key = i;
-               cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION);
-               table.insert({key}, {payload});
-               cr::Worker::my().commitTX();
-            }
-         });
-      });
+      if (FLAGS_ycsb_worker_per_table) {
+              for (u64 t_i = 0; t_i < FLAGS_worker_threads; ++t_i) {
+				 crm.scheduleJobAsync(t_i, [&, t_i]() {
+                    // cout << table_id << "Inserting ..." << endl;
+					for (u64 i = 0; i < n; i++) {
+					   YCSBPayload payload;
+					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
+					   YCSBKey key = i;
+					   // cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION);
+					   tables[t_i].insert({key}, {payload});
+					   // cr::Worker::my().commitTX();
+					}
+				 });
+			  }
+      } else {
+			  utils::Parallelize::range(FLAGS_ycsb_insert_threads ? FLAGS_ycsb_insert_threads : FLAGS_worker_threads, n, [&](u64 t_i, u64 begin, u64 end) {
+				 crm.scheduleJobAsync(t_i, [&, begin, end]() {
+					for (u64 i = begin; i < end; i++) {
+					   YCSBPayload payload;
+					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
+					   YCSBKey key = i;
+					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION);
+					   tables[0].insert({key}, {payload});
+					   cr::Worker::my().commitTX();
+					}
+				 });
+			  });
+      }
       crm.joinAll();
       end = chrono::high_resolution_clock::now();
       cout << "time elapsed = " << (chrono::duration_cast<chrono::microseconds>(end - begin).count() / 1000000.0) << endl;
@@ -162,7 +192,13 @@ int main(int argc, char** argv)
    const float rate = FLAGS_tx_rate;
    std::atomic<u64> next_tx_start_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
    for (u64 t_i = 0; t_i < exec_threads - ((FLAGS_ycsb_sleepy_thread) ? 1 : 0); t_i++) {
-      crm.scheduleJobAsync(t_i, [&]() {
+      crm.scheduleJobAsync(t_i, [&, t_i]() {
+         LeanStoreAdapter<KVTable> *table;
+         if (FLAGS_ycsb_worker_per_table ) {
+            table = &tables[t_i];
+         } else {
+            table = &tables[0];
+         }
          running_threads_counter++;
          std::random_device rd;
          std::mt19937_64 gen(rd());
@@ -188,13 +224,13 @@ int main(int argc, char** argv)
                cr::Worker::my().startTX(tx_type, isolation_level);
                for (u64 op_i = 0; op_i < FLAGS_ycsb_ops_per_tx; op_i++) {
                   if (FLAGS_ycsb_read_ratio == 100 || utils::RandomGenerator::getRandU64(0, 100) < FLAGS_ycsb_read_ratio) {
-                     table.lookup1({key}, [&](const KVTable&) {});  // result = record.my_payload;
+                     table->lookup1({key}, [&](const KVTable&) {});  // result = record.my_payload;
                      leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
                   } else {
                      UpdateDescriptorGenerator1(tabular_update_descriptor, KVTable, my_payload);
                      utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&result), sizeof(YCSBPayload));
                      // -------------------------------------------------------------------------------------
-                     table.update1(
+                     table->update1(
                          {key}, [&](KVTable& rec) { rec.my_payload = result; }, tabular_update_descriptor);
                      leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
                   }
