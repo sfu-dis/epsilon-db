@@ -22,7 +22,7 @@ IF(SANI)
   target_link_libraries(leanstore asan)
 ENDIF(SANI)
 
-target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson ${Boost_LIBRARIES}) #tbb
+target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson fdp uring ${Boost_LIBRARIES}) #tbb
 
 # ---------------------------------------------------------------------------
 OPTION(PARANOID "Enable sanity checks in release mode" OFF)

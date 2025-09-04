@@ -105,13 +105,13 @@ int main(int argc, char** argv)
       district = LeanStoreAdapter<district_t>(db, "district");
       customer = LeanStoreAdapter<customer_t>(db, "customer");
       customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl");
-      history = LeanStoreAdapter<history_t>(db, "history");
-      neworder = LeanStoreAdapter<neworder_t>(db, "neworder");
-      order = LeanStoreAdapter<order_t>(db, "order");
-      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc");
+      history = LeanStoreAdapter<history_t>(db, "history", 1);
+      neworder = LeanStoreAdapter<neworder_t>(db, "neworder", 2);
+      order = LeanStoreAdapter<order_t>(db, "order", 2);
+      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc", 2);
       item = LeanStoreAdapter<item_t>(db, "item");
       stock = LeanStoreAdapter<stock_t>(db, "stock");
-      orderline = LeanStoreAdapter<orderline_t>(db, "orderline");
+      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", 2);
    });
    // -------------------------------------------------------------------------------------
    db.registerConfigEntry("tpcc_warehouse_count", FLAGS_tpcc_warehouse_count);

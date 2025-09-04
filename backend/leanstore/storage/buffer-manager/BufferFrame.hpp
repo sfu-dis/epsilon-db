@@ -23,10 +23,12 @@ struct BufferFrame {
       STATE state = STATE::FREE;  // INIT:
       std::atomic<bool> is_being_written_back = false;
       bool keep_in_memory = false;
+      u8 fdp_plid = -1;
       PID pid = 9999;         // INIT:
       HybridLatch latch = 0;  // INIT: // ATTENTION: NEVER DECREMENT
       // -------------------------------------------------------------------------------------
       BufferFrame* next_free_bf = nullptr;
+      // -------------------------------------------------------------------------------------
       // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {

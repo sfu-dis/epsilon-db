@@ -1,5 +1,6 @@
 #pragma once
 #include "BufferFrame.hpp"
+#include "../btree/core/BTreeNode.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
@@ -7,6 +8,7 @@
 #include <functional>
 #include <list>
 #include <unordered_map>
+#include <fdp.h>
 #include <fstream>
 #include <mutex>
 // -------------------------------------------------------------------------------------
@@ -22,7 +24,8 @@ class AsyncWriteBuffer
       BufferFrame* bf;
       PID pid;
    };
-   io_context_t aio_context;
+   // io_context_t aio_context;
+   struct io_uring ring;
    int fd;
    u64 page_size, batch_max_size;
    u64 pending_requests = 0;
@@ -44,9 +47,12 @@ class AsyncWriteBuffer
   public:
    std::unique_ptr<BufferFrame::Page[]> write_buffer;
    std::unique_ptr<WriteCommand[]> write_buffer_commands;
+/*
    std::unique_ptr<struct iocb[]> iocbs;
    std::unique_ptr<struct iocb*[]> iocbs_ptr;
    std::unique_ptr<struct io_event[]> events;
+*/
+   std::unique_ptr<struct io_uring_cqe *[]> events;
    // -------------------------------------------------------------------------------------
    // Debug
    // -------------------------------------------------------------------------------------
