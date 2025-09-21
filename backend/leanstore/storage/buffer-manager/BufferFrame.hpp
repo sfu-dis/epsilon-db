@@ -23,7 +23,6 @@ struct BufferFrame {
       STATE state = STATE::FREE;  // INIT:
       std::atomic<bool> is_being_written_back = false;
       bool keep_in_memory = false;
-      u8 fdp_plid = -1;
       PID pid = 9999;         // INIT:
       HybridLatch latch = 0;  // INIT: // ATTENTION: NEVER DECREMENT
       // -------------------------------------------------------------------------------------
@@ -71,7 +70,8 @@ struct BufferFrame {
       LID GSN = 0;
       DTID dt_id = 9999;                                                                               // INIT: datastructure id
       u64 magic_debugging_number;                                                                      // ATTENTION
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number)];  // Datastruture BE CAREFUL HERE !!!!!
+      u64 fdp_plid = -1;
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) - sizeof(fdp_plid)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------

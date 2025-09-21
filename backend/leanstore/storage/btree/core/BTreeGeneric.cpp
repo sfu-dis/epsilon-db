@@ -22,8 +22,8 @@ void BTreeGeneric::create(DTID dtid, Config config)
    printf("Created a new btree with root at pid %u isolated to plid %u\n", meta_node_bf.asBufferFrame().header.pid, config.fdp_plid);
    Guard guard(meta_node_bf.asBufferFrame().header.latch, GUARD_STATE::EXCLUSIVE);
    meta_node_bf.asBufferFrame().header.keep_in_memory = true;
-   meta_node_bf.asBufferFrame().header.fdp_plid = config.fdp_plid;
    meta_node_bf.asBufferFrame().page.dt_id = dtid;
+   meta_node_bf.asBufferFrame().page.fdp_plid = config.fdp_plid;
    guard.unlock();
    // -------------------------------------------------------------------------------------
    auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid);

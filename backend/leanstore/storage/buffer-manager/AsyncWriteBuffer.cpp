@@ -80,7 +80,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    node->update_freq++;
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
-   u16 plid = bf.header.fdp_plid;
+   u16 plid = bf.page.fdp_plid;
    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
    fdp_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, plid);

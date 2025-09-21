@@ -95,7 +95,7 @@ struct Worker {
       u64 wal_buffer_round = 0, wal_next_to_clean = 0;
       // -------------------------------------------------------------------------------------
       atomic<u64> wal_gct_cursor = 0;  // GCT->W
-      alignas(512) u8* wal_buffer;     // W->GCT
+      alignas(4096) u8* wal_buffer;     // W->GCT
       LID wal_lsn_counter = 0;
       LID wt_gsn_clock;
       LID rfa_gsn_flushed;

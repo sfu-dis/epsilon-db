@@ -29,7 +29,7 @@ void CRManager::groupCommiter()
    CPUCounters::registerThread(thread_name, false);
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
-   u64 ssd_offset = end_of_block_device;
+   u64 ssd_offset = utils::downAlign(end_of_block_device, 4096);
    // -------------------------------------------------------------------------------------
    // Async IO
    const u64 batch_max_size = (workers_count * 2) + 2;  // 2x because of potential wrapping around
@@ -46,9 +46,9 @@ void CRManager::groupCommiter()
       }
    }
    auto add_pwrite = [&](u8* src, u64 size, u64 offset) {
-      ensure(offset % 512 == 0);
-      ensure(u64(src) % 512 == 0);
-      ensure(size % 512 == 0);
+      ensure(offset % 4096 == 0);
+      ensure(u64(src) % 4096 == 0);
+      ensure(size % 4096 == 0);
       io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, offset);
       iocbs[io_slot].data = src;
       iocbs_ptr[io_slot] = &iocbs[io_slot];
@@ -88,8 +88,8 @@ void CRManager::groupCommiter()
             min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, wt_to_lw_copy[w_i].precommitted_tx_commit_ts);
          }
          if (wt_to_lw_copy[w_i].wal_written_offset > worker.logging.wal_gct_cursor) {
-            const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor);
-            const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset);
+            const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor, 4096);
+            const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset, 4096);
             const u64 size_aligned = upper_offset - lower_offset;
             // -------------------------------------------------------------------------------------
             if (FLAGS_wal_pwrite) {
@@ -102,7 +102,7 @@ void CRManager::groupCommiter()
          } else if (wt_to_lw_copy[w_i].wal_written_offset < worker.logging.wal_gct_cursor) {
             {
                // ------------XXXXXXXXX
-               const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor);
+               const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor, 4096);
                const u64 upper_offset = FLAGS_wal_buffer_size;
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
@@ -116,7 +116,7 @@ void CRManager::groupCommiter()
             {
                // XXXXXX---------------
                const u64 lower_offset = 0;
-               const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset);
+               const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset, 4096);
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
                if (FLAGS_wal_pwrite) {
@@ -138,7 +138,7 @@ void CRManager::groupCommiter()
       // -------------------------------------------------------------------------------------
       // Flush
       if (FLAGS_wal_pwrite) {
-         ensure(ssd_offset % 512 == 0);
+         ensure(ssd_offset % 4096 == 0);
          if (FLAGS_wal_pwrite) {
             u32 submitted = 0;
             u32 left = io_slot;

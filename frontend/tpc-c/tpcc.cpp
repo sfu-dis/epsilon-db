@@ -101,17 +101,17 @@ int main(int argc, char** argv)
    };
    // -------------------------------------------------------------------------------------
    crm.scheduleJobSync(0, [&]() {
-      warehouse = LeanStoreAdapter<warehouse_t>(db, "warehouse");
-      district = LeanStoreAdapter<district_t>(db, "district");
-      customer = LeanStoreAdapter<customer_t>(db, "customer");
-      customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl");
-      history = LeanStoreAdapter<history_t>(db, "history", 1);
-      neworder = LeanStoreAdapter<neworder_t>(db, "neworder", 2);
-      order = LeanStoreAdapter<order_t>(db, "order", 2);
-      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc", 2);
-      item = LeanStoreAdapter<item_t>(db, "item");
-      stock = LeanStoreAdapter<stock_t>(db, "stock");
-      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", 2);
+      warehouse = LeanStoreAdapter<warehouse_t>(db, "warehouse", 0);
+      district = LeanStoreAdapter<district_t>(db, "district", 0);
+      customer = LeanStoreAdapter<customer_t>(db, "customer", 0);
+      customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl", 0);
+      history = LeanStoreAdapter<history_t>(db, "history", 0);
+      neworder = LeanStoreAdapter<neworder_t>(db, "neworder", 0);
+      order = LeanStoreAdapter<order_t>(db, "order", 0);
+      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc", 0);
+      item = LeanStoreAdapter<item_t>(db, "item", 0);
+      stock = LeanStoreAdapter<stock_t>(db, "stock", 0);
+      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", 0);
    });
    // -------------------------------------------------------------------------------------
    db.registerConfigEntry("tpcc_warehouse_count", FLAGS_tpcc_warehouse_count);
@@ -131,7 +131,6 @@ int main(int argc, char** argv)
                                        FLAGS_order_wdc_index, FLAGS_tpcc_warehouse_count, FLAGS_tpcc_remove,
                                        should_tpcc_driver_handle_isolation_anomalies, FLAGS_tpcc_warehouse_affinity);
    // -------------------------------------------------------------------------------------
-   db.startProfilingThread();
    if (!FLAGS_recover) {
       cout << "Loading TPC-C" << endl;
       crm.scheduleJobSync(0, [&]() {
@@ -141,9 +140,11 @@ int main(int argc, char** argv)
          cr::Worker::my().commitTX();
       });
       std::atomic<u32> g_w_id = 1;
-      for (u32 t_i = 0; t_i < FLAGS_worker_threads; t_i++) {
+      // XXX(mfd) : Loading is CPU bound, do not oversubscribe
+      ensure(56 < FLAGS_worker_threads);
+      for (u32 t_i = 0; t_i < 56; t_i++) {
          crm.scheduleJobAsync(t_i, [&]() {
-            cout << "rand seed: " << leanstore::utils::RandomGenerator::getRand(0, 1000000) << endl;
+            // cout << "rand seed: " << leanstore::utils::RandomGenerator::getRand(0, 1000000) << endl;
             while (true) {
                u32 w_id = g_w_id++;
                if (w_id > FLAGS_tpcc_warehouse_count) {
@@ -193,6 +194,7 @@ int main(int argc, char** argv)
    if (FLAGS_tpcc_stats) {
       tpccStats();
    }
+   db.startProfilingThread();
    // -------------------------------------------------------------------------------------
    atomic<u64> keep_running = true;
    atomic<u64> running_threads_counter = 0;

@@ -99,8 +99,8 @@ void CRManager::groupCommiter2()
                   wt_to_lw_copy[0] = worker.logging.wt_to_lw.getSync();
                }
                if (wt_to_lw_copy[0].wal_written_offset > worker.logging.wal_gct_cursor) {
-                  const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor);
-                  const u64 upper_offset = utils::upAlign(wt_to_lw_copy[0].wal_written_offset);
+                  const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor, 4096);
+                  const u64 upper_offset = utils::upAlign(wt_to_lw_copy[0].wal_written_offset, 4096);
                   const u64 size_aligned = upper_offset - lower_offset;
                   // -------------------------------------------------------------------------------------
                   if (FLAGS_wal_pwrite) {
@@ -114,7 +114,7 @@ void CRManager::groupCommiter2()
                } else if (wt_to_lw_copy[0].wal_written_offset < worker.logging.wal_gct_cursor) {
                   {
                      // ------------XXXXXXXXX
-                     const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor);
+                     const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor, 4096);
                      const u64 upper_offset = FLAGS_wal_buffer_size;
                      const u64 size_aligned = upper_offset - lower_offset;
                      // -------------------------------------------------------------------------------------
@@ -129,7 +129,7 @@ void CRManager::groupCommiter2()
                   {
                      // XXXXXX---------------
                      const u64 lower_offset = 0;
-                     const u64 upper_offset = utils::upAlign(wt_to_lw_copy[0].wal_written_offset);
+                     const u64 upper_offset = utils::upAlign(wt_to_lw_copy[0].wal_written_offset, 4096);
                      const u64 size_aligned = upper_offset - lower_offset;
                      // -------------------------------------------------------------------------------------
                      if (FLAGS_wal_pwrite) {
@@ -149,7 +149,7 @@ void CRManager::groupCommiter2()
             // -------------------------------------------------------------------------------------
             // Flush
             if (FLAGS_wal_fsync) {
-               ensure(g_ssd_offset % 512 == 0);
+               ensure(g_ssd_offset % 4096 == 0);
                const u64 fsync_current_value = fsync_counter.load();
                fsync_counter.wait(fsync_current_value);
                while ((fsync_current_value + 2) >= fsync_counter.load() && keep_running) {

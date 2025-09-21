@@ -39,7 +39,8 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
 {
    Worker::tls_ptr = this;
    CRCounters::myCounters().worker_id = worker_id;
-   logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(512, FLAGS_wal_buffer_size));
+   FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
+   logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
    std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    if (!is_page_provider) {
       cc.local_snapshot_cache = make_unique<u64[]>(workers_count);
