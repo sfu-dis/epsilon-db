@@ -30,6 +30,8 @@ void CRManager::groupCommiter()
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    u64 ssd_offset = utils::downAlign(end_of_block_device, 4096);
+   const u64 log_start = ssd_offset;
+   const u64 log_size = 16UL * 1073741824UL;
    // -------------------------------------------------------------------------------------
    // Async IO
    const u64 batch_max_size = (workers_count * 2) + 2;  // 2x because of potential wrapping around
@@ -46,6 +48,9 @@ void CRManager::groupCommiter()
       }
    }
    auto add_pwrite = [&](u8* src, u64 size, u64 offset) {
+      if (offset <= (log_start - log_size)) {
+         offset = ssd_offset = log_start;
+      }
       ensure(offset % 4096 == 0);
       ensure(u64(src) % 4096 == 0);
       ensure(size % 4096 == 0);
