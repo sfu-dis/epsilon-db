@@ -102,6 +102,30 @@ void BufferManager::startBackgroundThreads()
       for (auto& thread : pp_threads) {
          thread.detach();
       }
+      
+      std::thread ru_epoch_mgr = std::thread([&]() {
+         bg_threads_counter++;
+         u64 prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
+         u64 rmb = prev_rmb;
+         if (rmb != RU_SIZE) {
+            fdp_reset_free_ru(ssd_fd, /* default plid*/ 0);
+         }
+         ensure(fdp_get_remaining_bytes_in_ru(ssd_fd, 0) == RU_SIZE);
+         prev_rmb = RU_SIZE;
+         while (bg_threads_keep_running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
+            // XXX(mfd) Ugly hack to avoid fluctuations
+            if (prev_rmb < rmb && rmb > (RU_SIZE - 200000)) {
+               u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
+               ru_epoch.store(new_epoch, std::memory_order_release);
+               printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
+            }
+            prev_rmb = rmb;
+         }
+         bg_threads_counter--;
+      });
+      ru_epoch_mgr.detach();
    }
    if (FLAGS_iostat) {
       std::thread iostat_timer;
@@ -225,6 +249,7 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.pid = free_pid;
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
+   free_bf.page.ru_epoch = s64(-1);
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK() { WorkerCounters::myCounters().allocate_operations_counter++; }

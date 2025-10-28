@@ -281,7 +281,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          }
          
          async_write_buffer.getWrittenBfs(
-             [&](BufferFrame& written_bf, u64 written_lsn, PID out_of_place_pid) {
+             [&](BufferFrame& written_bf, u64 written_lsn, PID out_of_place_pid, u64 written_ru_epoch) {
                 jumpmuTry()
                 {
                    // When the written back page is being exclusively locked, we should rather waste the write and move on to another page

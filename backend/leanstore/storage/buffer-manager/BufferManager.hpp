@@ -72,6 +72,7 @@ class BufferManager
   private:
    friend class leanstore::LeanStore;
    friend class leanstore::profiling::BMTable;
+   friend class AsyncWriteBuffer;
    // -------------------------------------------------------------------------------------
    BufferFrame* bfs;
    // -------------------------------------------------------------------------------------
@@ -98,6 +99,9 @@ class BufferManager
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
+   // -------------------------------------------------------------------------------------
+   atomic<u64> ru_epoch = 0;
+   const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();

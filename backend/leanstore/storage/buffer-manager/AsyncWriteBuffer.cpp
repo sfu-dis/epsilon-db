@@ -79,6 +79,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto node = reinterpret_cast<btree::BTreeNode*>(bf.page.dt);
    node->update_freq++;
    std::memcpy(&write_buffer[slot], bf.page, page_size);
+   write_buffer[slot].ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
    void* write_buffer_slot_ptr = &write_buffer[slot];
    u16 plid = bf.page.fdp_plid;
    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
@@ -132,7 +133,7 @@ u64 AsyncWriteBuffer::pollEventsSync()
    return 0;
 }
 // -------------------------------------------------------------------------------------
-void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, u64, PID)> callback, u64 n_events)
+void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, u64, PID, u64)> callback, u64 n_events)
 {
 /*
    for (u64 i = 0; i < n_events; i++) {
@@ -152,7 +153,8 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, u64, PID)>
       // -------------------------------------------------------------------------------------
       ensure(cqe->res == 0);
       auto written_lsn = write_buffer[slot].PLSN;
-      callback(*write_buffer_commands[slot].bf, written_lsn, write_buffer_commands[slot].pid);
+      u64 written_ru_epoch = write_buffer[slot].ru_epoch;
+      callback(*write_buffer_commands[slot].bf, written_lsn, write_buffer_commands[slot].pid, written_ru_epoch);
       ++i;
    }
    assert(i == n_events);
