@@ -25,7 +25,7 @@ namespace leanstore
 namespace storage
 {
 // -------------------------------------------------------------------------------------
-void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_end)
+void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p_begin, p_end)
 {
    std::string thread_name("pp_" + std::to_string(p_begin) + "_" + std::to_string(p_end));
    pthread_setname_np(pthread_self(), thread_name.c_str());
@@ -270,7 +270,7 @@ void BufferManager::pageProviderThread(u64 p_begin, u64 p_end)  // [p_begin, p_e
       auto start = std::chrono::high_resolution_clock::now();
       if (async_write_buffer.submit()) {
          const u32 polled_events = async_write_buffer.pollEventsSync();
-         // if (FLAGS_iostat) per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::relaxed);
+         if (FLAGS_iostat) per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::relaxed);
          COUNTERS_BLOCK() {
             auto end = std::chrono::high_resolution_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();

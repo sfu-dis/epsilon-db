@@ -93,7 +93,7 @@ void BufferManager::startBackgroundThreads()
                 if (FLAGS_root) {
                    posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);
                 }
-                pageProviderThread(p_begin, p_end);
+                pageProviderThread(t_i, p_begin, p_end);
              },
              t_i * partitions_per_thread,
              ((t_i + 1) * partitions_per_thread) + ((t_i == FLAGS_pp_threads - 1) ? extra_partitions_for_last_thread : 0));
@@ -115,20 +115,24 @@ void BufferManager::startBackgroundThreads()
          posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);
       }
       iostat_timer = std::thread( [&] () {
-      std::vector<u64> last_seen(FLAGS_pp_threads, 0);
-      while (bg_threads_keep_running) {
-         u64 tot_page_evicted = 0;
-         // grab the sum for each thread
-         for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-           u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
-           ensure(new_value >= last_seen[pp_id]);
-           u64 diff = new_value - last_seen[pp_id];
-           tot_page_evicted += diff;
-           last_seen[pp_id] = new_value;
+         FILE *fp;
+         fp = fopen(FLAGS_iostat_output_file.c_str(), "w");
+         ensure(fp != nullptr);
+         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         while (bg_threads_keep_running) {
+            u64 tot_page_evicted = 0;
+            // grab the sum for each thread
+            for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
+               u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
+               ensure(new_value >= last_seen[pp_id]);
+               u64 diff = new_value - last_seen[pp_id];
+               tot_page_evicted += diff;
+               last_seen[pp_id] = new_value;
+            }
+            fprintf(fp, "[iostat] : %lu kb_written/s\n", tot_page_evicted * PAGE_SIZE / 1024); 
+            sleep(1);
          }
-         printf("[iostat] : %lu kb_written/s\n", tot_page_evicted * PAGE_SIZE / 1024); 
-         sleep(1);
-      }});
+      });
       iostat_timer.detach();
    }
 }
