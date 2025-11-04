@@ -110,22 +110,236 @@ void BufferManager::startBackgroundThreads()
          if (rmb != RU_SIZE) {
             fdp_reset_free_ru(ssd_fd, /* default plid*/ 0);
          }
-         ensure(fdp_get_remaining_bytes_in_ru(ssd_fd, 0) == RU_SIZE);
+         ensure(fdp_get_remaining_bytes_in_ru(ssd_fd, 0) == s64(RU_SIZE));
          prev_rmb = RU_SIZE;
+         u64 oldest_uncollected_epoch = 0;
          while (bg_threads_keep_running) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
             // XXX(mfd) Ugly hack to avoid fluctuations
             if (prev_rmb < rmb && rmb > (RU_SIZE - 200000)) {
                u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
+               ensure(new_epoch < 8192);
                ru_epoch.store(new_epoch, std::memory_order_release);
                printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
             }
             prev_rmb = rmb;
+            
+            // if oldest uncollected has utilzation of 80% or higher
+            // add it to the gc set
+            // and if the garbage collector thread is sleeping, wake him up. 
+            if ( oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed) 
+                 && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
+               // TODO(mfd) : consider changing this to try_lock, there is no benefit for 
+               //  this thread to wait and also may cause skipping ru epoch boundary.
+               // std::lock_guard _l(gc_m);
+               if (gc_m.try_lock()) {
+                  to_gc_epochs.push_back(oldest_uncollected_epoch);
+                  oldest_uncollected_epoch++;
+                  if (is_gc_sleeping) {
+                     gc_cv.notify_one();
+                  }
+                  gc_m.unlock();
+               }
+            }
+            
          }
          bg_threads_counter--;
       });
       ru_epoch_mgr.detach();
+
+      /**
+      
+      */ 
+      std::thread garbage_collector = std::thread([&]() {
+         const u32 batch_size = 1;
+         void *buf;
+         std::vector<u64> to_gc_epochs_snapshot; 
+         
+         bg_threads_counter++;
+         if (posix_memalign(&buf, 4096, batch_size * PAGE_SIZE) != 0) {
+            printf("posix_memalign failed !!");
+            raise(SIGTRAP);
+         }
+
+         BufferFrame::Page *buf_pages = reinterpret_cast<BufferFrame::Page *>(buf);
+
+         struct io_uring r_ring;
+         struct io_uring w_ring;
+         u32 flags = 0U;
+         int rc = io_uring_queue_init( 2 * batch_size, &r_ring, flags);
+         posix_check(rc == 0);
+         
+         rc = io_uring_queue_init( 2 * batch_size, &w_ring, flags);
+         posix_check(rc == 0);
+
+         std::unique_ptr<struct io_uring_cqe *[]> cqes;
+         cqes = std::make_unique<struct io_uring_cqe *[]>(2 * batch_size);
+         
+         
+         auto fix_page_cb = [this, &w_ring, buf_pages](struct io_uring_cqe *cqe) {
+            // FIXME(mfd) : What if the read fails?
+            ensure(cqe->res == PAGE_SIZE);
+            // Get where it was written
+            u64 data = io_uring_cqe_get_data64(cqe);
+            u64 fixed_pid = data & 0x0000FFFFFFFFFFFF;
+            u64 idx = data >> 48;
+            assert(idx < batch_size);
+            BufferFrame::Page *page = &buf_pages[idx];
+            ensure(page->magic_debugging_number == fixed_pid);
+            // TODO(mfd) : Pass in the gc epoch for debugging.
+            // ensure(page->ru_epoch == cgc_epoch);
+            // TODO(mfd) : Apply the log here
+            page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
+            page->undirtied = 1;
+            page->PLSN = page->PLSN + 1;
+            page->nbfixed++; // Just for debugging
+            // Write back the page.
+            struct io_uring_sqe *sqe = io_uring_get_sqe(&w_ring);
+            ensure(sqe != nullptr);
+            io_uring_prep_write(sqe, ssd_fd, (void *)page, PAGE_SIZE, fixed_pid * PAGE_SIZE);
+            io_uring_sqe_set_data64(sqe, data);
+            int s = io_uring_submit(&w_ring);
+            ensure(s == 1);
+         };
+         while (bg_threads_keep_running) {
+            {
+               std::unique_lock _l(gc_m);
+               is_gc_sleeping = true;
+               gc_cv.wait(_l, [this]() {return !to_gc_epochs.empty(); });
+               is_gc_sleeping = false;
+               // take a snapshot of the vector and clear it.
+               to_gc_epochs_snapshot = to_gc_epochs;
+               to_gc_epochs.clear(); 
+            }
+            ensure(!to_gc_epochs_snapshot.empty());
+            std::vector<u64> pids_batch;
+            for (const auto& gc_ru_epoch : to_gc_epochs_snapshot) {
+               auto &set = ru_discard_set[gc_ru_epoch];
+               set.is_garbage_collected.store(true, std::memory_order_release);
+               printf("[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
+               auto start = std::chrono::system_clock::now();
+               // We get a batch without removing it from the set and we release
+               // the lock because other code paths acquire locks in this order:
+               // Guard Lock -> Set lock.
+               while (set.getBatch(pids_batch, batch_size)) {
+                  u64 pages_to_fix = 0;
+                  for (auto &pid : pids_batch) {
+                     Partition& partition = getPartition(pid); 
+                     std::unique_lock g_guard(partition.ht_mutex);
+                     auto frame_handler = partition.io_ht.lookup(pid);
+                     if (frame_handler) {
+                        // someone is reading the page, so he will fix it.
+                        continue;
+                     }
+                     // still it is not safe to read and fix the page, someone 
+                     // may have just finished fixing the page and removed the frame.
+                     // We acquire the set lock and try to remove the pid from the set.
+                     if (set.erase(pid, nullptr, 'R') == false) {
+                        // someone has already fixed the page.
+                        continue;
+                     }
+                     
+                     IOFrame& io_frame = partition.io_ht.insert(pid);
+                     io_frame.readers_counter = 1;
+                     io_frame.state = IOFrame::STATE::READING;
+                     io_frame.mutex.lock();
+                     g_guard.unlock();
+
+                     // issue the async read.
+                     struct io_uring_sqe *sqe = io_uring_get_sqe(&r_ring);
+                     ensure(sqe != nullptr);
+                     io_uring_prep_read(sqe, ssd_fd, &buf_pages[pages_to_fix], PAGE_SIZE, pid * PAGE_SIZE);
+                     ensure((pid & 0xFFFF000000000000) == 0);
+                     u64 data = (pages_to_fix << 48) | pid;
+                     io_uring_sqe_set_data64(sqe, data);
+                     ++pages_to_fix;
+                     // TODO(mfd) : Probably amortize this for each 4 pages for example, to balance between 
+                     //  the syscall overhead and the waiting for pages to be read.
+                     int s = io_uring_submit(&r_ring);
+                     ensure(s == 1);
+                  }
+                  if (pages_to_fix > 0) {
+                     u32 ready = 0;
+/*
+                     u32 ready = io_uring_peek_batch_cqe(&r_ring, cqes.get(), pages_to_fix);
+                     for (u32 i = 0; i < ready; ++i) {
+                        fix_page_cb(cqes[i]);
+                     }
+                     if (ready > 0) io_uring_cq_advance(&r_ring, ready);
+                     // Wait for the remaining part, and do the same thing.
+*/
+                     u32 remaining = pages_to_fix - ready;
+                     if (remaining > 0) {
+                        // do the same, loop over all finshed. define a callback.
+                        int rc = io_uring_wait_cqe_nr(&r_ring, cqes.get(), remaining);
+                        posix_check(rc == 0);
+                        struct io_uring_cqe *cqe;
+                        u32 head;
+                        u32 i = 0;
+                        io_uring_for_each_cqe(&r_ring, head, cqe) {
+                           fix_page_cb(cqe);
+                           ++i;
+                        }
+                        ensure(i == remaining);
+                        io_uring_cq_advance(&r_ring, remaining);
+                     }
+                     // We already removed the pages from the set
+                     // So we just need to remove the frame 
+                     // Wait for the writes to finish.
+                     int rc = io_uring_wait_cqe_nr(&w_ring, cqes.get(), pages_to_fix);
+                     // Temporly check that this did not fail
+                     posix_check(rc == 0);
+
+                     struct io_uring_cqe *cqe;
+                     u32 head;
+                     u32 i = 0;
+                     io_uring_for_each_cqe(&w_ring, head, cqe) {
+                        // get the frame and the pid of the fixed page
+                        // make sure the write has succesfully completed.
+                        // For now just assert it.
+                        // If the write fails, I think it is safe to just return it to the set.
+                        ensure(cqe->res == PAGE_SIZE);
+                        u64 data = io_uring_cqe_get_data64(cqe);
+                        PID pid = data & 0x0000FFFFFFFFFFFF;
+                        u64 idx = data >> 48;
+                        assert(idx < pages_to_fix);
+                        BufferFrame::Page *page = &buf_pages[idx];
+                        ensure(page->magic_debugging_number == pid);
+                        ensure(page->undirtied == 1);
+  
+                        Partition &partition = getPartition(pid);
+                        // TODO(mfd) : A lock guard is enough here.
+                        std::unique_lock g_guard(partition.ht_mutex);
+                        auto frame_handler = partition.io_ht.lookup(pid);
+                        ensure(frame_handler);
+                        IOFrame &frame = frame_handler.frame();
+                        ensure(frame.state == IOFrame::STATE::READING);
+                        // After unlocking, workers waiting for the page to be fixed, will
+                        // jump and retry, When they acquire the partition lock, they won't
+                        // see the frame.
+                        frame.mutex.unlock();
+                        // -------------------------------------------------------------------------------------
+                        if (frame.readers_counter.fetch_add(-1) == 1) {
+                           partition.io_ht.remove(pid);
+                        } else {
+                           frame.state = IOFrame::STATE::TO_DELETE;
+                        }
+                        g_guard.unlock();
+                        ++i;
+                     }
+                     ensure(i == pages_to_fix);
+                     io_uring_cq_advance(&w_ring, pages_to_fix);
+                  }
+               }
+               auto end = std::chrono::system_clock::now();
+               auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+               printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
+            }
+         }
+         bg_threads_counter--;
+      });
+      garbage_collector.detach();
    }
    if (FLAGS_iostat) {
       std::thread iostat_timer;
@@ -250,6 +464,7 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
    free_bf.page.ru_epoch = s64(-1);
+   free_bf.page.undirtied = 0;
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK() { WorkerCounters::myCounters().allocate_operations_counter++; }
@@ -401,6 +616,21 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          swip_guard.recheck();
          JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
          BMExclusiveUpgradeIfNeeded swip_x_guard(swip_guard);
+         if (swip_value.isDIRTY()) {
+            if (bf.page.undirtied == 1 && !swip_value.isDiscardUndirty()) {
+               // ru_discard_set[old_ru_epoch].ensureInexistant(pid);
+               PARANOID_BLOCK() {
+                  ru_discard_set[bf.page.ru_epoch].log_op(pid, &bf, 'c');
+               }
+            } else {
+               bf.page.PLSN++;
+               ensure(bf.page.ru_epoch >= 0);
+               bool ok = ru_discard_set[bf.page.ru_epoch].erase(pid, &bf);
+               ensure(ok);
+            }
+         } else {
+            ru_discard_set[bf.page.ru_epoch].ensureInexistant(pid);
+         }
          io_frame.mutex.unlock();
          swip_value.warm(&bf);
          bf.header.state = BufferFrame::STATE::HOT;  // ATTENTION: SET TO HOT AFTER
@@ -459,6 +689,23 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // -------------------------------------------------------------------------------------
          io_frame.bf = nullptr;
          paranoid(bf->header.pid == pid);
+         if (swip_value.isDIRTY()) {
+            if (bf->page.undirtied == 1 && !swip_value.isDiscardUndirty()) {
+               // bf->page.undirtied = 0;
+               // TODO(mfd) : Store the ru_epoch in the swizzeled pointer for debugging.
+               // ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);
+               PARANOID_BLOCK() {
+                  ru_discard_set[bf->page.ru_epoch].log_op(pid, bf, 'c');
+               }
+            } else {
+               bf->page.PLSN++;
+               ensure(bf->page.ru_epoch >= 0);
+               bool ok = ru_discard_set[bf->page.ru_epoch].erase(pid, bf);
+               ensure(ok);
+            }
+         } else {
+            ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);
+         }
          swip_value.warm(bf);
          paranoid(swip_value.isHOT());
          paranoid(bf->header.state == BufferFrame::STATE::LOADED);

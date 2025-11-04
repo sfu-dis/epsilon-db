@@ -72,6 +72,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                BMOptimisticGuard r_guard(r_buffer->header.latch);
                repickIf(r_buffer->header.keep_in_memory || r_buffer->header.is_being_written_back || r_buffer->header.latch.isExclusivelyLatched());
+               // FIXME(mfd) : Temporarly avoiding evicting inner nodes.
+               auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
+               repickIf(!node->is_leaf);
                r_guard.recheck();
                // -------------------------------------------------------------------------------------
                if (r_buffer->header.state == BufferFrame::STATE::COOL) {
@@ -147,7 +150,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      paranoid(r_buffer->header.state == BufferFrame::STATE::HOT);
                      paranoid(r_buffer->header.is_being_written_back == false);
                      paranoid(parent_handler.parent_guard.version == parent_handler.parent_guard.latch->ref().load());
-                     paranoid(parent_handler.swip.bf == r_buffer);
+                     paranoid(&parent_handler.swip.asBufferFrame() == r_buffer);
                      // -------------------------------------------------------------------------------------
                      r_buffer->header.state = BufferFrame::STATE::COOL;
                      parent_handler.swip.cool();  // Cool the pointing swip before unlocking the current bf
@@ -168,7 +171,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       // -------------------------------------------------------------------------------------
       // Phase 2:
       FreedBfsBatch freed_bfs_batch;
-      auto evict_bf = [&](BufferFrame& bf, BMOptimisticGuard& c_guard) {
+      auto evict_bf = [&](BufferFrame& bf, BMOptimisticGuard& c_guard, bool discard) {
          DTID dt_id = bf.page.dt_id;
          c_guard.recheck();
          ParentSwipHandler parent_handler = getDTRegistry().findParent(dt_id, bf);
@@ -182,18 +185,36 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          paranoid(parent_handler.parent_guard.state == GUARD_STATE::OPTIMISTIC);
          BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler.parent_guard);
          c_guard.guard.toExclusive();
+         ensure(&parent_handler.swip.asBufferFrameMasked() == &bf);
          // -------------------------------------------------------------------------------------
          if (FLAGS_crc_check && bf.header.crc) {
             ensure(utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE) == bf.header.crc);
          }
          // -------------------------------------------------------------------------------------
-         ensure(!bf.isDirty());
+         ensure(!bf.isDirty() || discard);
          paranoid(!bf.header.is_being_written_back);
          paranoid(bf.header.state == BufferFrame::STATE::COOL);
          paranoid(parent_handler.swip.isCOOL());
+         ensure(bf.page.ru_epoch >= 0);
          // -------------------------------------------------------------------------------------
          const PID evicted_pid = bf.header.pid;
-         parent_handler.swip.evict(evicted_pid);
+         if (discard) {
+            bool discard_undirtied = (bf.page.undirtied == 1);
+            parent_handler.swip.evictAndMarkDirty(evicted_pid, discard_undirtied);
+            bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, &bf);
+            if (!ok) {
+               PARANOID_BLOCK() {
+                  BMC::global_bf->dump_history_of_pid(evicted_pid);
+               }
+               raise(SIGTRAP);
+            }
+         } else {
+            ensure(bf.page.undirtied == 0);
+            parent_handler.swip.evict(evicted_pid);
+            PARANOID_BLOCK() {
+               ru_discard_set[bf.page.ru_epoch].log_op(evicted_pid, &bf ,'e');
+            }
+         }
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
          bf.reset();
@@ -238,7 +259,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
             }
             if (cooled_bf->isDirty()) {
-               if (!async_write_buffer.full()) {
+               if (cooled_bf->canDiscard() 
+                  && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 
+                  && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
+                  evict_bf(*cooled_bf, o_guard, true);
+               } else if (!async_write_buffer.full()) {
                   {
                      BMExclusiveGuard ex_guard(o_guard);
                      paranoid(!cooled_bf->header.is_being_written_back);
@@ -259,7 +284,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   jumpmu_break;
                }
             } else {
-               evict_bf(*cooled_bf, o_guard);
+               evict_bf(*cooled_bf, o_guard, false);
             }
          }
          jumpmuCatch() {}
@@ -299,6 +324,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
+                      written_bf.page.ru_epoch = written_ru_epoch;
+                      written_bf.page.undirtied = 0;
                       PPCounters::myCounters().flushed_pages_counter++;
                    }
                 }
@@ -313,7 +340,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                    {
                       BMOptimisticGuard o_guard(written_bf.header.latch);
                       if (written_bf.header.state == BufferFrame::STATE::COOL && !written_bf.header.is_being_written_back && !written_bf.isDirty()) {
-                         evict_bf(written_bf, o_guard);
+                         evict_bf(written_bf, o_guard, false);
                       }
                    }
                    jumpmuCatch() {}

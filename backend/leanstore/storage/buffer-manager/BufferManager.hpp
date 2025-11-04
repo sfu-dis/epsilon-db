@@ -12,6 +12,7 @@
 #include <libaio.h>
 #include <sys/mman.h>
 
+#include <condition_variable>
 #include <cstring>
 #include <list>
 #include <mutex>
@@ -102,6 +103,94 @@ class BufferManager
    // -------------------------------------------------------------------------------------
    atomic<u64> ru_epoch = 0;
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
+   struct RUEpochDiscardSet {
+      std::mutex m;
+      std::unordered_set<PID> pids;
+      // Do we need padding here?
+      atomic<u32> inserted{0};
+      atomic<bool> is_garbage_collected{false};
+
+
+      void insert(PID pid) {
+         std::lock_guard _l(m);
+         bool ok = pids.insert(pid).second;
+         ensure(ok);
+         inserted.fetch_add(1, std::memory_order_relaxed);
+      }
+      bool erase(PID pid) {
+         std::lock_guard _l(m);
+         bool ok = pids.erase(pid);
+         return ok;
+      }
+      void ensureInexistant(PID pid) {
+         std::lock_guard _l(m);
+         ensure(pids.count(pid) == 0);
+         PARANOID_BLOCK() {
+            log.emplace_back(pid, 'i', nullptr);
+         }
+      }
+      bool shouldGC() {
+         // XXX(mfd) : The number of inserted elements could execeed  the RU_SIZE
+         //  because we're approximating the ru_epoch boundary.
+         return (inserted.load(std::memory_order_relaxed) * 1.0f/ 3193344) > 0.8;
+      }
+      bool getBatch(std::vector<PID> &out_pids, u32 batch_size) {
+         out_pids.clear();
+         std::lock_guard _l(m);
+         for (const auto &pid : pids) {
+            out_pids.push_back(pid);
+            if (out_pids.size() == batch_size) {
+               break;
+            }
+         }
+         return !out_pids.empty();
+      }
+      u64 size() {
+         std::lock_guard _l(m);
+         return pids.size();
+      }
+      // Debugging 
+      std::vector<std::tuple<PID, char, BufferFrame*>> log;
+      bool insert(PID pid, BufferFrame *bf) {
+         std::unique_lock _l(m);
+         bool ok = pids.insert(pid).second;
+         ensure(ok);
+         PARANOID_BLOCK() {
+            log.emplace_back(pid, 'I', bf);
+         }
+         inserted.fetch_add(1, std::memory_order_relaxed);
+         return ok;
+      }
+      bool erase(PID pid, BufferFrame *bf, char c = 'E') {
+         std::lock_guard _l(m);
+         bool ok = pids.erase(pid);
+         PARANOID_BLOCK() {
+            if (ok) log.emplace_back(pid, '+', bf);
+            else log.emplace_back(pid, '-', bf);
+         }
+         return ok;
+      }
+      void log_op(PID pid, BufferFrame *bf, char c) {
+         PARANOID_BLOCK() {
+            std::lock_guard _l(m);
+            log.emplace_back(pid, c, bf);
+         }
+      }
+      void dump_history_of_page(PID pid) {
+         int c = 0;
+         for (const auto& e : log) {
+            if (std::get<0>(e) == pid) {
+               printf("(%c, %p) ", std::get<1>(e), std::get<2>(e));
+               ++c;
+            }
+         }
+      }      
+   };
+   RUEpochDiscardSet ru_discard_set[4096 * 2];
+   std::mutex gc_m;
+   std::condition_variable gc_cv;
+   std::vector<u64> to_gc_epochs;
+   bool is_gc_sleeping{true};
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();
@@ -155,6 +244,15 @@ class BufferManager
    DTRegistry& getDTRegistry() { return DTRegistry::global_dt_registry; }
    u64 consumedPages();
    BufferFrame& getContainingBufferFrame(const u8*);  // get the buffer frame containing the given ptr address
+   // Just for debugging
+   void dump_history_of_pid(PID pid) {
+      u64 epoch = ru_epoch.load() + 3;
+      printf("History of page with pid %u\n", pid);
+      for (u64 e = 0; e < epoch; ++e) {
+         printf("\n%lu ", e);
+         ru_discard_set[e].dump_history_of_page(pid);
+      }
+   }   
 };                                                    // namespace storage
 // -------------------------------------------------------------------------------------
 class BMC

@@ -70,9 +70,12 @@ struct BufferFrame {
       LID GSN = 0;
       DTID dt_id = 9999;                                                                               // INIT: datastructure id
       u64 magic_debugging_number;                                                                      // ATTENTION
-      u64 fdp_plid = -1;
+      u32 fdp_plid = -1;
+      u16 nbfixed = 0;
+      u16 undirtied = 0;
       s64 ru_epoch = -1;
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) - sizeof(fdp_plid) - sizeof(ru_epoch)];  // Datastruture BE CAREFUL HERE !!!!!
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
+             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(undirtied) - sizeof(ru_epoch)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
@@ -86,6 +89,10 @@ struct BufferFrame {
    // -------------------------------------------------------------------------------------
    inline bool isDirty() const { return page.PLSN != header.last_written_plsn; }
    inline bool isFree() const { return header.state == STATE::FREE; }
+   inline bool canDiscard() const {
+      return page.ru_epoch != s64(-1)
+             && (page.PLSN == (header.last_written_plsn + 1));
+   }
    // -------------------------------------------------------------------------------------
    // Pre: bf is exclusively locked
    void reset()
