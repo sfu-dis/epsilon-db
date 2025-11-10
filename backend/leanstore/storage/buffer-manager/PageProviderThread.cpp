@@ -261,6 +261,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (cooled_bf->isDirty()) {
                if (cooled_bf->canDiscard() 
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 
+                  && (cooled_bf->page.undirtied == 0)
                   && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()) {
