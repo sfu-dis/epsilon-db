@@ -21,6 +21,9 @@ ZipfGenerator::ZipfGenerator(u64 ex_n, double theta) : n(ex_n - 1), theta(theta)
 // -------------------------------------------------------------------------------------
 double ZipfGenerator::zeta(u64 n, double theta)
 {
+   if (theta == 0.0) {
+      return n;
+   }
    double ans = 0;
    for (u64 i = 1; i <= n; i++)
       ans += std::pow(1.0 / n, theta);
