@@ -97,6 +97,7 @@ class BufferManager
      u64 pad[7];
    };
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
+   std::atomic<u64> tot_gc_writes = 0;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
@@ -107,8 +108,11 @@ class BufferManager
       std::mutex m;
       std::unordered_set<PID> pids;
       // Do we need padding here?
-      atomic<u32> inserted{0};
-      atomic<bool> is_garbage_collected{false};
+      alignas(64) atomic<s32> inserted{0};
+      alignas(64) atomic<s32> deleted{0};
+      alignas(64) atomic<bool> is_garbage_collected{false};
+      alignas(64) atomic<s32> total{0};
+      alignas(64) atomic<s32> invalid{0};
 
 
       void insert(PID pid) {
@@ -120,6 +124,7 @@ class BufferManager
       bool erase(PID pid) {
          std::lock_guard _l(m);
          bool ok = pids.erase(pid);
+         if (ok) deleted.fetch_add(1, std::memory_order_relaxed);
          return ok;
       }
       void ensureInexistant(PID pid) {
@@ -132,7 +137,17 @@ class BufferManager
       bool shouldGC() {
          // XXX(mfd) : The number of inserted elements could execeed  the RU_SIZE
          //  because we're approximating the ru_epoch boundary.
-         return (inserted.load(std::memory_order_relaxed) * 1.0f/ 3193344) > 0.8;
+         s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
+         s32 i = invalid.load(std::memory_order_acquire);
+         // s32 d = inserted.load(std::memory_order_relaxed);
+         s32 tot = total.load(std::memory_order_acquire);
+         double per = (i+d) * 1.0f / tot;
+         bool ok = per > 0.9;
+         if (ok) {
+            printf("tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per);
+         }
+         // return (( invalid.load(std::memory_order_acquire) + inserted.load(std::memory_order_relaxed)) * 1.0f/ ) > 0.9;
+         return ok;
       }
       bool getBatch(std::vector<PID> &out_pids, u32 batch_size) {
          out_pids.clear();
@@ -164,6 +179,7 @@ class BufferManager
       bool erase(PID pid, BufferFrame *bf, char c = 'E') {
          std::lock_guard _l(m);
          bool ok = pids.erase(pid);
+         if (ok) deleted.fetch_add(1, std::memory_order_relaxed);
          PARANOID_BLOCK() {
             if (ok) log.emplace_back(pid, '+', bf);
             else log.emplace_back(pid, '-', bf);

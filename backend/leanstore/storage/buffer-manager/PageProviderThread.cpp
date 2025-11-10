@@ -296,7 +296,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       auto start = std::chrono::high_resolution_clock::now();
       if (async_write_buffer.submit()) {
          const u32 polled_events = async_write_buffer.pollEventsSync();
-         if (FLAGS_iostat) per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::relaxed);
+         if (FLAGS_iostat || FLAGS_use_fdp_rumaw) per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::relaxed);
          COUNTERS_BLOCK() {
             auto end = std::chrono::high_resolution_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
@@ -325,6 +325,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
+                      s64 previous_ru_epoch = written_bf.page.ru_epoch;
+                      if (previous_ru_epoch != -1) {
+                         s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_sub(-1);
+                         ensure(invalid >= 0);
+                      }
+                      ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       written_bf.page.ru_epoch = written_ru_epoch;
                       written_bf.page.undirtied = 0;
                       PPCounters::myCounters().flushed_pages_counter++;

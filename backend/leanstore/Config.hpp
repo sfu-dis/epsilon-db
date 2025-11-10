@@ -122,4 +122,6 @@ DECLARE_string(io_trace_file);
 DECLARE_bool(iostat);
 DECLARE_string(iostat_output_file);
 // -------------------------------------------------------------------------------------
+DECLARE_bool(use_fdp_rumaw);
+// -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);

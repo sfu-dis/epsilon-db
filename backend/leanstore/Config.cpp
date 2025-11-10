@@ -127,4 +127,6 @@ DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");
 DEFINE_bool(iostat, false, "iostat at the application level for the passthrough interface");
 DEFINE_string(iostat_output_file, "/proc/self/fd/1", "where to output the io stats, default to stdout");
 // -------------------------------------------------------------------------------------
+DEFINE_bool(use_fdp_rumaw, false, "use RU remaining media writes feature availabe of fdp capable NVMe devices.");
+// -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
