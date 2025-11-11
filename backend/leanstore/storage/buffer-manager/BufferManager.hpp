@@ -94,7 +94,8 @@ class BufferManager
    // Threads managements
    struct alignas(64) padded_iostat {
      atomic<u64> io_counter = 0;
-     u64 pad[7];
+     atomic<u64> discard = 0;
+     u64 pad[6];
    };
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
    std::atomic<u64> tot_gc_writes = 0;

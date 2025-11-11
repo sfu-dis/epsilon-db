@@ -208,6 +208,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
                raise(SIGTRAP);
             }
+            per_pp_iostats[pp_id].discard.fetch_add(1, std::memory_order_relaxed);
          } else {
             ensure(bf.page.undirtied == 0);
             parent_handler.swip.evict(evicted_pid);

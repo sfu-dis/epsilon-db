@@ -417,9 +417,11 @@ void BufferManager::startBackgroundThreads()
          fp = fopen(FLAGS_iostat_output_file.c_str(), "w");
          ensure(fp != nullptr);
          std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         std::vector<u64> last_seen_discard(FLAGS_pp_threads, 0);
          bg_threads_counter++;
          while (bg_threads_keep_running) {
             u64 tot_page_evicted = 0;
+            u64 tot_page_discard = 0;
             // grab the sum for each thread
             for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
                u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
@@ -427,8 +429,17 @@ void BufferManager::startBackgroundThreads()
                u64 diff = new_value - last_seen[pp_id];
                tot_page_evicted += diff;
                last_seen[pp_id] = new_value;
+               // ------------------------------------------------------
+               u64 new_discard_value = per_pp_iostats[pp_id].discard.load(std::memory_order::relaxed);
+               ensure(new_discard_value >= last_seen_discard[pp_id]);
+               diff = new_discard_value - last_seen_discard[pp_id];
+               tot_page_discard += diff;
+               last_seen_discard[pp_id] = new_discard_value;
             }
-            fprintf(fp, "[iostat] : %.2f kb_written/s\n", (tot_page_evicted * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval); 
+            double wps = (tot_page_evicted * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
+            double dps = (tot_page_discard * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
+            double free_per = write_credit_available.load(std::memory_order_acquire) * 100.0f/ (FLAGS_ssd_gib * 1048576ul);
+            fprintf(fp, "[iostat] : %.2f kb_written/s, %.2f kb_discard/s, %.2f%% nand free\n", wps, dps, free_per); 
             sleep(FLAGS_iostat_interval);
          }
          bg_threads_counter--;
