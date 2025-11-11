@@ -121,6 +121,7 @@ DECLARE_bool(io_trace);
 DECLARE_string(io_trace_file);
 DECLARE_bool(iostat);
 DECLARE_string(iostat_output_file);
+DECLARE_uint32(iostat_interval);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(use_fdp_rumaw);
 // -------------------------------------------------------------------------------------

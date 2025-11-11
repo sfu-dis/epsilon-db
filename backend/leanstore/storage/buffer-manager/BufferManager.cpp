@@ -405,6 +405,7 @@ void BufferManager::startBackgroundThreads()
          fp = fopen(FLAGS_iostat_output_file.c_str(), "w");
          ensure(fp != nullptr);
          std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         bg_threads_counter++;
          while (bg_threads_keep_running) {
             u64 tot_page_evicted = 0;
             // grab the sum for each thread
@@ -415,9 +416,10 @@ void BufferManager::startBackgroundThreads()
                tot_page_evicted += diff;
                last_seen[pp_id] = new_value;
             }
-            fprintf(fp, "[iostat] : %lu kb_written/s\n", tot_page_evicted * PAGE_SIZE / 1024); 
-            sleep(1);
+            fprintf(fp, "[iostat] : %.2f kb_written/s\n", (tot_page_evicted * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval); 
+            sleep(FLAGS_iostat_interval);
          }
+         bg_threads_counter--;
       });
       iostat_timer.detach();
    }
