@@ -98,6 +98,8 @@ class BufferManager
    };
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
    std::atomic<u64> tot_gc_writes = 0;
+   // Approximate # of free NAND pages on the SSD in KiB.
+   atomic<s64> write_credit_available;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;

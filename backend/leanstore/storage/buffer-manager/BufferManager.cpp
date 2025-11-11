@@ -68,6 +68,7 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
       if (FLAGS_iostat || FLAGS_use_fdp_rumaw) {
          per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads); 
       }
+      write_credit_available = FLAGS_ssd_gib * 1048576UL;
    }
 }
 // -------------------------------------------------------------------------------------
@@ -157,25 +158,36 @@ void BufferManager::startBackgroundThreads()
             u64 tot_page_written = 0;
 	    while (bg_threads_keep_running) {
 	       std::this_thread::sleep_for(std::chrono::milliseconds(50));
+               u64 local_tot = 0;
                for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
                   u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
                   ensure(new_value >= last_seen[pp_id]);
                   u64 diff = new_value - last_seen[pp_id];
+                  local_tot += diff;
                   tot_page_written += diff;
                   last_seen[pp_id] = new_value;
                }
                u64 seen = tot_gc_writes.load(std::memory_order_acquire);
                tot_page_written += (seen - last_seen_tot_gc_writes);
+               local_tot += (seen - last_seen_tot_gc_writes);
                last_seen_tot_gc_writes = seen;
+               s64 old_wc = write_credit_available.fetch_sub(local_tot, std::memory_order_relaxed);
+               ensure(old_wc > local_tot);
+               bool must_gc = (old_wc < (4 * RU_SIZE));
+               if (must_gc) {
+                  // XXX(mfd) : We will assume the GC will successed freeing an RU epoch, That's fine
+                  write_credit_available.fetch_add(RU_SIZE, std::memory_order_relaxed);
+                  printf("[WARN] Free pages shortage...Forcing GC\n");
+               }
                if (tot_page_written >= RU_SIZE) {
-                  tot_page_written = RU_SIZE - tot_page_written;
+                  tot_page_written = tot_page_written - RU_SIZE;
 		  u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
 		  ensure(new_epoch < 8192);
 		  ru_epoch.store(new_epoch, std::memory_order_release);
 		  printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
                }
 	       if ( oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed) 
-		    && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
+		    && (must_gc || ru_discard_set[oldest_uncollected_epoch].shouldGC())) {
 		  if (gc_m.try_lock()) {
 		     to_gc_epochs.push_back(oldest_uncollected_epoch);
 		     oldest_uncollected_epoch++;
