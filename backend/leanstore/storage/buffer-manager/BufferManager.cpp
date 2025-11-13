@@ -68,7 +68,8 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
       if (FLAGS_iostat || FLAGS_use_fdp_rumaw) {
          per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads); 
       }
-      write_credit_available = FLAGS_ssd_gib * 1048576UL;
+      // write credit in term of number of database pages.
+      write_credit_available = FLAGS_ssd_gib * 1048576UL / (PAGE_SIZE / 1024ul);
    }
 }
 // -------------------------------------------------------------------------------------
@@ -438,7 +439,7 @@ void BufferManager::startBackgroundThreads()
             }
             double wps = (tot_page_evicted * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
             double dps = (tot_page_discard * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
-            double free_per = write_credit_available.load(std::memory_order_acquire) * 100.0f/ (FLAGS_ssd_gib * 1048576ul);
+            double free_per = write_credit_available.load(std::memory_order_acquire) * 100.0f/ (FLAGS_ssd_gib * 1048576ul) * 4ul;
             fprintf(fp, "[iostat] : %.2f kb_written/s, %.2f kb_discard/s, %.2f%% nand free\n", wps, dps, free_per); 
             sleep(FLAGS_iostat_interval);
          }
