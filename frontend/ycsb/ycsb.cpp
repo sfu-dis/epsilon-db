@@ -306,6 +306,20 @@ int main(int argc, char** argv)
       }
       crm.joinAll();
    }
+   auto &ah = db.getBufferManager().per_pp_absorbtion_histogram;
+   std::vector<u64> agg_ab(256, 0);
+   for (u64 i = 0; i < 256; ++i) {
+     u64 tot = 0;
+     for (u64 pp = 0; pp < FLAGS_pp_threads; ++pp) {
+        tot += ah[pp][i];
+     }
+     agg_ab[i] = tot;
+   }
+   cout << "-------------------------------------------------------------------------------------" << endl;
+   for (const auto&v : agg_ab) {
+      cout << v << ",";
+   }
+   cout << endl;
    cout << "-------------------------------------------------------------------------------------" << endl;
    return 0;
 }

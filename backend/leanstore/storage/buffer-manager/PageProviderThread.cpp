@@ -36,6 +36,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
    // Init AIO Context
    AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
+   auto& absorbtion_histogram = per_pp_absorbtion_histogram[pp_id];
    // -------------------------------------------------------------------------------------
    auto next_bf_range = [&]() {
       const u64 BATCH_SIZE = FLAGS_replacement_chunk_size;
@@ -259,6 +260,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   jumpmu_continue;
                }
             }
+            s64 plsn_diff = cooled_bf->page.PLSN - cooled_bf->header.last_written_plsn;
+            ensure(plsn_diff >= 0);
+            // Thread local map, need to reset this after loading.
+            if (plsn_diff >= 256) plsn_diff = 255;
+            ++absorbtion_histogram[plsn_diff];
             if (cooled_bf->isDirty()) {
                if (cooled_bf->canDiscard() 
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 

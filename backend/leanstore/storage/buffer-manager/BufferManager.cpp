@@ -70,6 +70,10 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
       }
       // write credit in term of number of database pages.
       write_credit_available = FLAGS_ssd_gib * 1048576UL / (PAGE_SIZE / 1024ul);
+      per_pp_absorbtion_histogram.resize(FLAGS_pp_threads);
+      for (auto& ah : per_pp_absorbtion_histogram) {
+         ah.resize(256, 0);
+      }
    }
 }
 // -------------------------------------------------------------------------------------
