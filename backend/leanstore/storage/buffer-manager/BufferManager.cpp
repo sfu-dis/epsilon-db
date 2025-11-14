@@ -211,7 +211,7 @@ void BufferManager::startBackgroundThreads()
       */ 
       std::thread garbage_collector = std::thread([&]() {
          pthread_setname_np(pthread_self(), "ru_garbage_collector");
-         const u32 batch_size = 32;
+         const u32 batch_size = 128;
          void *buf;
          std::vector<u64> to_gc_epochs_snapshot; 
          
@@ -319,15 +319,12 @@ void BufferManager::startBackgroundThreads()
                      ensure(s == 1);
                   }
                   if (pages_to_fix > 0) {
-                     u32 ready = 0;
-/*
                      u32 ready = io_uring_peek_batch_cqe(&r_ring, cqes.get(), pages_to_fix);
                      for (u32 i = 0; i < ready; ++i) {
                         fix_page_cb(cqes[i]);
                      }
                      if (ready > 0) io_uring_cq_advance(&r_ring, ready);
                      // Wait for the remaining part, and do the same thing.
-*/
                      u32 remaining = pages_to_fix - ready;
                      if (remaining > 0) {
                         // do the same, loop over all finshed. define a callback.
