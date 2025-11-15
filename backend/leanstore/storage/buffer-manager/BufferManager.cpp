@@ -210,10 +210,10 @@ void BufferManager::startBackgroundThreads()
       
       */ 
       std::thread garbage_collector = std::thread([&]() {
-         pthread_setname_np(pthread_self(), "ru_garbage_collector");
+         pthread_setname_np(pthread_self(), "ru_gc");
          const u32 batch_size = 128;
          void *buf;
-         std::vector<u64> to_gc_epochs_snapshot; 
+         std::vector<u64> to_gc_epochs_snapshot;
          
          bg_threads_counter++;
          if (posix_memalign(&buf, 4096, batch_size * PAGE_SIZE) != 0) {
@@ -261,6 +261,41 @@ void BufferManager::startBackgroundThreads()
             int s = io_uring_submit(&w_ring);
             ensure(s == 1);
          };
+
+         auto ack_fixed_page  = [this, buf_pages](struct io_uring_cqe *cqe) {
+               // get the frame and the pid of the fixed page
+               // make sure the write has succesfully completed.
+               // For now just assert it.
+               // If the write fails, I think it is safe to just return it to the set.
+               ensure(cqe->res == PAGE_SIZE);
+               u64 data = io_uring_cqe_get_data64(cqe);
+               PID pid = data & 0x0000FFFFFFFFFFFF;
+               u64 idx = data >> 48;
+               assert(idx < pages_to_fix);
+               BufferFrame::Page *page = &buf_pages[idx];
+               ensure(page->magic_debugging_number == pid);
+               ensure(page->undirtied == 1);
+
+               Partition &partition = getPartition(pid);
+               // TODO(mfd) : A lock guard is enough here.
+               std::unique_lock g_guard(partition.ht_mutex);
+               auto frame_handler = partition.io_ht.lookup(pid);
+               ensure(frame_handler);
+               IOFrame &frame = frame_handler.frame();
+               ensure(frame.state == IOFrame::STATE::READING);
+               // After unlocking, workers waiting for the page to be fixed, will
+               // jump and retry, When they acquire the partition lock, they won't
+               // see the frame.
+               frame.mutex.unlock();
+               // -------------------------------------------------------------------------------------
+               if (frame.readers_counter.fetch_add(-1) == 1) {
+                  partition.io_ht.remove(pid);
+               } else {
+                  frame.state = IOFrame::STATE::TO_DELETE;
+               }
+               g_guard.unlock();
+         };
+
          while (bg_threads_keep_running) {
             {
                std::unique_lock _l(gc_m);
@@ -343,51 +378,30 @@ void BufferManager::startBackgroundThreads()
                      // We already removed the pages from the set
                      // So we just need to remove the frame 
                      // Wait for the writes to finish.
-                     int rc = io_uring_wait_cqe_nr(&w_ring, cqes.get(), pages_to_fix);
-                     // Temporly check that this did not fail
-                     posix_check(rc == 0);
+                     ready = io_uring_peek_batch_cqe(&w_ring, cqes.get(), pages_to_fix);
 
-                     struct io_uring_cqe *cqe;
-                     u32 head;
-                     u32 i = 0;
-                     u64 old_tot_gc_writes = tot_gc_writes.load(std::memory_order_relaxed);
-                     io_uring_for_each_cqe(&w_ring, head, cqe) {
-                        // get the frame and the pid of the fixed page
-                        // make sure the write has succesfully completed.
-                        // For now just assert it.
-                        // If the write fails, I think it is safe to just return it to the set.
-                        ensure(cqe->res == PAGE_SIZE);
-                        u64 data = io_uring_cqe_get_data64(cqe);
-                        PID pid = data & 0x0000FFFFFFFFFFFF;
-                        u64 idx = data >> 48;
-                        assert(idx < pages_to_fix);
-                        BufferFrame::Page *page = &buf_pages[idx];
-                        ensure(page->magic_debugging_number == pid);
-                        ensure(page->undirtied == 1);
-  
-                        Partition &partition = getPartition(pid);
-                        // TODO(mfd) : A lock guard is enough here.
-                        std::unique_lock g_guard(partition.ht_mutex);
-                        auto frame_handler = partition.io_ht.lookup(pid);
-                        ensure(frame_handler);
-                        IOFrame &frame = frame_handler.frame();
-                        ensure(frame.state == IOFrame::STATE::READING);
-                        // After unlocking, workers waiting for the page to be fixed, will
-                        // jump and retry, When they acquire the partition lock, they won't
-                        // see the frame.
-                        frame.mutex.unlock();
-                        // -------------------------------------------------------------------------------------
-                        if (frame.readers_counter.fetch_add(-1) == 1) {
-                           partition.io_ht.remove(pid);
-                        } else {
-                           frame.state = IOFrame::STATE::TO_DELETE;
-                        }
-                        g_guard.unlock();
-                        ++i;
+                     for (u32 i = 0; i < ready; ++i) {
+                        ack_fixed_page(cqes[i]);
                      }
-                     ensure(i == pages_to_fix);
-                     tot_gc_writes.store(old_tot_gc_writes + i, std::memory_order_release);
-                     io_uring_cq_advance(&w_ring, pages_to_fix);
+                     if (ready > 0) io_uring_cq_advance(&w_ring, ready);
+                     // Wait for the remaining part, and do the same thing.
+                     remaining = pages_to_fix - ready;
+                     if (remaining > 0) {
+                        int rc = io_uring_wait_cqe_nr(&w_ring, cqes.get(), remaining);
+                        // Temporly check that this did not fail
+                        posix_check(rc == 0);
+
+                        struct io_uring_cqe *cqe;
+                        u32 head;
+                        u32 i = 0;
+                        io_uring_for_each_cqe(&w_ring, head, cqe) {
+                           ack_fixed_page(cqe);
+                           ++i;
+                        }
+                        ensure(i == remaining);
+                        io_uring_cq_advance(&w_ring, remaining);
+                     }
+                     tot_gc_writes.fetch_add(pages_to_fix, std::memory_order_acq_rel);
                   }
                }
                auto end = std::chrono::system_clock::now();
