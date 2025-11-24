@@ -109,7 +109,7 @@ class BufferManager
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
    struct RUEpochDiscardSet {
       std::mutex m;
-      std::unordered_set<PID> pids;
+      std::unordered_set<u32> pids;
       // Do we need padding here?
       alignas(64) atomic<s32> inserted{0};
       alignas(64) atomic<s32> deleted{0};
@@ -147,7 +147,7 @@ class BufferManager
          double per = (i+d) * 1.0f / tot;
          bool ok = per > 0.9;
          if (ok) {
-            printf("tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per);
+            printf("tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
          }
          // return (( invalid.load(std::memory_order_acquire) + inserted.load(std::memory_order_relaxed)) * 1.0f/ ) > 0.9;
          return ok;
@@ -155,12 +155,15 @@ class BufferManager
       bool getBatch(std::vector<PID> &out_pids, u32 batch_size) {
          out_pids.clear();
          std::lock_guard _l(m);
-         for (const auto &pid : pids) {
-            out_pids.push_back(pid);
+         auto it = pids.begin();
+         for (; it != pids.end(); ++it) {
+            out_pids.push_back(*it);
+            // it = pids.erase(it);
             if (out_pids.size() == batch_size) {
                break;
             }
          }
+         pids.erase(pids.begin(), it);
          return !out_pids.empty();
       }
       u64 size() {
@@ -209,7 +212,7 @@ class BufferManager
    std::mutex gc_m;
    std::condition_variable gc_cv;
    std::vector<u64> to_gc_epochs;
-   bool is_gc_sleeping{true};
+   int is_gc_sleeping{0};
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();
