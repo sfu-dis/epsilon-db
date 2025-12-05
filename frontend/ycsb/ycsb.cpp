@@ -54,15 +54,14 @@ int main(int argc, char** argv)
    LeanStore db;
    auto& crm = db.getCRManager();
    std::vector<LeanStoreAdapter<KVTable>> tables;
-   // LeanStoreAdapter<KVTable> &table = tables[0];
    const u64 ycsb_n_tables = FLAGS_ycsb_worker_per_table ? FLAGS_worker_threads : 1UL;
    tables.reserve(ycsb_n_tables);
-   for (u64 t_id = 0; t_id < ycsb_n_tables; t_id++) {
-      std::string table_name = "YCSB" + std::to_string(t_id);
-      // tables[t_id] = LeanStoreAdapter<KVTable>(db, table_name);
-      tables.emplace_back(db, table_name);
-   }
-   // crm.scheduleJobSync(0, [&]() { table = LeanStoreAdapter<KVTable>(db, "YCSB"); });
+   crm.scheduleJobSync(0, [&]() {
+      for (u64 t_id = 0; t_id < ycsb_n_tables; t_id++) {
+         std::string table_name = "YCSB" + std::to_string(t_id);
+         tables.emplace_back(db, table_name);
+      }
+   });
    db.registerConfigEntry("ycsb_read_ratio", FLAGS_ycsb_read_ratio);
    db.registerConfigEntry("ycsb_threads", FLAGS_ycsb_threads);
    db.registerConfigEntry("ycsb_ops_per_tx", FLAGS_ycsb_ops_per_tx);
