@@ -91,7 +91,7 @@ struct BufferFrame {
    inline bool isFree() const { return header.state == STATE::FREE; }
    inline bool canDiscard() const {
       return page.ru_epoch != s64(-1)
-             && (page.PLSN == (header.last_written_plsn + 1));
+             && ((page.PLSN - header.last_written_plsn) < 3);
    }
    // -------------------------------------------------------------------------------------
    // Pre: bf is exclusively locked

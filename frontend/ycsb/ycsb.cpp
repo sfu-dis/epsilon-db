@@ -61,7 +61,6 @@ int main(int argc, char** argv)
       std::string table_name = "YCSB" + std::to_string(t_id);
       // tables[t_id] = LeanStoreAdapter<KVTable>(db, table_name);
       tables.emplace_back(db, table_name);
-      std::cout << "Created Table " << table_name << std::endl;
    }
    // crm.scheduleJobSync(0, [&]() { table = LeanStoreAdapter<KVTable>(db, "YCSB"); });
    db.registerConfigEntry("ycsb_read_ratio", FLAGS_ycsb_read_ratio);
@@ -78,7 +77,7 @@ int main(int argc, char** argv)
    // Insert values
    if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = ycsb_tuple_count / FLAGS_worker_threads;
    const u64 n = ycsb_tuple_count;
-   db.startProfilingThread();
+   // db.startProfilingThread();
    // -------------------------------------------------------------------------------------
    if (FLAGS_tmp4) {
       // -------------------------------------------------------------------------------------
@@ -225,14 +224,14 @@ int main(int argc, char** argv)
                for (u64 op_i = 0; op_i < FLAGS_ycsb_ops_per_tx; op_i++) {
                   if (FLAGS_ycsb_read_ratio == 100 || utils::RandomGenerator::getRandU64(0, 100) < FLAGS_ycsb_read_ratio) {
                      table->lookup1({key}, [&](const KVTable&) {});  // result = record.my_payload;
-                     leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
+                     // leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
                   } else {
                      UpdateDescriptorGenerator1(tabular_update_descriptor, KVTable, my_payload);
                      utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&result), sizeof(YCSBPayload));
                      // -------------------------------------------------------------------------------------
                      table->update1(
                          {key}, [&](KVTable& rec) { rec.my_payload = result; }, tabular_update_descriptor);
-                     leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
+                     // leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
                   }
                }
                cr::Worker::my().commitTX();

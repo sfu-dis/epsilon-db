@@ -171,9 +171,12 @@ void BufferManager::startBackgroundThreads()
                tot_page_written += (seen - last_seen_tot_gc_writes);
                local_tot += (seen - last_seen_tot_gc_writes);
                last_seen_tot_gc_writes = seen;
+#if 0
                s64 old_wc = write_credit_available.fetch_sub(local_tot, std::memory_order_relaxed);
                ensure(old_wc > local_tot);
                bool must_gc = (old_wc < (12 * RU_SIZE));
+#endif
+               bool must_gc = false;
                if (must_gc) {
                   // XXX(mfd) : We will assume the GC will successed freeing an RU epoch, That's fine
                   write_credit_available.fetch_add(RU_SIZE, std::memory_order_relaxed);
@@ -250,7 +253,7 @@ void BufferManager::startBackgroundThreads()
             // ensure(page->ru_epoch == cgc_epoch);
             // TODO(mfd) : Apply the log here
             page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-            page->undirtied = 1;
+            // page->undirtied = 1;
             page->PLSN = page->PLSN + 1;
             page->nbfixed++;  // Just for debugging
             // Write back the page.
@@ -274,7 +277,12 @@ void BufferManager::startBackgroundThreads()
             assert(idx < pages_to_fix);
             BufferFrame::Page* page = &buf_pages[idx];
             ensure(page->magic_debugging_number == pid);
-            ensure(page->undirtied == 1);
+            // ensure(page->undirtied == 1);
+
+            /// TODO(mfd) : Probably consider, considering the batch as happening always in 
+            /// the same ru epoch to reduce the number of atomic fetch add.
+            /// Do we need to update the invalid count of the previous epoch ?
+            ru_discard_set[page->ru_epoch].total.fetch_add(1, std::memory_order_acq_rel);
 
             Partition& partition = getPartition(pid);
             // TODO(mfd) : A lock guard is enough here.
@@ -419,7 +427,7 @@ void BufferManager::startBackgroundThreads()
          bg_threads_counter--;
       };
       std::vector<std::thread> garbage_collectors;
-      for (u32 gc_id = 0; gc_id < 4; ++gc_id) {
+      for (u32 gc_id = 0; gc_id < 8; ++gc_id) {
          garbage_collectors.emplace_back(garbage_collector_routine, gc_id);
       }
       for (auto& t : garbage_collectors) {
@@ -433,7 +441,7 @@ void BufferManager::startBackgroundThreads()
       } else {
          // utils::pinThisThread(FLAGS_wal + FLAGS_pp_threads);
       }
-      CPUCounters::registerThread("iostat_timer");
+      CPUCounters::registerThread("iostat");
       if (FLAGS_root) {
          posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);
       }
@@ -441,6 +449,10 @@ void BufferManager::startBackgroundThreads()
          FILE* fp;
          fp = fopen(FLAGS_iostat_output_file.c_str(), "w");
          ensure(fp != nullptr);
+         FILE* ru_fp;
+         ru_fp = fopen("ru_distribution.log", "w");
+         ensure(ru_fp != nullptr);
+        
          std::vector<u64> last_seen(FLAGS_pp_threads, 0);
          std::vector<u64> last_seen_discard(FLAGS_pp_threads, 0);
          bg_threads_counter++;
@@ -465,6 +477,13 @@ void BufferManager::startBackgroundThreads()
             double dps = (tot_page_discard * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
             double free_per = write_credit_available.load(std::memory_order_acquire) * 100.0f / (FLAGS_ssd_gib * 1048576ul) * 4ul;
             fprintf(fp, "[iostat] : %.2f kb_written/s, %.2f kb_discard/s, %.2f%% nand free\n", wps, dps, free_per);
+            u64 e = ru_epoch.load(std::memory_order_acquire);
+            fprintf(ru_fp, "%lu\n", e);
+            for (u32 i = 0; i < e; ++i) {
+               auto &set = ru_discard_set[i];
+               fprintf(ru_fp, "(%u,%u,%u),", set.size(), set.invalid.load(), set.total.load());
+            }
+            fprintf(ru_fp, "\n");
             sleep(FLAGS_iostat_interval);
          }
          bg_threads_counter--;
