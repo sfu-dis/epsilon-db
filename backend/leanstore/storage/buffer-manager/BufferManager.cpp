@@ -253,7 +253,6 @@ void BufferManager::startBackgroundThreads()
             // ensure(page->ru_epoch == cgc_epoch);
             // TODO(mfd) : Apply the log here
             page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-            // page->undirtied = 1;
             page->PLSN = page->PLSN + 1;
             page->nbfixed++;  // Just for debugging
             // Write back the page.
@@ -274,10 +273,8 @@ void BufferManager::startBackgroundThreads()
             u64 data = io_uring_cqe_get_data64(cqe);
             PID pid = data & 0x0000FFFFFFFFFFFF;
             u64 idx = data >> 48;
-            assert(idx < pages_to_fix);
             BufferFrame::Page* page = &buf_pages[idx];
             ensure(page->magic_debugging_number == pid);
-            // ensure(page->undirtied == 1);
 
             /// TODO(mfd) : Probably consider, considering the batch as happening always in 
             /// the same ru epoch to reduce the number of atomic fetch add.
@@ -581,7 +578,6 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
    free_bf.page.ru_epoch = s64(-1);
-   free_bf.page.undirtied = 0;
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK()
@@ -740,13 +736,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
          BMExclusiveUpgradeIfNeeded swip_x_guard(swip_guard);
          if (swip_value.isDIRTY()) {
-            if (bf.page.undirtied == 1 && !swip_value.isDiscardUndirty()) {
-               // ru_discard_set[old_ru_epoch].ensureInexistant(pid);
-               PARANOID_BLOCK()
-               {
-                  ru_discard_set[bf.page.ru_epoch].log_op(pid, &bf, 'c');
-               }
-            } else {
                bf.page.PLSN++;
                ensure(bf.page.ru_epoch >= 0);
                bool ok = ru_discard_set[bf.page.ru_epoch].erase(pid, &bf);
@@ -758,8 +747,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
                   raise(SIGTRAP);
                }
 #endif
-            }
          } else {
+            ensure(bf.page.ru_epoch >= 0);
             ru_discard_set[bf.page.ru_epoch].ensureInexistant(pid);
          }
          io_frame.mutex.unlock();
@@ -821,21 +810,12 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          io_frame.bf = nullptr;
          paranoid(bf->header.pid == pid);
          if (swip_value.isDIRTY()) {
-            if (bf->page.undirtied == 1 && !swip_value.isDiscardUndirty()) {
-               // bf->page.undirtied = 0;
-               // TODO(mfd) : Store the ru_epoch in the swizzeled pointer for debugging.
-               // ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);
-               PARANOID_BLOCK()
-               {
-                  ru_discard_set[bf->page.ru_epoch].log_op(pid, bf, 'c');
-               }
-            } else {
                bf->page.PLSN++;
                ensure(bf->page.ru_epoch >= 0);
                bool ok = ru_discard_set[bf->page.ru_epoch].erase(pid, bf);
                // ensure(ok);
-            }
          } else {
+            ensure(bf->page.ru_epoch >= 0);
             ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);
          }
          swip_value.warm(bf);

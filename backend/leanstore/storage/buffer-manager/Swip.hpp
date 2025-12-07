@@ -2,6 +2,7 @@
 // -------------------------------------------------------------------------------------
 #include "BufferFrame.hpp"
 #include "Units.hpp"
+#include "Exceptions.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <atomic>
@@ -25,8 +26,6 @@ class Swip
    static const u64 hot_mask = ~(u64(3) << 62);
    static const u64 dirty_bit = u64(1) << 61;
    static const u64 dirty_mask = ~(u64(1) << 61);
-   static const u64 discard_undirtied_bit = u64(1) << 60;
-   static const u64 discard_undirtied_mask = ~(u64(1) << 60);
    static_assert(evicted_bit == 0x8000000000000000, "");
    static_assert(dirty_bit == 0x2000000000000000, "");
    static_assert(evicted_mask == 0x7FFFFFFFFFFFFFFF, "");
@@ -51,9 +50,13 @@ class Swip
    bool isCOOL() { return pid & cool_bit; }
    bool isEVICTED() { return pid & evicted_bit; }
    bool isDIRTY() { return pid & dirty_bit; }
-   bool isDiscardUndirty() { return pid & discard_undirtied_bit; }
    // -------------------------------------------------------------------------------------
-   u64 asPageID() { return pid & (evicted_mask & dirty_mask & discard_undirtied_mask); }
+   u64 asPageID() { 
+      u64 ret = pid & (evicted_mask & dirty_mask);
+      always_check((ret & cool_bit) == 0);
+      always_check((ret & 0xffffffff) == ret);
+      return ret;
+   }
    BufferFrame& asBufferFrame() { return *bf; }
    BufferFrame& asBufferFrameMasked() { return *reinterpret_cast<BufferFrame*>(pid & hot_mask); }
    u64 raw() const { return pid; }
@@ -73,11 +76,8 @@ class Swip
    void cool() { this->pid = pid | cool_bit; }
    // -------------------------------------------------------------------------------------
    void evict(PID pid) { this->pid = pid | evicted_bit; }
-   void evictAndMarkDirty(PID pid, bool has_undirtied_bit_on_disk) { 
+   void evictAndMarkDirty(PID pid) { 
       this->pid = (pid | evicted_bit | dirty_bit);
-      if (has_undirtied_bit_on_disk) {
-         this->pid |= discard_undirtied_bit;
-      }
    }
    // -------------------------------------------------------------------------------------
    template <typename T2>

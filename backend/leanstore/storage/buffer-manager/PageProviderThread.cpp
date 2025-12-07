@@ -199,8 +199,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          // -------------------------------------------------------------------------------------
          const PID evicted_pid = bf.header.pid;
          if (discard) {
-            bool discard_undirtied = (bf.page.undirtied == 1);
-            parent_handler.swip.evictAndMarkDirty(evicted_pid, discard_undirtied);
+            parent_handler.swip.evictAndMarkDirty(evicted_pid);
             bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, &bf);
             if (!ok) {
                PARANOID_BLOCK() {
@@ -210,7 +209,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             per_pp_iostats[pp_id].discard.fetch_add(1, std::memory_order_relaxed);
          } else {
-            ensure(bf.page.undirtied == 0);
             parent_handler.swip.evict(evicted_pid);
             PARANOID_BLOCK() {
                ru_discard_set[bf.page.ru_epoch].log_op(evicted_pid, &bf ,'e');
@@ -262,7 +260,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (cooled_bf->isDirty()) {
                if (cooled_bf->canDiscard() 
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 
-                  // && (cooled_bf->page.undirtied == 0)
                   && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()) {
@@ -333,7 +330,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       written_bf.page.ru_epoch = written_ru_epoch;
-                      written_bf.page.undirtied = 0;
                       PPCounters::myCounters().flushed_pages_counter++;
                    }
                 }

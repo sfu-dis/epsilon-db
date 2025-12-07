@@ -24,7 +24,6 @@ void BTreeGeneric::create(DTID dtid, Config config)
    meta_node_bf.asBufferFrame().page.dt_id = dtid;
    meta_node_bf.asBufferFrame().page.fdp_plid = config.fdp_plid;
    meta_node_bf.asBufferFrame().page.ru_epoch = s64(-1);
-   meta_node_bf.asBufferFrame().page.undirtied = 0;
    guard.unlock();
    // -------------------------------------------------------------------------------------
    auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid);

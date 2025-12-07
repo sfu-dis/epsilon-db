@@ -71,11 +71,10 @@ struct BufferFrame {
       DTID dt_id = 9999;                                                                               // INIT: datastructure id
       u64 magic_debugging_number;                                                                      // ATTENTION
       u32 fdp_plid = -1;
-      u16 nbfixed = 0;
-      u16 undirtied = 0;
+      u32 nbfixed = 0;
       s64 ru_epoch = -1;
       u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
-             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(undirtied) - sizeof(ru_epoch)];  // Datastruture BE CAREFUL HERE !!!!!
+             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(ru_epoch)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
