@@ -26,6 +26,7 @@ class LeanStore
    std::unordered_map<string, storage::btree::BTreeVI> btrees_vi;
    // -------------------------------------------------------------------------------------
    s32 ssd_fd;
+   s32 log_dev_fd;
    // -------------------------------------------------------------------------------------
    unique_ptr<storage::BufferManager> buffer_manager;
    unique_ptr<cr::CRManager> cr_manager;

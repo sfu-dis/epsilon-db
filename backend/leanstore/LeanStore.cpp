@@ -102,7 +102,15 @@ LeanStore::LeanStore()
    }
    // -------------------------------------------------------------------------------------
    history_tree = std::make_unique<cr::HistoryTree>();
-   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, end_of_block_device);
+   if (FLAGS_redo_log_file != "") {
+      ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
+      log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
+   } else {
+      // What shall I do ?
+      cout << "You should set up a log device for now" << endl;
+      exit(1);
+   }
+   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), log_dev_fd, end_of_block_device);
    cr::CRManager::global = cr_manager.get();
    cr_manager->scheduleJobSync(0, [&]() {
       history_tree->update_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);

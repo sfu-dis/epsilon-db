@@ -132,3 +132,5 @@ DEFINE_bool(use_fdp_rumaw, false, "use RU remaining media writes feature availab
 DEFINE_bool(enable_discarding, false, "Discard dirty pages upon evictions");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
+// -------------------------------------------------------------------------------------
+DEFINE_string(redo_log_file, "", ""); // Should provide a log file for now
