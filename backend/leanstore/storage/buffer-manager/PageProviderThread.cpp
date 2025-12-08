@@ -258,7 +258,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
             }
             if (cooled_bf->isDirty()) {
-               if (cooled_bf->canDiscard() 
+               if ( FLAGS_enable_discarding
+                  && cooled_bf->canDiscard() 
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 
                   && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);

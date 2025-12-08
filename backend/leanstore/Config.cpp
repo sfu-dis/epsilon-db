@@ -129,5 +129,6 @@ DEFINE_string(iostat_output_file, "/proc/self/fd/1", "where to output the io sta
 DEFINE_uint32(iostat_interval, 1, "interval in seconds of iostat sampling, default to 1 second");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(use_fdp_rumaw, false, "use RU remaining media writes feature availabe of fdp capable NVMe devices.");
+DEFINE_bool(enable_discarding, false, "Discard dirty pages upon evictions");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");

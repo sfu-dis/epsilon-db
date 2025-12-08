@@ -203,6 +203,11 @@ void BufferManager::startBackgroundThreads()
                   }
                }
             }
+            // Wake up all grabage collection threads so that they could exit normally
+            {
+               std::lock_guard _l(gc_m);
+               gc_cv.notify_all(); 
+            }
             bg_threads_counter--;
          });
          ru_epoch_mgr.detach();
@@ -312,6 +317,7 @@ void BufferManager::startBackgroundThreads()
                is_gc_sleeping--;
                tls_max_collected_ru_epoch = to_gc_epochs.size();
             }
+            if (!bg_threads_keep_running) break;
             // ensure(!to_gc_epochs_snapshot.empty());
             printf("[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
             for (u64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch;  gc_ru_epoch++) {
@@ -424,11 +430,13 @@ void BufferManager::startBackgroundThreads()
          bg_threads_counter--;
       };
       std::vector<std::thread> garbage_collectors;
-      for (u32 gc_id = 0; gc_id < 8; ++gc_id) {
-         garbage_collectors.emplace_back(garbage_collector_routine, gc_id);
-      }
-      for (auto& t : garbage_collectors) {
-         t.detach();
+      if (FLAGS_enable_discarding) {
+         for (u32 gc_id = 0; gc_id < 8; ++gc_id) {
+            garbage_collectors.emplace_back(garbage_collector_routine, gc_id);
+         }
+         for (auto& t : garbage_collectors) {
+            t.detach();
+         }
       }
    }
    if (FLAGS_iostat) {

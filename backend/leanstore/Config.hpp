@@ -124,5 +124,6 @@ DECLARE_string(iostat_output_file);
 DECLARE_uint32(iostat_interval);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(use_fdp_rumaw);
+DECLARE_bool(enable_discarding);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
