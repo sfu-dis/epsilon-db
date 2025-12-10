@@ -123,8 +123,9 @@ struct Worker {
       template <typename T>
       WALEntryHandler<T> reserveDTEntry(u64 requested_size, PID pid, LID gsn, DTID dt_id)
       {
-         const auto lsn = wal_lsn_counter++;
+         const auto lsn = wal_lsn_counter;
          const u64 total_size = sizeof(WALDTEntry) + requested_size;
+         wal_lsn_counter += total_size;
          ensure(walContiguousFreeSpace() >= total_size);
          active_dt_entry = new (wal_buffer + wal_wt_cursor) WALDTEntry();
          active_dt_entry->lsn.store(lsn, std::memory_order_release);
