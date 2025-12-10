@@ -313,7 +313,7 @@ void BufferManager::startBackgroundThreads()
             {
                std::unique_lock _l(gc_m);
                is_gc_sleeping++;
-               gc_cv.wait(_l, [tls_max_collected_ru_epoch, this]() { return to_gc_epochs.size() > tls_max_collected_ru_epoch; });
+               gc_cv.wait(_l, [tls_max_collected_ru_epoch, this]() { return to_gc_epochs.size() > tls_max_collected_ru_epoch || !bg_threads_keep_running; });
                is_gc_sleeping--;
                tls_max_collected_ru_epoch = to_gc_epochs.size();
             }

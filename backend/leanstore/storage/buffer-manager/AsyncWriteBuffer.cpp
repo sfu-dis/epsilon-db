@@ -88,7 +88,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    u16 plid = bf.page.fdp_plid;
    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   fdp_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, plid);
+   fdp_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, 0);
    io_uring_sqe_set_data(sqe, write_buffer_slot_ptr);
 /*
    io_prep_pwrite(&iocbs[slot], fd, write_buffer_slot_ptr, page_size, page_size * pid);
