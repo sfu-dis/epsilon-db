@@ -105,6 +105,7 @@ LeanStore::LeanStore()
    if (FLAGS_redo_log_file != "") {
       ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
+      ensure(log_dev_fd > 0);
    } else {
       // What shall I do ?
       cout << "You should set up a log device for now" << endl;

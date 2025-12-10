@@ -7,6 +7,9 @@
 // -------------------------------------------------------------------------------------
 #include <libaio.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+
 
 #include <chrono>
 #include <cstring>
@@ -31,6 +34,29 @@ void CRManager::groupCommiter()
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    u64 ssd_offset = 0;
+   u64 log_dev_size = 0;
+   if (ioctl(ssd_fd, BLKGETSIZE64, &log_dev_size) == 0) {
+      std::cout << "[INFO] Log device size: " << log_dev_size << " bytes" << std::endl;
+      ensure((log_dev_size % LOG_DEV_BLK_SIZE) == 0);
+      // log_dev_size = log_dev_size / LOG_DEV_BLK_SIZE;
+   } else {
+      perror("ioctl");
+   }
+   struct per_worker_log_segment {
+      const u64 start_off;
+      const u64 end_off;
+      u64 offset;
+      u64 last_start_offset;
+   };
+   std::vector<struct per_worker_log_segment> log_segments;
+   u64 per_worker_start = 0;
+   const u64 per_worker_log_size = utils::downAlign(log_dev_size / workers_count, LOG_DEV_BLK_SIZE);
+   for (u32 w_i = 0; w_i < workers_count; ++w_i) {
+      log_segments.emplace_back(per_worker_start, per_worker_start + per_worker_log_size, 0, 0);
+      per_worker_start += per_worker_log_size;
+      auto *seg = &log_segments[w_i];
+      printf("per_worker_log_segment { start_off=%llu, end_off=%llu, offset=%llu, last_start_offset=%llu }\n", seg->start_off, seg->end_off, seg->offset, seg->last_start_offset);
+   }
    // -------------------------------------------------------------------------------------
    // Async IO
    const u64 batch_max_size = (workers_count * 2) + 2;  // 2x because of potential wrapping around
@@ -46,15 +72,18 @@ void CRManager::groupCommiter()
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
-   auto add_pwrite = [&](u8* src, u64 size, u64 offset) {
-      ensure(offset % LOG_DEV_BLK_SIZE == 0);
+   auto add_pwrite = [&](u32 w_i, u8* src, u64 size, u64 start_off) {
       ensure(u64(src) % LOG_DEV_BLK_SIZE == 0);
       ensure(size % LOG_DEV_BLK_SIZE == 0);
-      io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, offset);
+      auto &lseg = log_segments[w_i];
+      io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, lseg.start_off + lseg.offset);
+      // io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, ssd_offset);
       iocbs[io_slot].data = src;
       iocbs_ptr[io_slot] = &iocbs[io_slot];
       io_slot++;
-      ssd_offset += size;
+      lseg.offset += size;
+      lseg.last_start_offset = start_off;
+      // ssd_offset += size;
    };
    // -------------------------------------------------------------------------------------
    LID min_all_workers_gsn;  // For Remote Flush Avoidance
@@ -96,7 +125,7 @@ void CRManager::groupCommiter()
             // -------------------------------------------------------------------------------------
             if (FLAGS_wal_pwrite) {
                // TODO: add the concept of chunks
-               add_pwrite(worker.logging.wal_buffer + lower_offset, size_aligned, ssd_offset);
+               add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset);
                // -------------------------------------------------------------------------------------
                COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
             }
@@ -108,7 +137,7 @@ void CRManager::groupCommiter()
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
                if (FLAGS_wal_pwrite) {
-                  add_pwrite(worker.logging.wal_buffer + lower_offset, size_aligned, ssd_offset);
+                  add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset);
                   // -------------------------------------------------------------------------------------
                   COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
@@ -120,7 +149,7 @@ void CRManager::groupCommiter()
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
                if (FLAGS_wal_pwrite) {
-                  add_pwrite(worker.logging.wal_buffer, size_aligned, ssd_offset);
+                  add_pwrite(w_i, worker.logging.wal_buffer, size_aligned, lower_offset);
                   // -------------------------------------------------------------------------------------
                   COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
