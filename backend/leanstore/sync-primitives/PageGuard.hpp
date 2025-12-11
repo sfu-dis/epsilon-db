@@ -157,6 +157,7 @@ class HybridPageGuard
       const auto dt_id = bf->page.dt_id;
       // TODO: verify
       auto handler = cr::Worker::my().logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, cr::Worker::my().logging.getCurrentGSN(), dt_id);
+      bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
    inline void submitWALEntry(u64 total_size) { cr::Worker::my().logging.submitDTEntry(total_size); }

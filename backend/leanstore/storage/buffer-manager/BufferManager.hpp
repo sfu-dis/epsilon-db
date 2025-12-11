@@ -109,7 +109,7 @@ class BufferManager
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
    struct RUEpochDiscardSet {
       std::mutex m;
-      std::unordered_set<u32> pids;
+      std::unordered_map<PID, LID> pids;
       // Do we need padding here?
       alignas(64) atomic<s32> inserted{0};
       alignas(64) atomic<s32> deleted{0};
@@ -118,9 +118,9 @@ class BufferManager
       alignas(64) atomic<s32> invalid{0};
 
 
-      void insert(PID pid) {
+      void insert(PID pid, LID lsn) {
          std::lock_guard _l(m);
-         bool ok = pids.insert(pid).second;
+         bool ok = pids.insert({pid, lsn}).second;
          ensure(ok);
          inserted.fetch_add(1, std::memory_order_relaxed);
       }
@@ -157,7 +157,7 @@ class BufferManager
          std::lock_guard _l(m);
          auto it = pids.begin();
          for (; it != pids.end(); ++it) {
-            out_pids.push_back(*it);
+            out_pids.push_back(it->first);
             // it = pids.erase(it);
             if (out_pids.size() == batch_size) {
                break;
@@ -172,9 +172,9 @@ class BufferManager
       }
       // Debugging 
       std::vector<std::tuple<PID, char, BufferFrame*>> log;
-      bool insert(PID pid, BufferFrame *bf) {
+      bool insert(PID pid, LID lsn, BufferFrame *bf) {
          std::unique_lock _l(m);
-         bool ok = pids.insert(pid).second;
+         bool ok = pids.insert({pid, lsn}).second;
          ensure(ok);
          PARANOID_BLOCK() {
             log.emplace_back(pid, 'I', bf);

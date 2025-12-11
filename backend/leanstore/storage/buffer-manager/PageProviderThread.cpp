@@ -199,8 +199,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          // -------------------------------------------------------------------------------------
          const PID evicted_pid = bf.header.pid;
          if (discard) {
+            u64 last_write_lsn = bf.page.last_written_lsn;
             parent_handler.swip.evictAndMarkDirty(evicted_pid);
-            bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, &bf);
+            bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn, &bf);
             if (!ok) {
                PARANOID_BLOCK() {
                   BMC::global_bf->dump_history_of_pid(evicted_pid);

@@ -71,7 +71,7 @@ WALMetaEntry& Worker::Logging::reserveWALMetaEntry()
 {
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_wt_cursor);
-   active_mt_entry->lsn.store(wal_lsn_counter, std::memory_order_release);
+   active_mt_entry->lsn.store(this->log_segment_start + wal_lsn_counter, std::memory_order_release);
    wal_lsn_counter += sizeof(WALMetaEntry);
    active_mt_entry->size = sizeof(WALMetaEntry);
    return *active_mt_entry;

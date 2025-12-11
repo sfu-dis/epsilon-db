@@ -99,6 +99,7 @@ struct Worker {
       LID wal_lsn_counter = 0;
       LID wt_gsn_clock;
       LID rfa_gsn_flushed;
+      u64 log_segment_start = -1;
       bool remote_flush_dependency = false;
       // -------------------------------------------------------------------------------------
       // -------------------------------------------------------------------------------------
@@ -123,7 +124,7 @@ struct Worker {
       template <typename T>
       WALEntryHandler<T> reserveDTEntry(u64 requested_size, PID pid, LID gsn, DTID dt_id)
       {
-         const auto lsn = wal_lsn_counter;
+         const auto lsn = this->log_segment_start + wal_lsn_counter;
          const u64 total_size = sizeof(WALDTEntry) + requested_size;
          wal_lsn_counter += total_size;
          ensure(walContiguousFreeSpace() >= total_size);
@@ -262,7 +263,7 @@ struct Worker {
    const s32 ssd_fd;
    const bool is_page_provider = false;
    // -------------------------------------------------------------------------------------
-   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 fd, const bool is_page_provider = false);
+   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 fd, u64 log_segment_start ,const bool is_page_provider);
    static inline Worker& my() { return *Worker::tls_ptr; }
    ~Worker();
    // -------------------------------------------------------------------------------------

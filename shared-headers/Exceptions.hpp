@@ -52,6 +52,16 @@ Generic_Exception(TODO);
 #else
 #define ensure(e) always_check(e)
 #endif
+
+#define ensure_equal(a, b) \
+    do { \
+        if ((a) != (b)) { \
+            fprintf(stderr, "Equality check failed: %s != %s (values: %lld vs %lld) at %s:%d\n", \
+                    #a, #b, (long long)(a), (long long)(b), __FILE__, __LINE__); \
+            abort(); \
+        } \
+    } while (0)
+
 // -------------------------------------------------------------------------------------
 #define TODOException() throw leanstore::ex::TODO(std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
 #define SetupFailed(msg) throw leanstore::ex::GenericException(msg + std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));

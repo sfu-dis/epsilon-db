@@ -29,7 +29,7 @@ atomic<u64> Worker::global_all_lwm = 0;
 atomic<u64> Worker::global_oltp_lwm = 0;
 atomic<u64> Worker::global_newest_olap_start_ts = 0;
 // -------------------------------------------------------------------------------------
-Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& history_tree, s32 fd, const bool is_page_provider)
+Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& history_tree, s32 fd, u64 log_segment_start, const bool is_page_provider)
     : cc(history_tree, workers_count),
       worker_id(worker_id),
       all_workers(all_workers),
@@ -41,6 +41,7 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
    CRCounters::myCounters().worker_id = worker_id;
    FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
    logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
+   logging.log_segment_start = log_segment_start;
    std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    if (!is_page_provider) {
       cc.local_snapshot_cache = make_unique<u64[]>(workers_count);

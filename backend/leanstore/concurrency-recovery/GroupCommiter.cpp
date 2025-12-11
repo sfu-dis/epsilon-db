@@ -53,9 +53,10 @@ void CRManager::groupCommiter()
    const u64 per_worker_log_size = utils::downAlign(log_dev_size / workers_count, LOG_DEV_BLK_SIZE);
    for (u32 w_i = 0; w_i < workers_count; ++w_i) {
       log_segments.emplace_back(per_worker_start, per_worker_start + per_worker_log_size, 0, 0);
+      ensure_equal(workers[w_i]->logging.log_segment_start, per_worker_start);
       per_worker_start += per_worker_log_size;
       auto *seg = &log_segments[w_i];
-      printf("per_worker_log_segment { start_off=%llu, end_off=%llu, offset=%llu, last_start_offset=%llu }\n", seg->start_off, seg->end_off, seg->offset, seg->last_start_offset);
+      // printf("per_worker_log_segment { start_off=%llu, end_off=%llu, offset=%llu, last_start_offset=%llu }\n", seg->start_off, seg->end_off, seg->offset, seg->last_start_offset);
    }
    // -------------------------------------------------------------------------------------
    // Async IO

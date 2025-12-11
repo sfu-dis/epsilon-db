@@ -73,8 +73,9 @@ struct BufferFrame {
       u32 fdp_plid = -1;
       u32 nbfixed = 0;
       s64 ru_epoch = -1;
+      LID last_written_lsn = -1;
       u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
-             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(ru_epoch)];  // Datastruture BE CAREFUL HERE !!!!!
+             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(ru_epoch) - sizeof(last_written_lsn)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
