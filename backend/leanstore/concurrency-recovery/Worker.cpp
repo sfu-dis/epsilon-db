@@ -41,7 +41,8 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
    CRCounters::myCounters().worker_id = worker_id;
    FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
    logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
-   logging.log_segment_start = log_segment_start;
+   // FIXME(mfd) : hardcoded offset 4K of metadata
+   logging.log_segment_start = log_segment_start + 4096;
    std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    if (!is_page_provider) {
       cc.local_snapshot_cache = make_unique<u64[]>(workers_count);
