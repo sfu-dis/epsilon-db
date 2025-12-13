@@ -73,9 +73,10 @@ void CRManager::groupCommiter()
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
-   auto add_pwrite = [&](u32 w_i, u8* src, u64 size, u64 start_off) {
+   auto add_pwrite = [&](u32 w_i, u8* src, u64 size, u64 start_off, bool block_full) {
       ensure(u64(src) % LOG_DEV_BLK_SIZE == 0);
       ensure(size % LOG_DEV_BLK_SIZE == 0);
+      if (size == 0) return;
       auto &lseg = log_segments[w_i];
       io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, lseg.start_off + lseg.offset);
       // io_prep_pwrite(&iocbs[io_slot], ssd_fd, src, size, ssd_offset);
@@ -83,7 +84,11 @@ void CRManager::groupCommiter()
       iocbs_ptr[io_slot] = &iocbs[io_slot];
       io_slot++;
       lseg.offset += size;
+      if (!block_full) {
+         lseg.offset -= LOG_DEV_BLK_SIZE;
+      }
       lseg.last_start_offset = start_off;
+      ensure(lseg.offset < per_worker_log_size);
       // ssd_offset += size;
    };
    // -------------------------------------------------------------------------------------
@@ -123,10 +128,11 @@ void CRManager::groupCommiter()
             const u64 lower_offset = utils::downAlign(worker.logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset, LOG_DEV_BLK_SIZE);
             const u64 size_aligned = upper_offset - lower_offset;
+            const bool block_full = (upper_offset == wt_to_lw_copy[w_i].wal_written_offset);
             // -------------------------------------------------------------------------------------
             if (FLAGS_wal_pwrite) {
                // TODO: add the concept of chunks
-               add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset);
+               add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset, block_full);
                // -------------------------------------------------------------------------------------
                COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
             }
@@ -138,7 +144,7 @@ void CRManager::groupCommiter()
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
                if (FLAGS_wal_pwrite) {
-                  add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset);
+                  add_pwrite(w_i, worker.logging.wal_buffer + lower_offset, size_aligned, lower_offset, true);
                   // -------------------------------------------------------------------------------------
                   COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
@@ -148,9 +154,10 @@ void CRManager::groupCommiter()
                const u64 lower_offset = 0;
                const u64 upper_offset = utils::upAlign(wt_to_lw_copy[w_i].wal_written_offset, LOG_DEV_BLK_SIZE);
                const u64 size_aligned = upper_offset - lower_offset;
+               const bool block_full = (upper_offset == wt_to_lw_copy[w_i].wal_written_offset);
                // -------------------------------------------------------------------------------------
                if (FLAGS_wal_pwrite) {
-                  add_pwrite(w_i, worker.logging.wal_buffer, size_aligned, lower_offset);
+                  add_pwrite(w_i, worker.logging.wal_buffer, size_aligned, lower_offset, block_full);
                   // -------------------------------------------------------------------------------------
                   COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
