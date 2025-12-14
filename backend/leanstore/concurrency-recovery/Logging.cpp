@@ -52,6 +52,7 @@ void Worker::Logging::walEnsureEnoughSpace(u32 requested_size)
          entry.size = sizeof(WALMetaEntry);
          entry.type = WALEntry::TYPE::CARRIAGE_RETURN;
          entry.size = FLAGS_wal_buffer_size - wal_wt_cursor;
+         wal_lsn_counter += entry.size;
          DEBUG_BLOCK()
          {
             entry.computeCRC();
