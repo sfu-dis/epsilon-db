@@ -21,9 +21,11 @@ void BTreeGeneric::create(DTID dtid, Config config)
    meta_node_bf = &BMC::global_bf->allocatePage();
    Guard guard(meta_node_bf.asBufferFrame().header.latch, GUARD_STATE::EXCLUSIVE);
    meta_node_bf.asBufferFrame().header.keep_in_memory = true;
+   // TODO(mfd) : refactor that to reset page.
    meta_node_bf.asBufferFrame().page.dt_id = dtid;
    meta_node_bf.asBufferFrame().page.fdp_plid = config.fdp_plid;
    meta_node_bf.asBufferFrame().page.ru_epoch = s64(-1);
+   meta_node_bf.asBufferFrame().page.last_written_lsn = LID(-1);
    guard.unlock();
    // -------------------------------------------------------------------------------------
    auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid);
