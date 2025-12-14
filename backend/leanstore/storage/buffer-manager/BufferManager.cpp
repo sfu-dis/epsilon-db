@@ -30,6 +30,7 @@ namespace storage
 {
 // -------------------------------------------------------------------------------------
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
+thread_local alignas(PAGE_SIZE) u8 log_record_buf[2 * PAGE_SIZE];
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
 {
@@ -70,6 +71,9 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
       }
       // write credit in term of number of database pages.
       write_credit_available = FLAGS_ssd_gib * 1048576UL / (PAGE_SIZE / 1024ul);
+      ensure(!FLAGS_redo_log_file.empty());
+      log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
+      ensure(log_fd > 0);
    }
 }
 // -------------------------------------------------------------------------------------
@@ -704,6 +708,33 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    swip_guard.recheck();
    paranoid(!swip_value.isHOT());
    // -------------------------------------------------------------------------------------
+   // TODO(mfd) : Refactor this as a method of the buffer pool
+   //  it will be used by the gc thread also.
+   auto fix_dirty_page = [&](BufferFrame& bf) {
+      ensure(bf.page.ru_epoch >= 0);
+      LID lsn = ru_discard_set[bf.page.ru_epoch].erase(pid);
+      ensure(lsn != LID(-1));
+      u64 off = lsn % PAGE_SIZE;
+      // TODO(mfd) : remove the pread from the critical section
+      s64 br = pread(log_fd, log_record_buf, 2 * PAGE_SIZE, lsn - off);
+      ensure(br == (2 * PAGE_SIZE));
+      auto* entry = (cr::WALEntry*)&log_record_buf[off];
+
+      if (entry->type != cr::WALEntry::TYPE::DT_SPECIFIC) {
+         cout << "LSN = " << lsn << endl;
+         entry->dump();
+         raise(SIGTRAP);
+      }
+      ensure_equal(entry->type, cr::WALEntry::TYPE::DT_SPECIFIC);
+      ensure_equal(entry->lsn, lsn);
+      auto* dte = (cr::WALDTEntry*)entry;
+      ensure_equal(dte->pid, bf.page.magic_debugging_number);
+      ensure(dte->gsn >= bf.page.GSN);
+      bf.page.GSN = dte->gsn;
+      bf.page.PLSN++;
+      // TODO(mfd) : Apply the log entry
+   };
+   // -------------------------------------------------------------------------------------
    auto frame_handler = partition.io_ht.lookup(pid);
    if (!frame_handler) {
       BufferFrame& bf = randomPartition().dram_free_list.tryPop();
@@ -744,17 +775,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
          BMExclusiveUpgradeIfNeeded swip_x_guard(swip_guard);
          if (swip_value.isDIRTY()) {
-               bf.page.PLSN++;
-               ensure(bf.page.ru_epoch >= 0);
-               bool ok = ru_discard_set[bf.page.ru_epoch].erase(pid, &bf);
-#if 0
-               if (!ok) {
-                  PARANOID_BLOCK() {
-                     BMC::global_bf->dump_history_of_pid(pid);
-                  }
-                  raise(SIGTRAP);
-               }
-#endif
+            fix_dirty_page(bf);
          } else {
             ensure(bf.page.ru_epoch >= 0);
             ru_discard_set[bf.page.ru_epoch].ensureInexistant(pid);
@@ -818,10 +839,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          io_frame.bf = nullptr;
          paranoid(bf->header.pid == pid);
          if (swip_value.isDIRTY()) {
-               bf->page.PLSN++;
-               ensure(bf->page.ru_epoch >= 0);
-               bool ok = ru_discard_set[bf->page.ru_epoch].erase(pid, bf);
-               // ensure(ok);
+            fix_dirty_page(*bf);
          } else {
             ensure(bf->page.ru_epoch >= 0);
             ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);

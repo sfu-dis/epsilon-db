@@ -78,6 +78,7 @@ class BufferManager
    BufferFrame* bfs;
    // -------------------------------------------------------------------------------------
    const int ssd_fd;
+   int log_fd = -1;
    // -------------------------------------------------------------------------------------
    // Free  Pages
    const u8 safety_pages = 10;               // we reserve these extra pages to prevent segfaults
@@ -124,11 +125,13 @@ class BufferManager
          ensure(ok);
          inserted.fetch_add(1, std::memory_order_relaxed);
       }
-      bool erase(PID pid) {
+      LID erase(PID pid) {
          std::lock_guard _l(m);
-         bool ok = pids.erase(pid);
-         if (ok) deleted.fetch_add(1, std::memory_order_relaxed);
-         return ok;
+         if (pids.count(pid) == 0) return -1;
+         LID lsn = pids[pid];
+         pids.erase(pid);
+         deleted.fetch_add(1, std::memory_order_relaxed);
+         return lsn;
       }
       void ensureInexistant(PID pid) {
          std::lock_guard _l(m);
