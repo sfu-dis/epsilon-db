@@ -30,6 +30,7 @@ DEFINE_uint32(ycsb_sleepy_thread, 0, "");
 DEFINE_uint32(ycsb_ops_per_tx, 1, "");
 // DEFINE_uint32(ycsb_nb_tables, 1, "Use multiple tables");
 DEFINE_bool(ycsb_worker_per_table, false, "Each worker is assigned a table to work on, This will turn off CC");
+DEFINE_bool(ycsb_profiler_thread, true, "");
 // -------------------------------------------------------------------------------------
 using namespace leanstore;
 // -------------------------------------------------------------------------------------
@@ -76,7 +77,9 @@ int main(int argc, char** argv)
    // Insert values
    if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = ycsb_tuple_count / FLAGS_worker_threads;
    const u64 n = ycsb_tuple_count;
-   // db.startProfilingThread();
+   if (FLAGS_ycsb_profiler_thread) {
+      db.startProfilingThread();
+   }
    // -------------------------------------------------------------------------------------
    if (FLAGS_tmp4) {
       // -------------------------------------------------------------------------------------
