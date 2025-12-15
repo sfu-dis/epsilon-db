@@ -2,6 +2,8 @@
 
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
+// FIXME(mfd)
+#include "../btree/BTreeVI.hpp"
 #include "Exceptions.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
@@ -732,7 +734,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       ensure(dte->gsn >= bf.page.GSN);
       bf.page.GSN = dte->gsn;
       bf.page.PLSN++;
-      // TODO(mfd) : Apply the log entry
+      // TODO(mfd) : Transform the call to a generic BTree method.
+      btree::BTreeVI::ApplyLogRecord(bf.page.dt, dte->payload);
    };
    // -------------------------------------------------------------------------------------
    auto frame_handler = partition.io_ht.lookup(pid);

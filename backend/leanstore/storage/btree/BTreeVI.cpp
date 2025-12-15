@@ -942,6 +942,30 @@ std::tuple<OP_RESULT, u16> BTreeVI::reconstructChainedTuple([[maybe_unused]] Sli
    }
    return {OP_RESULT::NOT_FOUND, chain_length};
 }
+
+void BTreeVI::ApplyLogRecord(u8* btree_node_ptr, u8* log_record_ptr) {
+   WALEntry *wal_entry = reinterpret_cast<WALEntry*>(log_record_ptr);
+   ensure_equal(wal_entry->type, WAL_LOG_TYPE::WALUpdate);
+   WALUpdateSSIP *update_entry = reinterpret_cast<WALUpdateSSIP*>(log_record_ptr);
+   ensure_equal(update_entry->key_length, 8);
+   BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+   ensure(node->is_leaf);
+   u8 *key = update_entry->payload;
+   s16 key_length = update_entry->key_length;
+   bool found = false;
+   s16 pos = node->lowerBound<true>(key, key_length, &found);
+   ensure(pos != -1);
+   auto *tuple_head = reinterpret_cast<Tuple*>(node->getPayload(pos));
+   ensure(tuple_head->tuple_format == TupleFormat::CHAINED);
+   auto *update_descriptor = reinterpret_cast<UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
+   ensure(update_descriptor->count == 1);
+   ensure(update_descriptor->slots[0].offset == 0);
+   auto *chained_tuple = reinterpret_cast<ChainedTuple*>(tuple_head);
+   
+   BTreeLL::applyXORDiff(*update_descriptor, chained_tuple->payload, 
+                          update_entry->payload + update_entry->key_length + update_descriptor->size()); 
+    
+}
 // -------------------------------------------------------------------------------------
 }  // namespace btree
 }  // namespace storage

@@ -482,6 +482,8 @@ class BTreeVI : public BTreeLL
    // -------------------------------------------------------------------------------------
    // HACKS
    std::set<DTID> fat_tuple_allowed_lists;
+public:
+   static void ApplyLogRecord(u8* btree_node_ptr, u8* log_record_ptr);
 };  // namespace btree
 // -------------------------------------------------------------------------------------
 }  // namespace btree
