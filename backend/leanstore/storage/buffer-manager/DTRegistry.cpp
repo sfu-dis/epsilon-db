@@ -74,6 +74,12 @@ void DTRegistry::todo(DTID dt_id, const u8* entry, const u64 version_worker_id, 
    return dt_types_ht[std::get<0>(dt_meta)].todo(std::get<1>(dt_meta), entry, version_worker_id, version_tx_id, called_before);
 }
 // -------------------------------------------------------------------------------------
+void DTRegistry::redo(DTID dt_id, u8* page, const u8* wal_entry)
+{
+   auto dt_meta = dt_instances_ht[dt_id];
+   return dt_types_ht[std::get<0>(dt_meta)].redo(page, wal_entry);
+}
+// -------------------------------------------------------------------------------------
 void DTRegistry::unlock(DTID dt_id, const u8* entry)
 {
    auto dt_meta = dt_instances_ht[dt_id];

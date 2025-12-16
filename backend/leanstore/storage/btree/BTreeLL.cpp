@@ -556,6 +556,26 @@ void BTreeLL::todo(void*, const u8*, const u64, const u64, const bool)
    UNREACHABLE();
 }
 // -------------------------------------------------------------------------------------
+void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr)
+{
+   const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr);
+   ensure_equal(wal_entry->type, WAL_LOG_TYPE::WALUpdate);
+   const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(log_record_ptr);
+   ensure_equal(update_entry->key_length, 8);
+   BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+   ensure(node->is_leaf);
+   const u8 *key = update_entry->payload;
+   s16 key_length = update_entry->key_length;
+   bool found = false;
+   s16 pos = node->lowerBound<true>(key, key_length, &found);
+   ensure(pos != -1);
+   auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
+   ensure(update_descriptor->count == 1);
+   ensure(update_descriptor->slots[0].offset == 0);
+   BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
+                          update_entry->payload + update_entry->key_length + update_descriptor->size());
+}
+// -------------------------------------------------------------------------------------
 void BTreeLL::unlock(void*, const u8*)
 {
    UNREACHABLE();
@@ -570,6 +590,7 @@ struct DTRegistry::DTMeta BTreeLL::getMeta()
                                     .undo = undo,
                                     .todo = todo,
                                     .unlock = unlock,
+                                    .redo = redo,
                                     .serialize = serialize,
                                     .deserialize = deserialize};
    return btree_meta;
