@@ -71,9 +71,11 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
       }
       // write credit in term of number of database pages.
       write_credit_available = FLAGS_ssd_gib * 1048576UL / (PAGE_SIZE / 1024ul);
-      ensure(!FLAGS_redo_log_file.empty());
-      log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
-      ensure(log_fd > 0);
+      if (FLAGS_wal && FLAGS_wal_pwrite) {
+         ensure(!FLAGS_redo_log_file.empty());
+         log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
+         ensure(log_fd > 0);
+      }
    }
 }
 // -------------------------------------------------------------------------------------

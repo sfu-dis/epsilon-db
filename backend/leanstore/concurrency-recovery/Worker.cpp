@@ -66,23 +66,24 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       active_tx.wal_larger_than_buffer = false;
       logging.current_tx_wal_start = logging.wal_wt_cursor;
       if (!read_only) {
+         // XXX(mfd) : prev tx start ts ?
          WALMetaEntry& entry = logging.reserveWALMetaEntry();
          entry.type = WALEntry::TYPE::TX_START;
-         logging.submitWALMetaEntry();
+         logging.submitWALMetaEntry(active_tx.start_ts);
          DEBUG_BLOCK() { entry.checkCRC(); }
       }
       assert(prev_tx.state != Transaction::STATE::STARTED);
       // -------------------------------------------------------------------------------------
-      const LID sync_point = Worker::Logging::global_sync_to_this_gsn.load();
+      const LID sync_point = Logging::global_sync_to_this_gsn.load();
       if (sync_point > logging.getCurrentGSN()) {
          logging.setCurrentGSN(sync_point);
          logging.publishMaxGSNOffset();
       }
       if (FLAGS_wal_rfa) {
-         logging.rfa_gsn_flushed = Worker::Logging::global_min_gsn_flushed.load();
-         logging.remote_flush_dependency = false;
+         per_worker_logging_info.rfa_gsn_flushed = Logging::global_min_gsn_flushed.load();
+         per_worker_logging_info.remote_flush_dependency = false;
       } else {
-         logging.remote_flush_dependency = true;
+         per_worker_logging_info.remote_flush_dependency = true;
       }
       // -------------------------------------------------------------------------------------
       active_tx.state = Transaction::STATE::STARTED;
@@ -131,13 +132,14 @@ void Worker::commitTX()
       assert(active_tx.state == Transaction::STATE::STARTED);
       // -------------------------------------------------------------------------------------
       if (FLAGS_wal_tuple_rfa) {
-        for (auto& dependency : logging.rfa_checks_at_precommit) {
-          if (logging.other(std::get<0>(dependency)).signaled_commit_ts < std::get<1>(dependency)) {
-            logging.remote_flush_dependency = true;
+        for (auto& dependency : per_worker_logging_info.rfa_checks_at_precommit) {
+          Worker *other = my().all_workers[std::get<0>(dependency)];
+          if (other->logging.signaled_commit_ts < std::get<1>(dependency)) {
+            per_worker_logging_info.remote_flush_dependency = true;
             break;
           }
         }
-        logging.rfa_checks_at_precommit.clear();
+        per_worker_logging_info.rfa_checks_at_precommit.clear();
       }
       // -------------------------------------------------------------------------------------
       if (activeTX().hasWrote()) {
@@ -152,14 +154,14 @@ void Worker::commitTX()
       WALMetaEntry& entry = logging.reserveWALMetaEntry();
       entry.type = WALEntry::TYPE::TX_COMMIT;
       // TODO: commit_ts in log
-      logging.submitWALMetaEntry();
+      logging.submitWALMetaEntry(active_tx.start_ts);
       if (FLAGS_wal_variant == 2) {
         logging.wt_to_lw.optimistic_latch.notify_all();
       }
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
       std::unique_lock<std::mutex> g(logging.precommitted_queue_mutex);
-      if (logging.remote_flush_dependency) {  // RFA
+      if (per_worker_logging_info.remote_flush_dependency) {  // RFA
         logging.precommitted_queue.push_back(active_tx);
       } else {
         CRCounters::myCounters().rfa_committed_tx++;
@@ -197,7 +199,7 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    WALMetaEntry& entry = logging.reserveWALMetaEntry();
    entry.type = WALEntry::TYPE::TX_ABORT;
-   logging.submitWALMetaEntry();
+   logging.submitWALMetaEntry(active_tx.start_ts);
    active_tx.state = Transaction::STATE::ABORTED;
    jumpmu::jump();
 }

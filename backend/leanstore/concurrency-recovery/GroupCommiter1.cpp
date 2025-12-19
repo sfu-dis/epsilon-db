@@ -58,7 +58,7 @@ void CRManager::groupCommiter1()
          };
          // -------------------------------------------------------------------------------------
          std::vector<u64> ready_to_commit_rfa_cut;  // Exclusive ) ==
-         std::vector<Worker::Logging::WorkerToLW> wt_to_lw_copy;
+         std::vector<Logging::WorkerToLW> wt_to_lw_copy;
          ready_to_commit_rfa_cut.resize(workers_range_size, 0);
          wt_to_lw_copy.resize(workers_range_size);
          // -------------------------------------------------------------------------------------
@@ -162,8 +162,8 @@ void CRManager::groupCommiter1()
                   u64 tx_i = 0;
                   for (tx_i = 0; tx_i < worker.logging.precommitted_queue.size(); tx_i++) {
                      auto& tx = worker.logging.precommitted_queue[tx_i];
-                     if (tx.max_observed_gsn > Worker::Logging::global_min_gsn_flushed ||
-                         tx.start_ts > Worker::Logging::global_min_commit_ts_flushed) {
+                     if (tx.max_observed_gsn > Logging::global_min_gsn_flushed ||
+                         tx.start_ts > Logging::global_min_commit_ts_flushed) {
                         tx.stats.flushes_counter++;
                         break;
                      }

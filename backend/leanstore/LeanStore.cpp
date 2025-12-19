@@ -103,7 +103,8 @@ LeanStore::LeanStore()
    // -------------------------------------------------------------------------------------
    history_tree = std::make_unique<cr::HistoryTree>();
    u64 log_device_size;
-   if (FLAGS_redo_log_file != "") {
+   if (FLAGS_wal && FLAGS_wal_pwrite) {
+      ensure(FLAGS_redo_log_file != "");
       ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
       ensure(log_dev_fd > 0);
@@ -115,10 +116,6 @@ LeanStore::LeanStore()
       } else {
          perror("ioctl");
       }
-   } else {
-      // What shall I do ?
-      cout << "You should set up a log device for now" << endl;
-      exit(1);
    }
    cr_manager = make_unique<cr::CRManager>(*history_tree.get(), log_dev_fd, log_device_size);
    cr::CRManager::global = cr_manager.get();

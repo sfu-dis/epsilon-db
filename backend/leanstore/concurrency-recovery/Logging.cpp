@@ -1,4 +1,5 @@
-#include "Worker.hpp"
+#include "WALEntry.hpp"
+#include "Logging.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -11,11 +12,11 @@ namespace leanstore
 namespace cr
 {
 // -------------------------------------------------------------------------------------
-atomic<u64> Worker::Logging::global_min_gsn_flushed = 0;
-atomic<u64> Worker::Logging::global_min_commit_ts_flushed = 0;
-atomic<u64> Worker::Logging::global_sync_to_this_gsn = 0;
+atomic<u64> Logging::global_min_gsn_flushed = 0;
+atomic<u64> Logging::global_min_commit_ts_flushed = 0;
+atomic<u64> Logging::global_sync_to_this_gsn = 0;
 // -------------------------------------------------------------------------------------
-u32 Worker::Logging::walFreeSpace()
+u32 Logging::walFreeSpace()
 {
    // A , B , C : a - b + c % c
    const auto gct_cursor = wal_gct_cursor.load();
@@ -28,13 +29,13 @@ u32 Worker::Logging::walFreeSpace()
    }
 }
 // -------------------------------------------------------------------------------------
-u32 Worker::Logging::walContiguousFreeSpace()
+u32 Logging::walContiguousFreeSpace()
 {
    const auto gct_cursor = wal_gct_cursor.load();
    return (gct_cursor > wal_wt_cursor) ? gct_cursor - wal_wt_cursor : FLAGS_wal_buffer_size - wal_wt_cursor;
 }
 // -------------------------------------------------------------------------------------
-void Worker::Logging::walEnsureEnoughSpace(u32 requested_size)
+void Logging::walEnsureEnoughSpace(u32 requested_size)
 {
    if (FLAGS_wal) {
       u32 wait_untill_free_bytes = requested_size + CR_ENTRY_SIZE;
@@ -68,7 +69,7 @@ void Worker::Logging::walEnsureEnoughSpace(u32 requested_size)
    }
 }
 // -------------------------------------------------------------------------------------
-WALMetaEntry& Worker::Logging::reserveWALMetaEntry()
+WALMetaEntry& Logging::reserveWALMetaEntry()
 {
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_wt_cursor);
@@ -78,10 +79,11 @@ WALMetaEntry& Worker::Logging::reserveWALMetaEntry()
    return *active_mt_entry;
 }
 // -------------------------------------------------------------------------------------
-void Worker::Logging::submitWALMetaEntry()
+void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
 {
    if(!((wal_wt_cursor >= current_tx_wal_start) || (wal_wt_cursor + sizeof(WALMetaEntry) < current_tx_wal_start))) {
-      my().active_tx.wal_larger_than_buffer = true;
+      // my().active_tx.wal_larger_than_buffer = true;
+      raise(SIGTRAP);
    }
    DEBUG_BLOCK()
    {
@@ -90,14 +92,15 @@ void Worker::Logging::submitWALMetaEntry()
    wal_wt_cursor += sizeof(WALMetaEntry);
    auto current = wt_to_lw.getNoSync();
    current.wal_written_offset = wal_wt_cursor;
-   current.precommitted_tx_commit_ts = my().active_tx.startTS();
+   current.precommitted_tx_commit_ts = active_tx_start_ts;
    wt_to_lw.pushSync(current);
 }
 // -------------------------------------------------------------------------------------
-void Worker::Logging::submitDTEntry(u64 total_size)
+void Logging::submitDTEntry(u64 total_size)
 {
    if(!((wal_wt_cursor >= current_tx_wal_start) || (wal_wt_cursor + total_size  < current_tx_wal_start))) {
-      my().active_tx.wal_larger_than_buffer = true;
+      // my().active_tx.wal_larger_than_buffer = true;
+      raise(SIGTRAP);
    }
    DEBUG_BLOCK()
    {
@@ -112,7 +115,7 @@ void Worker::Logging::submitDTEntry(u64 total_size)
 }
 // -------------------------------------------------------------------------------------
 // Called by worker, so concurrent writes on the buffer
-void Worker::Logging::iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback)
+void Logging::iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback)
 {
    u64 cursor = current_tx_wal_start;
    while (cursor != wal_wt_cursor) {

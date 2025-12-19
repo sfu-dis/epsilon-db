@@ -2,10 +2,9 @@
 #include "HistoryTreeInterface.hpp"
 #include "Transaction.hpp"
 #include "WALEntry.hpp"
+#include "Logging.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
-// -------------------------------------------------------------------------------------
-#include "leanstore/utils/OptimisticSpinStruct.hpp"
 // -------------------------------------------------------------------------------------
 #include <atomic>
 #include <functional>
@@ -49,129 +48,26 @@ struct Worker {
    static constexpr u64 CLEAN_BITS_MASK = ~(LATCH_BIT | OLAP_BIT | RC_BIT);
    // TXID : [LATCH_BIT | RC_BIT | OLAP_BIT | id];
    // LWM : [LATCH_BIT | RC_BIT | OLTP_OLAP_SAME_BIT | id];
-   static constexpr s64 CR_ENTRY_SIZE = sizeof(WALMetaEntry);
    // -------------------------------------------------------------------------------------
    // Worker Local
-   struct Logging {
-      static atomic<u64> global_min_gsn_flushed;   // The minimum of all workers maximum flushed GSN
-      static atomic<u64> global_sync_to_this_gsn;  // Artifically increment the workers GSN to this point at the next round to prevent GSN from
-                                                   // skewing and undermining RFA
-      static atomic<u64> global_min_commit_ts_flushed;
-      // -------------------------------------------------------------------------------------
-      s64 WORKER_WAL_SIZE = 0;
-      WALMetaEntry* active_mt_entry;
-      WALDTEntry* active_dt_entry;
-      // Shared between Group Committer and Worker
-      std::mutex precommitted_queue_mutex;
-      std::vector<Transaction> precommitted_queue;
-      std::vector<Transaction> precommitted_queue_rfa;
-      // -------------------------------------------------------------------------------------
-      std::atomic<TXID> hardened_commit_ts = 0, signaled_commit_ts = 0;  // W: LW, R: WT
-      std::atomic<TXID> hardened_gsn = 0;                                // W: LW, R: LC
-      // -------------------------------------------------------------------------------------
-      // Protect W+GCT shared data (worker <-> group commit thread)
-      struct WorkerToLW {
-         u64 version = 0;
-         LID last_gsn = 0;
-         u64 wal_written_offset = 0;
-         TXID precommitted_tx_start_ts = 0;
-         TXID precommitted_tx_commit_ts = 0;
-      };
-      utils::OptimisticSpinStruct<WorkerToLW> wt_to_lw;
+   struct WorkerLoggingInfo {
+      LID rfa_gsn_flushed;
+      bool remote_flush_dependency = false;
       // New: RFA: check for user tx dependency on tuple insert, update, lookup. Deletes are treated as system transaction
       std::vector<std::tuple<WORKERID, TXID>> rfa_checks_at_precommit;
       void checkLogDepdency(WORKERID other_worker_id, TXID other_user_tx_id)
       {
-         if (FLAGS_recover) return;
-         if (!remote_flush_dependency && my().worker_id != other_worker_id) {
-            if (other(other_worker_id).signaled_commit_ts < other_user_tx_id) {
+         if (FLAGS_recover)
+            return;
+         if (!remote_flush_dependency && Worker::my().worker_id != other_worker_id) {
+            Worker* other = my().all_workers[other_worker_id];
+            if (other->logging.signaled_commit_ts < other_user_tx_id) {
                rfa_checks_at_precommit.push_back({other_worker_id, other_user_tx_id});
             }
          }
       }
-      // -------------------------------------------------------------------------------------
-      // Accessible only by the group commit thread
-      u64 wal_wt_cursor = 0;
-      u64 wal_buffer_round = 0, wal_next_to_clean = 0;
-      // -------------------------------------------------------------------------------------
-      atomic<u64> wal_gct_cursor = 0;  // GCT->W
-      alignas(4096) u8* wal_buffer;     // W->GCT
-      LID wal_lsn_counter = 0;
-      LID wt_gsn_clock;
-      LID rfa_gsn_flushed;
-      u64 log_segment_start = -1;
-      bool remote_flush_dependency = false;
-      // -------------------------------------------------------------------------------------
-      // -------------------------------------------------------------------------------------
-      template <typename T>
-      class WALEntryHandler
-      {
-        public:
-         u8* entry;
-         u64 total_size;
-         u64 lsn;
-         u32 in_memory_offset;
-         inline T* operator->() { return reinterpret_cast<T*>(entry); }
-         inline T& operator*() { return *reinterpret_cast<T*>(entry); }
-         WALEntryHandler() = default;
-         WALEntryHandler(u8* entry, u64 size, u64 lsn, u64 in_memory_offset)
-             : entry(entry), total_size(size), lsn(lsn), in_memory_offset(in_memory_offset)
-         {
-         }
-         void submit() { cr::Worker::my().logging.submitDTEntry(total_size); }
-      };
-      // -------------------------------------------------------------------------------------
-      template <typename T>
-      WALEntryHandler<T> reserveDTEntry(u64 requested_size, PID pid, LID gsn, DTID dt_id)
-      {
-         const auto lsn = this->log_segment_start + wal_lsn_counter;
-         const u64 total_size = sizeof(WALDTEntry) + requested_size;
-         wal_lsn_counter += total_size;
-         ensure(walContiguousFreeSpace() >= total_size);
-         active_dt_entry = new (wal_buffer + wal_wt_cursor) WALDTEntry();
-         active_dt_entry->lsn.store(lsn, std::memory_order_release);
-         active_dt_entry->magic_debugging_number = 99;
-         active_dt_entry->type = WALEntry::TYPE::DT_SPECIFIC;
-         active_dt_entry->size = total_size;
-         // -------------------------------------------------------------------------------------
-         active_dt_entry->pid = pid;
-         active_dt_entry->gsn = gsn;
-         active_dt_entry->dt_id = dt_id;
-         return {active_dt_entry->payload, total_size, active_dt_entry->lsn, wal_wt_cursor};
-      }
-      void submitDTEntry(u64 total_size);
-      // -------------------------------------------------------------------------------------
-      void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_wt_cursor); }
-      void publishMaxGSNOffset()
-      {
-         auto current = wt_to_lw.getNoSync();
-         current.wal_written_offset = wal_wt_cursor;
-         current.last_gsn = wt_gsn_clock;
-         wt_to_lw.pushSync(current);
-      }
-      std::tuple<LID, u64> fetchMaxGSNOffset()
-      {
-         const auto current = wt_to_lw.getSync();
-         return {current.last_gsn, current.wal_written_offset};
-      }
-      // -------------------------------------------------------------------------------------
-      u32 walFreeSpace();
-      u32 walContiguousFreeSpace();
-      void walEnsureEnoughSpace(u32 requested_size);
-      u8* walReserve(u32 requested_size);
-      // -------------------------------------------------------------------------------------
-      // Iterate over current TX entries
-      u64 current_tx_wal_start;
-      void iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback);
-      // -------------------------------------------------------------------------------------
-      // Without Payload, by submit no need to update clock (gsn)
-      WALMetaEntry& reserveWALMetaEntry();
-      void submitWALMetaEntry();
-      inline LID getCurrentGSN() { return wt_gsn_clock; }
-      inline void setCurrentGSN(LID gsn) { wt_gsn_clock = gsn; }
-      // -------------------------------------------------------------------------------------
-      Logging& other(WORKERID other_worker_id) { return my().all_workers[other_worker_id]->logging; }
-   } logging;
+   } per_worker_logging_info;
+   struct Logging logging;
    // -------------------------------------------------------------------------------------
    // Concurrency Control
    // LWM: start timestamp of the transaction that has its effect visible by all in its class

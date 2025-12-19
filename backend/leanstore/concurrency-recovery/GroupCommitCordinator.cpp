@@ -48,10 +48,10 @@ void CRManager::groupCommitCordinator()
             min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, worker.logging.hardened_commit_ts);
          }
          // -------------------------------------------------------------------------------------
-         assert(Worker::Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
-         Worker::Logging::global_min_commit_ts_flushed.store(min_all_workers_hardened_commit_ts, std::memory_order_release);
-         Worker::Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
-         Worker::Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
+         assert(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
+         Logging::global_min_commit_ts_flushed.store(min_all_workers_hardened_commit_ts, std::memory_order_release);
+         Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
+         Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
          // -------------------------------------------------------------------------------------
          CRCounters::myCounters().gct_rounds += 1;
       }

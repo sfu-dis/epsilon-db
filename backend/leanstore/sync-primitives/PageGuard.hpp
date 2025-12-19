@@ -138,15 +138,15 @@ class HybridPageGuard
       // TODO: don't sync on temporary table pages like HistoryTree
       if (FLAGS_wal) {
          if (FLAGS_wal_rfa) {
-            if (bf->page.GSN > cr::Worker::my().logging.rfa_gsn_flushed && bf->header.last_writer_worker_id != cr::Worker::my().worker_id) {  //
-               cr::Worker::my().logging.remote_flush_dependency = true;
+            if (bf->page.GSN > cr::Worker::my().per_worker_logging_info.rfa_gsn_flushed && bf->header.last_writer_worker_id != cr::Worker::my().worker_id) {  //
+               cr::Worker::my().per_worker_logging_info.remote_flush_dependency = true;
             }
          }
          cr::Worker::my().logging.setCurrentGSN(std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN));
       }
    }
    template <typename WT>
-   cr::Worker::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size)
+   cr::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size)
    {
       assert(FLAGS_wal);
       assert(guard.state == GUARD_STATE::EXCLUSIVE);
@@ -210,7 +210,7 @@ class ExclusivePageGuard
    ExclusivePageGuard(HybridPageGuard<T>&& o_guard) : ref_guard(o_guard) { ref_guard.guard.toExclusive(); }
    // -------------------------------------------------------------------------------------
    template <typename WT>
-   cr::Worker::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size)
+   cr::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size)
    {
       return ref_guard.template reserveWALEntry<WT>(extra_size);
    }

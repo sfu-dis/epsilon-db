@@ -69,7 +69,7 @@ OP_RESULT BTreeVI::lookupPessimistic(u8* key_buffer, const u16 key_length, funct
          cout << u64(std::get<1>(reconstruct)) << " , " << dt_id << endl;
       }
       // -------------------------------------------------------------------------------------
-      cr::Worker::my().logging.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
+      cr::Worker::my().per_worker_logging_info.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
       // -------------------------------------------------------------------------------------
       jumpmu_return ret;
    }
@@ -108,7 +108,7 @@ OP_RESULT BTreeVI::lookupOptimistic(const u8* key, const u16 key_length, functio
                   WorkerCounters::myCounters().cc_read_versions_visited[dt_id] += 1;
                }
                // -------------------------------------------------------------------------------------
-               cr::Worker::my().logging.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
+               cr::Worker::my().per_worker_logging_info.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
                // -------------------------------------------------------------------------------------
                jumpmu_return OP_RESULT::OK;
             } else {
@@ -213,7 +213,7 @@ OP_RESULT BTreeVI::executeDeterministricUpdate(u8* o_key,
       BTreeLL::generateXORDiff(update_descriptor, wal_entry->payload + o_key_length + update_descriptor.size(), tuple_head.payload);
       wal_entry.submit();
       // -------------------------------------------------------------------------------------
-      cr::Worker::my().logging.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
+      cr::Worker::my().per_worker_logging_info.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
       // -------------------------------------------------------------------------------------
       tuple_head.worker_id = cr::Worker::my().workerID();
       tuple_head.tx_ts = cr::activeTX().commitTS() | MSB;
@@ -374,7 +374,7 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
       BTreeLL::generateXORDiff(update_descriptor, wal_entry->payload + o_key_length + update_descriptor.size(), tuple_head.payload);
       wal_entry.submit();
       // -------------------------------------------------------------------------------------
-      cr::Worker::my().logging.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
+      cr::Worker::my().per_worker_logging_info.checkLogDepdency(tuple_head.worker_id, tuple_head.tx_ts);
       // -------------------------------------------------------------------------------------
       tuple_head.worker_id = cr::Worker::my().workerID();
       tuple_head.tx_ts = cr::activeTX().startTS();

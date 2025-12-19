@@ -114,7 +114,7 @@ void CRManager::groupCommiter()
    LID max_all_workers_gsn;  // Sync all workers to this point
    TXID min_all_workers_hardened_commit_ts;
    std::vector<u64> ready_to_commit_rfa_cut;  // Exclusive ) ==
-   std::vector<Worker::Logging::WorkerToLW> wt_to_lw_copy;
+   std::vector<Logging::WorkerToLW> wt_to_lw_copy;
    ready_to_commit_rfa_cut.resize(workers_count, 0);
    wt_to_lw_copy.resize(workers_count);
    // -------------------------------------------------------------------------------------
@@ -276,9 +276,9 @@ void CRManager::groupCommiter()
          CRCounters::myCounters().gct_write_ms += (std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_begin).count());
       }
       // -------------------------------------------------------------------------------------
-      assert(Worker::Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
-      Worker::Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
-      Worker::Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
+      assert(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
+      Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
+      Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
       meta->min_all_workers_gsn = min_all_workers_gsn;
       s64 ret = pwrite(ssd_fd, meta_block_buffer, LOG_DEV_BLK_SIZE, 0);
       ensure(ret == LOG_DEV_BLK_SIZE);
