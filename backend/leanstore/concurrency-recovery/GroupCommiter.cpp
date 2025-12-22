@@ -35,12 +35,13 @@ void CRManager::groupCommiter()
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    u64 ssd_offset = 0;
    u64 log_dev_size = 0;
-   if (ioctl(ssd_fd, BLKGETSIZE64, &log_dev_size) == 0) {
-      std::cout << "[INFO] Log device size: " << log_dev_size << " bytes" << std::endl;
-      ensure((log_dev_size % LOG_DEV_BLK_SIZE) == 0);
-      // log_dev_size = log_dev_size / LOG_DEV_BLK_SIZE;
-   } else {
-      perror("ioctl");
+   if (FLAGS_wal_pwrite) {
+      if (ioctl(ssd_fd, BLKGETSIZE64, &log_dev_size) == 0) {
+         std::cout << "[INFO] Log device size: " << log_dev_size << " bytes" << std::endl;
+         ensure((log_dev_size % LOG_DEV_BLK_SIZE) == 0);
+      } else {
+         perror("ioctl");
+      }
    }
    struct per_worker_log_segment {
       u64 start_off;
@@ -62,20 +63,19 @@ void CRManager::groupCommiter()
    meta->min_all_workers_hardened_commit_ts = 0;
    u64 per_worker_start = 0;
    const u64 per_worker_log_size = utils::downAlign(log_dev_size / workers_count, LOG_DEV_BLK_SIZE);
-   for (u32 w_i = 0; w_i < workers_count; ++w_i) {
-      // log_segments.emplace_back(per_worker_start, per_worker_start + per_worker_log_size, 0, 0);
-      auto *seg = &meta->log_segments[w_i];
-      // offset by one block to use as meta block
-      seg->start_off = per_worker_start + LOG_DEV_BLK_SIZE;
-      seg->end_off = seg->start_off + per_worker_log_size;
-      seg->offset = seg->last_start_offset = 0;
-      // ensure_equal(workers[w_i]->logging.log_segment_start, per_worker_start);
-      per_worker_start += per_worker_log_size;
-      // auto *seg = &log_segments[w_i];
-      // printf("per_worker_log_segment { start_off=%llu, end_off=%llu, offset=%llu, last_start_offset=%llu }\n", seg->start_off, seg->end_off, seg->offset, seg->last_start_offset);
+   if (FLAGS_wal_pwrite) {
+      for (u32 w_i = 0; w_i < workers_count; ++w_i) {
+         auto *seg = &meta->log_segments[w_i];
+         // offset by one block to use as meta block
+         seg->start_off = per_worker_start + LOG_DEV_BLK_SIZE;
+         seg->end_off = seg->start_off + per_worker_log_size;
+         seg->offset = seg->last_start_offset = 0;
+         ensure_equal(workers[w_i]->logging.log_segment_start, seg->start_off);
+         per_worker_start += per_worker_log_size;
+      }
+      s64 ret = pwrite(ssd_fd, meta_block_buffer, LOG_DEV_BLK_SIZE, 0);
+      ensure(ret == LOG_DEV_BLK_SIZE);
    }
-   s64 ret = pwrite(ssd_fd, meta_block_buffer, LOG_DEV_BLK_SIZE, 0);
-   ensure(ret == LOG_DEV_BLK_SIZE);
    // -------------------------------------------------------------------------------------
    // Async IO
    const u64 batch_max_size = (workers_count * 2) + 2;  // 2x because of potential wrapping around
@@ -210,7 +210,7 @@ void CRManager::groupCommiter()
                if (io_slot > 0) {
                   const s32 done_requests = io_getevents(aio_context, submitted, submitted, events.get(), NULL);
                   posix_check(done_requests >= 0);
-                  for (u32 i = 0; i < done_requests; ++i) {
+                  for (s32 i = 0; i < done_requests; ++i) {
                      ensure(events[i].res > 0);
                      ensure(events[i].res2 == 0);
                      ensure((events[i].res % LOG_DEV_BLK_SIZE) == 0);
@@ -279,9 +279,11 @@ void CRManager::groupCommiter()
       assert(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
       Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
       Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
-      meta->min_all_workers_gsn = min_all_workers_gsn;
-      s64 ret = pwrite(ssd_fd, meta_block_buffer, LOG_DEV_BLK_SIZE, 0);
-      ensure(ret == LOG_DEV_BLK_SIZE);
+      if (FLAGS_wal_pwrite) {
+         meta->min_all_workers_gsn = min_all_workers_gsn;
+         s64 ret = pwrite(ssd_fd, meta_block_buffer, LOG_DEV_BLK_SIZE, 0);
+         ensure(ret == LOG_DEV_BLK_SIZE);
+      }
    }
    running_threads--;
 }
