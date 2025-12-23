@@ -94,11 +94,16 @@ Generic_Exception(TODO);
 #endif
 #endif
 // -------------------------------------------------------------------------------------
+// HACKY, so I can incrementally migrate COUNTERS_BLOCK() with no argumnet
 #ifdef MACRO_COUNTERS_ALL
-#define COUNTERS_BLOCK() if constexpr (true)
+#define COUNTER_ 1
 #else
-#define COUNTERS_BLOCK() if constexpr (false)
+#define COUNTER_ 0
 #endif
+
+#include "counters_config.hpp"
+#define COUNTERS_BLOCK(name) \
+   if constexpr (COUNTER_ || COUNTER_##name)
 // -------------------------------------------------------------------------------------
 template <typename T>
 inline void DO_NOT_OPTIMIZE(T const& value)

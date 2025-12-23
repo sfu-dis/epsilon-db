@@ -4,6 +4,22 @@
 project(leanstore)
 
 # ---------------------------------------------------------------------------
+set(COUNTERS_INI ${CMAKE_SOURCE_DIR}/shared-headers/counters.ini)
+set(COUNTERS_HEADER ${CMAKE_SOURCE_DIR}/shared-headers/counters_config.hpp)
+
+message(${COUNTERS_HEADER})
+
+add_custom_target(gen_header ALL
+   # OUTPUT ${COUNTERS_HEADER}
+   COMMAND ${CMAKE_COMMAND} -E echo "Generating counters_config.h from counters.ini"
+   COMMAND python3 ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py 
+           ${COUNTERS_INI} ${COUNTERS_HEADER}
+   DEPENDS ${COUNTERS_INI} ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py
+   COMMENT "Generating counters config header file from counters.ini"
+   VERBATIM
+)
+
+# ---------------------------------------------------------------------------
 # Files
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE LEANSTORE_CC **.cpp **/**.cpp **.hpp **/**.hpp)
@@ -22,6 +38,7 @@ IF(SANI)
   target_link_libraries(leanstore asan)
 ENDIF(SANI)
 
+add_dependencies(leanstore gen_header)
 target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson fdp uring ${Boost_LIBRARIES}) #tbb
 
 # ---------------------------------------------------------------------------
@@ -30,7 +47,7 @@ IF(PARANOID)
   target_compile_definitions(leanstore PUBLIC PARANOID)
 ENDIF(PARANOID)
 # ---------------------------------------------------------------------------
-SET(COUNTERS_LEVEL "all" CACHE STRING "Which counters to leave in leanstore build")
+SET(COUNTERS_LEVEL "" CACHE STRING "Which counters to leave in leanstore build")
 IF(COUNTERS_LEVEL STREQUAL "all")
   target_compile_definitions(leanstore PUBLIC MACRO_COUNTERS_ALL)
 ENDIF()

@@ -241,7 +241,7 @@ int main(int argc, char** argv)
             }
             jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
             auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-            COUNTERS_BLOCK()
+            COUNTERS_BLOCK(txHist)
             {
                auto elapsed = now - start;
                if (WorkerCounters::myCounters().txHistLock.try_lock()) {

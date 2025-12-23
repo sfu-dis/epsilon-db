@@ -885,7 +885,7 @@ void BufferManager::readPageSync(u64 pid, u8* destination)
       assert(bytes_read > 0);  // call was successfull?
       bytes_left -= bytes_read;
    } while (bytes_left > 0);
-   COUNTERS_BLOCK()
+   COUNTERS_BLOCK(ioReadHist)
    {
       auto end = std::chrono::high_resolution_clock::now();
       auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
