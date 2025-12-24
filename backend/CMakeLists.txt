@@ -7,10 +7,8 @@ project(leanstore)
 set(COUNTERS_INI ${CMAKE_SOURCE_DIR}/shared-headers/counters.ini)
 set(COUNTERS_HEADER ${CMAKE_SOURCE_DIR}/shared-headers/counters_config.hpp)
 
-message(${COUNTERS_HEADER})
-
-add_custom_target(gen_header ALL
-   # OUTPUT ${COUNTERS_HEADER}
+add_custom_command(
+   OUTPUT ${COUNTERS_HEADER}
    COMMAND ${CMAKE_COMMAND} -E echo "Generating counters_config.h from counters.ini"
    COMMAND python3 ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py 
            ${COUNTERS_INI} ${COUNTERS_HEADER}
@@ -18,6 +16,7 @@ add_custom_target(gen_header ALL
    COMMENT "Generating counters config header file from counters.ini"
    VERBATIM
 )
+add_custom_target(gen_header DEPENDS ${COUNTERS_HEADER})
 
 # ---------------------------------------------------------------------------
 # Files
