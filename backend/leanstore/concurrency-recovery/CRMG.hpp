@@ -3,6 +3,7 @@
 #include "HistoryTreeInterface.hpp"
 #include "Units.hpp"
 #include "Worker.hpp"
+#include "LogManager.hpp"
 #include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
@@ -43,11 +44,14 @@ class CRManager
    WorkerThread worker_threads_meta[MAX_WORKER_THREADS];
    u32 workers_count;
    // -------------------------------------------------------------------------------------
-   const s32 ssd_fd;
-   const u64 end_of_block_device;
+   const s32 ssd_fd; // TODO(mfd) : Remove
+   const s32 log_dev_fd;
+   const u64 end_of_block_device; // TODO(mfd) : Remove
    HistoryTreeInterface& versions_space;
    // -------------------------------------------------------------------------------------
-   CRManager(HistoryTreeInterface&, s32 ssd_fd, u64 end_of_block_device);
+   std::unique_ptr<cr::LogManager> log_manager;
+   // -------------------------------------------------------------------------------------
+   CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 end_of_block_device);
    ~CRManager();
    // -------------------------------------------------------------------------------------
    void registerMeAsSpecialWorker();

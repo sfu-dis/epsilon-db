@@ -14,10 +14,10 @@ namespace cr
 // Threads id order: workers (xN) -> Group Committer Thread (x1) -> Page Provider Threads (xP)
 CRManager* CRManager::global = nullptr;
 std::atomic<u64> CRManager::fsync_counter = 0;
-std::atomic<u64> CRManager::g_ssd_offset = 0;
+std::atomic<u64> CRManager::g_ssd_offset = 0; // TODO(mfd) : Remove
 // -------------------------------------------------------------------------------------
-CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, u64 log_device_size)
-    : ssd_fd(ssd_fd), end_of_block_device(log_device_size), versions_space(versions_space)
+CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_dev_fd, u64 log_device_size)
+    : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), end_of_block_device(log_device_size), versions_space(versions_space)
 {
    workers_count = FLAGS_worker_threads;
    g_ssd_offset = end_of_block_device;
@@ -25,7 +25,13 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, u64 log_d
    // -------------------------------------------------------------------------------------
    Worker::global_workers_current_snapshot = std::make_unique<atomic<u64>[]>(workers_count);
    // -------------------------------------------------------------------------------------
-   u64 log_segment_per_worker = utils::downAlign(log_device_size/workers_count, 4096);
+   if (FLAGS_wal && FLAGS_wal_pwrite) {
+      log_manager = std::make_unique<cr::LogManager>(workers_count, log_dev_fd, log_device_size);
+   } else {
+      log_manager = nullptr;
+   }
+   cr::LogManager::global = log_manager.get();
+   // -------------------------------------------------------------------------------------
    worker_threads.reserve(workers_count);
    for (u64 t_i = 0; t_i < workers_count; t_i++) {
       worker_threads.emplace_back([&, t_i]() {
@@ -41,7 +47,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, u64 log_d
          WorkerCounters::myCounters().worker_id = t_i;
          CRCounters::myCounters().worker_id = t_i;
          // -------------------------------------------------------------------------------------
-         workers[t_i] = new Worker(t_i, workers, workers_count, versions_space, ssd_fd, log_segment_per_worker * t_i, false);
+         workers[t_i] = new Worker(t_i, workers, workers_count, versions_space, ssd_fd, false);
          Worker::tls_ptr = workers[t_i];
          // -------------------------------------------------------------------------------------
          running_threads++;
@@ -94,7 +100,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, u64 log_d
 // -------------------------------------------------------------------------------------
 void CRManager::registerMeAsSpecialWorker()
 {
-   cr::Worker::tls_ptr = new Worker(std::numeric_limits<WORKERID>::max(), workers, workers_count, versions_space, ssd_fd, -1, true);
+   cr::Worker::tls_ptr = new Worker(std::numeric_limits<WORKERID>::max(), workers, workers_count, versions_space, ssd_fd, true);
 }
 // -------------------------------------------------------------------------------------
 void CRManager::scheduleJobSync(u64 t_i, std::function<void()> job)

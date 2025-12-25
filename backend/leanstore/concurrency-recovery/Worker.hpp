@@ -67,7 +67,7 @@ struct Worker {
          }
       }
    } per_worker_logging_info;
-   struct Logging logging;
+   struct Logging &logging;
    // -------------------------------------------------------------------------------------
    // Concurrency Control
    // LWM: start timestamp of the transaction that has its effect visible by all in its class
@@ -159,7 +159,7 @@ struct Worker {
    const s32 ssd_fd;
    const bool is_page_provider = false;
    // -------------------------------------------------------------------------------------
-   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 fd, u64 log_segment_start ,const bool is_page_provider);
+   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 fd, const bool is_page_provider);
    static inline Worker& my() { return *Worker::tls_ptr; }
    ~Worker();
    // -------------------------------------------------------------------------------------

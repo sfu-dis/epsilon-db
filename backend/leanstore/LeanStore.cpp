@@ -59,6 +59,10 @@ LeanStore::LeanStore()
    if (FLAGS_isolation_level == "si" && (!FLAGS_mv | !FLAGS_vi)) {
       SetupFailed("You have to enable mv an vi (multi-versioning)");
    }
+   if (!FLAGS_wal && FLAGS_wal_pwrite) {
+      SetupFailed("You have to enable wal or turn of wal_pwrite");
+   }
+   FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool
@@ -117,7 +121,7 @@ LeanStore::LeanStore()
          perror("ioctl");
       }
    }
-   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), log_dev_fd, log_device_size);
+   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);
    cr::CRManager::global = cr_manager.get();
    cr_manager->scheduleJobSync(0, [&]() {
       history_tree->update_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);
