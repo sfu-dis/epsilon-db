@@ -64,8 +64,7 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       logging.current_tx_wal_start = logging.wal_wt_cursor;
       if (!read_only) {
          // XXX(mfd) : prev tx start ts ?
-         WALMetaEntry& entry = logging.reserveWALMetaEntry();
-         entry.type = WALEntry::TYPE::TX_START;
+         WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_START);
          logging.submitWALMetaEntry(active_tx.start_ts);
          DEBUG_BLOCK() { entry.checkCRC(); }
       }
@@ -148,8 +147,7 @@ void Worker::commitTX()
       active_tx.max_observed_gsn = logging.wt_gsn_clock;
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
-      WALMetaEntry& entry = logging.reserveWALMetaEntry();
-      entry.type = WALEntry::TYPE::TX_COMMIT;
+      WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
       // TODO: commit_ts in log
       logging.submitWALMetaEntry(active_tx.start_ts);
       if (FLAGS_wal_variant == 2) {
@@ -194,8 +192,7 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    cc.history_tree.purgeVersions(worker_id, active_tx.startTS(), active_tx.startTS(), [&](const TXID, const DTID, const u8*, u64, const bool) {});
    // -------------------------------------------------------------------------------------
-   WALMetaEntry& entry = logging.reserveWALMetaEntry();
-   entry.type = WALEntry::TYPE::TX_ABORT;
+   WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
    logging.submitWALMetaEntry(active_tx.start_ts);
    active_tx.state = Transaction::STATE::ABORTED;
    jumpmu::jump();

@@ -69,10 +69,12 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
    }
 }
 // -------------------------------------------------------------------------------------
-WALMetaEntry& Logging::reserveWALMetaEntry()
+WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
 {
+   ensure(type <= WALEntry::TYPE::TX_ABORT);
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_wt_cursor);
+   active_mt_entry->type = type;
    active_mt_entry->lsn.store(this->log_segment_start + wal_lsn_counter, std::memory_order_release);
    wal_lsn_counter += sizeof(WALMetaEntry);
    active_mt_entry->size = sizeof(WALMetaEntry);

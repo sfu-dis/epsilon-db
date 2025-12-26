@@ -115,7 +115,7 @@ struct Logging {
    void iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback);
    // -------------------------------------------------------------------------------------
    // Without Payload, by submit no need to update clock (gsn)
-   WALMetaEntry& reserveWALMetaEntry();
+   WALMetaEntry& reserveWALMetaEntry(WALEntry::TYPE type);
    void submitWALMetaEntry(u64 active_tx_start_ts);
    inline LID getCurrentGSN() { return wt_gsn_clock; }
    inline void setCurrentGSN(LID gsn) { wt_gsn_clock = gsn; }
