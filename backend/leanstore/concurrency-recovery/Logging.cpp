@@ -20,27 +20,27 @@ u32 Logging::walFreeSpace()
 {
    // A , B , C : a - b + c % c
    const auto gct_cursor = wal_gct_cursor.load();
-   if (gct_cursor == wal_wt_cursor) {
+   if (gct_cursor == wal_log_cursor) {
       return FLAGS_wal_buffer_size;
-   } else if (gct_cursor < wal_wt_cursor) {
-      return gct_cursor + (FLAGS_wal_buffer_size - wal_wt_cursor);
+   } else if (gct_cursor < wal_log_cursor) {
+      return gct_cursor + (FLAGS_wal_buffer_size - wal_log_cursor);
    } else {
-      return gct_cursor - wal_wt_cursor;
+      return gct_cursor - wal_log_cursor;
    }
 }
 // -------------------------------------------------------------------------------------
 u32 Logging::walContiguousFreeSpace()
 {
    const auto gct_cursor = wal_gct_cursor.load();
-   return (gct_cursor > wal_wt_cursor) ? gct_cursor - wal_wt_cursor : FLAGS_wal_buffer_size - wal_wt_cursor;
+   return (gct_cursor > wal_log_cursor) ? gct_cursor - wal_log_cursor : FLAGS_wal_buffer_size - wal_log_cursor;
 }
 // -------------------------------------------------------------------------------------
 void Logging::walEnsureEnoughSpace(u32 requested_size)
 {
    if (FLAGS_wal) {
       u32 wait_untill_free_bytes = requested_size + CR_ENTRY_SIZE;
-      if ((FLAGS_wal_buffer_size - wal_wt_cursor) < static_cast<u32>(requested_size + CR_ENTRY_SIZE)) {
-         wait_untill_free_bytes += FLAGS_wal_buffer_size - wal_wt_cursor;  // we have to skip this round
+      if ((FLAGS_wal_buffer_size - wal_log_cursor) < static_cast<u32>(requested_size + CR_ENTRY_SIZE)) {
+         wait_untill_free_bytes += FLAGS_wal_buffer_size - wal_log_cursor;  // we have to skip this round
       }
       // Spin until we have enough space
       if (FLAGS_wal_variant == 2 && walFreeSpace() < wait_untill_free_bytes) {
@@ -49,23 +49,23 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
       while (walFreeSpace() < wait_untill_free_bytes) {
       }
       if (walContiguousFreeSpace() < requested_size + CR_ENTRY_SIZE) {  // always keep place for CR entry
-         WALMetaEntry& entry = *reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_wt_cursor);
+         WALMetaEntry& entry = *reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
          entry.size = sizeof(WALMetaEntry);
          entry.type = WALEntry::TYPE::CARRIAGE_RETURN;
-         entry.size = FLAGS_wal_buffer_size - wal_wt_cursor;
+         entry.size = FLAGS_wal_buffer_size - wal_log_cursor;
          wal_lsn_counter += entry.size;
          DEBUG_BLOCK()
          {
             entry.computeCRC();
          }
          // -------------------------------------------------------------------------------------
-         wal_wt_cursor = 0;
+         wal_log_cursor = 0;
          publishOffset();
          wal_next_to_clean = 0;
          wal_buffer_round++;  // Carriage Return
       }
       ensure(walContiguousFreeSpace() >= requested_size);
-      ensure(wal_wt_cursor + requested_size + CR_ENTRY_SIZE <= FLAGS_wal_buffer_size);
+      ensure(wal_log_cursor + requested_size + CR_ENTRY_SIZE <= FLAGS_wal_buffer_size);
    }
 }
 // -------------------------------------------------------------------------------------
@@ -73,7 +73,7 @@ WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
 {
    ensure(type <= WALEntry::TYPE::TX_ABORT);
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
-   active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_wt_cursor);
+   active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
    active_mt_entry->type = type;
    active_mt_entry->lsn.store(this->log_segment_start + wal_lsn_counter, std::memory_order_release);
    wal_lsn_counter += sizeof(WALMetaEntry);
@@ -83,7 +83,7 @@ WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
 // -------------------------------------------------------------------------------------
 void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
 {
-   if(!((wal_wt_cursor >= current_tx_wal_start) || (wal_wt_cursor + sizeof(WALMetaEntry) < current_tx_wal_start))) {
+   if(!((wal_log_cursor >= current_tx_wal_start) || (wal_log_cursor + sizeof(WALMetaEntry) < current_tx_wal_start))) {
       // my().active_tx.wal_larger_than_buffer = true;
       raise(SIGTRAP);
    }
@@ -91,16 +91,16 @@ void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
    {
       active_mt_entry->computeCRC();
    }
-   wal_wt_cursor += sizeof(WALMetaEntry);
+   wal_log_cursor += sizeof(WALMetaEntry);
    auto current = wt_to_lw.getNoSync();
-   current.wal_written_offset = wal_wt_cursor;
+   current.wal_written_offset = wal_log_cursor;
    current.precommitted_tx_commit_ts = active_tx_start_ts;
    wt_to_lw.pushSync(current);
 }
 // -------------------------------------------------------------------------------------
 void Logging::submitDTEntry(u64 total_size)
 {
-   if(!((wal_wt_cursor >= current_tx_wal_start) || (wal_wt_cursor + total_size  < current_tx_wal_start))) {
+   if(!((wal_log_cursor >= current_tx_wal_start) || (wal_log_cursor + total_size  < current_tx_wal_start))) {
       // my().active_tx.wal_larger_than_buffer = true;
       raise(SIGTRAP);
    }
@@ -112,7 +112,7 @@ void Logging::submitDTEntry(u64 total_size)
    {
       WorkerCounters::myCounters().wal_write_bytes += total_size;
    }
-   wal_wt_cursor += total_size;
+   wal_log_cursor += total_size;
    publishMaxGSNOffset();
 }
 // -------------------------------------------------------------------------------------
@@ -120,7 +120,7 @@ void Logging::submitDTEntry(u64 total_size)
 void Logging::iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback)
 {
    u64 cursor = current_tx_wal_start;
-   while (cursor != wal_wt_cursor) {
+   while (cursor != wal_log_cursor) {
       const WALEntry& entry = *reinterpret_cast<WALEntry*>(wal_buffer + cursor);
       ensure(entry.size > 0);
       DEBUG_BLOCK()

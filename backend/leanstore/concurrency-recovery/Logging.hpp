@@ -42,13 +42,13 @@ struct Logging {
    utils::OptimisticSpinStruct<WorkerToLW> wt_to_lw;
   // -------------------------------------------------------------------------------------
    // Accessible only by the group commit thread
-   u64 wal_wt_cursor = 0;
+   u64 wal_log_cursor = 0;
    u64 wal_buffer_round = 0, wal_next_to_clean = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> wal_gct_cursor = 0;  // GCT->W
    alignas(4096) u8* wal_buffer;    // W->GCT
    LID wal_lsn_counter = 0;
-   LID wt_gsn_clock;
+   LID log_gsn_clock;
    u64 log_segment_start = -1;
    // -------------------------------------------------------------------------------------
    // -------------------------------------------------------------------------------------
@@ -78,7 +78,7 @@ struct Logging {
       const u64 total_size = sizeof(WALDTEntry) + requested_size;
       wal_lsn_counter += total_size;
       ensure(walContiguousFreeSpace() >= total_size);
-      active_dt_entry = new (wal_buffer + wal_wt_cursor) WALDTEntry();
+      active_dt_entry = new (wal_buffer + wal_log_cursor) WALDTEntry();
       active_dt_entry->lsn.store(lsn, std::memory_order_release);
       active_dt_entry->magic_debugging_number = 99;
       active_dt_entry->type = WALEntry::TYPE::DT_SPECIFIC;
@@ -87,16 +87,16 @@ struct Logging {
       active_dt_entry->pid = pid;
       active_dt_entry->gsn = gsn;
       active_dt_entry->dt_id = dt_id;
-      return {active_dt_entry->payload, total_size, active_dt_entry->lsn, wal_wt_cursor, this};
+      return {active_dt_entry->payload, total_size, active_dt_entry->lsn, wal_log_cursor, this};
    }
    void submitDTEntry(u64 total_size);
    // -------------------------------------------------------------------------------------
-   void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_wt_cursor); }
+   void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }
    void publishMaxGSNOffset()
    {
       auto current = wt_to_lw.getNoSync();
-      current.wal_written_offset = wal_wt_cursor;
-      current.last_gsn = wt_gsn_clock;
+      current.wal_written_offset = wal_log_cursor;
+      current.last_gsn = log_gsn_clock;
       wt_to_lw.pushSync(current);
    }
    std::tuple<LID, u64> fetchMaxGSNOffset()
@@ -117,8 +117,8 @@ struct Logging {
    // Without Payload, by submit no need to update clock (gsn)
    WALMetaEntry& reserveWALMetaEntry(WALEntry::TYPE type);
    void submitWALMetaEntry(u64 active_tx_start_ts);
-   inline LID getCurrentGSN() { return wt_gsn_clock; }
-   inline void setCurrentGSN(LID gsn) { wt_gsn_clock = gsn; }
+   inline LID getCurrentGSN() { return log_gsn_clock; }
+   inline void setCurrentGSN(LID gsn) { log_gsn_clock = gsn; }
    // -------------------------------------------------------------------------------------
 #if 0
    Logging& other(WORKERID other_worker_id) { return Worker::my().all_workers[other_worker_id]->logging; }

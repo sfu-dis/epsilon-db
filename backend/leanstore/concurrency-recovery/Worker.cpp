@@ -61,7 +61,8 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
    active_tx.stats.start = std::chrono::high_resolution_clock::now();
    if (FLAGS_wal) {
       active_tx.wal_larger_than_buffer = false;
-      logging.current_tx_wal_start = logging.wal_wt_cursor;
+      // current_tx_wal_start is used for undoing aborted transactions.
+      logging.current_tx_wal_start = logging.wal_gct_cursor;
       if (!read_only) {
          // XXX(mfd) : prev tx start ts ?
          WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_START);
@@ -84,7 +85,8 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       // -------------------------------------------------------------------------------------
       active_tx.state = Transaction::STATE::STARTED;
       active_tx.has_wrote = false;
-      active_tx.min_observed_gsn_when_started = logging.wt_gsn_clock;
+      // TODO(mfd) : This should be the worker gsn
+      active_tx.min_observed_gsn_when_started = logging.log_gsn_clock;
       active_tx.current_tx_mode = next_tx_type;
       active_tx.current_tx_isolation_level = next_tx_isolation_level;
       active_tx.is_read_only = read_only;
@@ -144,7 +146,7 @@ void Worker::commitTX()
         active_tx.commit_ts = commit_ts;
       }
       // -------------------------------------------------------------------------------------
-      active_tx.max_observed_gsn = logging.wt_gsn_clock;
+      active_tx.max_observed_gsn = logging.log_gsn_clock;
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
       WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
