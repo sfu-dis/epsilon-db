@@ -119,6 +119,11 @@ struct Logging {
    void submitWALMetaEntry(u64 active_tx_start_ts);
    inline LID getCurrentGSN() { return log_gsn_clock; }
    inline void setCurrentGSN(LID gsn) { log_gsn_clock = gsn; }
+   inline void syncGSN(LID other_gsn) { 
+      if (other_gsn > log_gsn_clock) {
+         log_gsn_clock = other_gsn;
+      }
+   }
    // -------------------------------------------------------------------------------------
 #if 0
    Logging& other(WORKERID other_worker_id) { return Worker::my().all_workers[other_worker_id]->logging; }

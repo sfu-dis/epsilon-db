@@ -68,6 +68,7 @@ struct Worker {
       }
    } per_worker_logging_info;
    struct Logging &logging;
+   LID worker_gsn_clock; // Will be the same as log_gsn_clock in case of per worker log.
    // -------------------------------------------------------------------------------------
    // Concurrency Control
    // LWM: start timestamp of the transaction that has its effect visible by all in its class
@@ -175,6 +176,13 @@ struct Worker {
    void abortTX();
    void shutdown();
    inline WORKERID workerID() { return worker_id; }
+   inline LID getCurrentGSN() { return worker_gsn_clock; }
+   inline void setCurrentGSN(LID gsn) { worker_gsn_clock = gsn; }
+   inline void syncGSN(LID other_gsn) { 
+      if (other_gsn > worker_gsn_clock) {
+         worker_gsn_clock = other_gsn;
+      }
+   }
 };
 // -------------------------------------------------------------------------------------
 // Shortcuts

@@ -126,11 +126,13 @@ class HybridPageGuard
    inline void incrementGSN()
    {
       assert(bf != nullptr);
-      assert(bf->page.GSN <= cr::Worker::my().logging.getCurrentGSN());
+      assert(bf->page.GSN <= cr::Worker::my().getCurrentGSN());
       bf->page.PLSN++;
-      bf->page.GSN = cr::Worker::my().logging.getCurrentGSN() + 1;
+      LID new_gsn = cr::Worker::my().getCurrentGSN() + 1;
+      bf->page.GSN = new_gsn;
       bf->header.last_writer_worker_id = cr::Worker::my().worker_id;  // RFA
-      cr::Worker::my().logging.setCurrentGSN(std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN));
+      // cr::Worker::my().setCurrentGSN(std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN));
+      cr::Worker::my().setCurrentGSN(new_gsn);
    }
    // WAL
    inline void syncGSN()
@@ -142,7 +144,9 @@ class HybridPageGuard
                cr::Worker::my().per_worker_logging_info.remote_flush_dependency = true;
             }
          }
-         cr::Worker::my().logging.setCurrentGSN(std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN));
+         LID new_gsn = std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN);
+         cr::Worker::my().setCurrentGSN(new_gsn);
+         // XXX(mfd) : The page GSN should also by synchronized here !!!
       }
    }
    template <typename WT>
@@ -157,7 +161,13 @@ class HybridPageGuard
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;
       // TODO: verify
-      auto handler = cr::Worker::my().logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, cr::Worker::my().logging.getCurrentGSN(), dt_id);
+      auto& logging = cr::LogManager::getLog();
+      // TODO logging.walEnsureEnoughSpace(sizeof(WT) + extra_size);
+      ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
+      LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN());
+      logging.setCurrentGSN(logGSN);
+      auto handler = cr::Worker::my().logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
+      // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
       bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
