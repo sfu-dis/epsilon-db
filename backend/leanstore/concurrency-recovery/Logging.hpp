@@ -23,12 +23,7 @@ struct Logging {
    s64 WORKER_WAL_SIZE = 0;
    WALMetaEntry* active_mt_entry;
    WALDTEntry* active_dt_entry;
-   // Shared between Group Committer and Worker
-   std::mutex precommitted_queue_mutex;
-   std::vector<Transaction> precommitted_queue;
-   std::vector<Transaction> precommitted_queue_rfa;
    // -------------------------------------------------------------------------------------
-   std::atomic<TXID> hardened_commit_ts = 0, signaled_commit_ts = 0;  // W: LW, R: WT
    std::atomic<TXID> hardened_gsn = 0;                                // W: LW, R: LC
    // -------------------------------------------------------------------------------------
    // Protect W+GCT shared data (worker <-> group commit thread)
@@ -36,8 +31,6 @@ struct Logging {
       u64 version = 0;
       LID last_gsn = 0;
       u64 wal_written_offset = 0;
-      TXID precommitted_tx_start_ts = 0;
-      TXID precommitted_tx_commit_ts = 0;
    };
    utils::OptimisticSpinStruct<WorkerToLW> wt_to_lw;
   // -------------------------------------------------------------------------------------

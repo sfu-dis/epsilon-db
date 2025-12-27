@@ -94,7 +94,6 @@ void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
    wal_log_cursor += sizeof(WALMetaEntry);
    auto current = wt_to_lw.getNoSync();
    current.wal_written_offset = wal_log_cursor;
-   current.precommitted_tx_commit_ts = active_tx_start_ts;
    wt_to_lw.pushSync(current);
 }
 // -------------------------------------------------------------------------------------

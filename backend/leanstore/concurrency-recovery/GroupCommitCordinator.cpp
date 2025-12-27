@@ -21,6 +21,7 @@ namespace cr
 // -------------------------------------------------------------------------------------
 void CRManager::groupCommitCordinator()
 {
+#if 0
    std::thread log_cordinator([&]() {
       running_threads++;
       std::string thread_name("log_cordinator");
@@ -45,7 +46,7 @@ void CRManager::groupCommitCordinator()
             Worker& worker = *workers[w_i];
             min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker.logging.hardened_gsn);
             max_all_workers_gsn = std::max<LID>(max_all_workers_gsn, worker.logging.hardened_gsn);
-            min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, worker.logging.hardened_commit_ts);
+            min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, worker.hardened_commit_ts);
          }
          // -------------------------------------------------------------------------------------
          assert(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
@@ -58,6 +59,7 @@ void CRManager::groupCommitCordinator()
       running_threads--;
    });
    log_cordinator.detach();
+#endif
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr

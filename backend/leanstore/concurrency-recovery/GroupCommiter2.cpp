@@ -21,6 +21,7 @@ namespace cr
 // -------------------------------------------------------------------------------------
 void CRManager::groupCommiter2()
 {
+#if 0
    std::thread log_committer([&]() {
       running_threads++;
       std::string thread_name("log_committer");
@@ -204,6 +205,7 @@ void CRManager::groupCommiter2()
    for (auto& thread : writer_threads) {
       thread.detach();
    }
+#endif
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr

@@ -61,7 +61,7 @@ struct Worker {
             return;
          if (!remote_flush_dependency && Worker::my().worker_id != other_worker_id) {
             Worker* other = my().all_workers[other_worker_id];
-            if (other->logging.signaled_commit_ts < other_user_tx_id) {
+            if (other->signaled_commit_ts < other_user_tx_id) {
                rfa_checks_at_precommit.push_back({other_worker_id, other_user_tx_id});
             }
          }
@@ -69,6 +69,12 @@ struct Worker {
    } per_worker_logging_info;
    struct Logging &logging;
    LID worker_gsn_clock; // Will be the same as log_gsn_clock in case of per worker log.
+   // Shared between Group Committer and Worker
+   std::mutex precommitted_queue_mutex;
+   std::vector<Transaction> precommitted_queue;
+   std::vector<Transaction> precommitted_queue_rfa;
+   std::atomic<TXID>  last_precommitted_tx_commit_ts = 0;
+   std::atomic<TXID> hardened_commit_ts = 0, signaled_commit_ts = 0;  // W: LW, R: WT
    // -------------------------------------------------------------------------------------
    // Concurrency Control
    // LWM: start timestamp of the transaction that has its effect visible by all in its class

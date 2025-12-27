@@ -21,6 +21,7 @@ namespace cr
 // -------------------------------------------------------------------------------------
 void CRManager::groupCommiter1()
 {
+#if 0
    std::vector<std::thread> writer_threads;
    utils::Parallelize::range(FLAGS_wal_log_writers, workers_count, [&](u64 t_i, u64 w_begin_i, u64 w_end_i) {
       writer_threads.emplace_back([&, t_i, w_begin_i, w_end_i]() {
@@ -219,6 +220,7 @@ void CRManager::groupCommiter1()
    for (auto& thread : writer_threads) {
       thread.detach();
    }
+#endif
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr

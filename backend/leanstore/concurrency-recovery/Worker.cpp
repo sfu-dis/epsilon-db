@@ -132,7 +132,7 @@ void Worker::commitTX()
       if (FLAGS_wal_tuple_rfa) {
         for (auto& dependency : per_worker_logging_info.rfa_checks_at_precommit) {
           Worker *other = my().all_workers[std::get<0>(dependency)];
-          if (other->logging.signaled_commit_ts < std::get<1>(dependency)) {
+          if (other->signaled_commit_ts < std::get<1>(dependency)) {
             per_worker_logging_info.remote_flush_dependency = true;
             break;
           }
@@ -146,23 +146,28 @@ void Worker::commitTX()
         active_tx.commit_ts = commit_ts;
       }
       // -------------------------------------------------------------------------------------
+      // TODO(mfd) : This should be the worker gsn
       active_tx.max_observed_gsn = logging.log_gsn_clock;
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
-      WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
-      // TODO: commit_ts in log
-      logging.submitWALMetaEntry(active_tx.start_ts);
+      if (false) {
+         WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
+         // TODO: commit_ts in log
+         logging.submitWALMetaEntry(active_tx.start_ts);
+      }
+      // XXX(mfd) : the use of start_ts is sceptical.
+      last_precommitted_tx_commit_ts.store(active_tx.start_ts, std::memory_order_release);
       if (FLAGS_wal_variant == 2) {
         logging.wt_to_lw.optimistic_latch.notify_all();
       }
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
-      std::unique_lock<std::mutex> g(logging.precommitted_queue_mutex);
+      std::unique_lock<std::mutex> g(precommitted_queue_mutex);
       if (per_worker_logging_info.remote_flush_dependency) {  // RFA
-        logging.precommitted_queue.push_back(active_tx);
+        precommitted_queue.push_back(active_tx);
       } else {
         CRCounters::myCounters().rfa_committed_tx++;
-        logging.precommitted_queue_rfa.push_back(active_tx);
+        precommitted_queue_rfa.push_back(active_tx);
       }
     }
     // Only committing snapshot/ changing between SI and lower modes
@@ -194,8 +199,10 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    cc.history_tree.purgeVersions(worker_id, active_tx.startTS(), active_tx.startTS(), [&](const TXID, const DTID, const u8*, u64, const bool) {});
    // -------------------------------------------------------------------------------------
-   WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
-   logging.submitWALMetaEntry(active_tx.start_ts);
+   if (false) {
+      WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
+      logging.submitWALMetaEntry(active_tx.start_ts);
+   }
    active_tx.state = Transaction::STATE::ABORTED;
    jumpmu::jump();
 }
