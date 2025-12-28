@@ -298,7 +298,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       auto start = std::chrono::high_resolution_clock::now();
       if (async_write_buffer.submit()) {
          const u32 polled_events = async_write_buffer.pollEventsSync();
-         if (FLAGS_iostat || FLAGS_use_fdp_rumaw) per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::relaxed);
+         per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::release);
+         PPCounters::myCounters().flushed_pages_counter += polled_events;
          COUNTERS_BLOCK() {
             auto end = std::chrono::high_resolution_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
@@ -334,7 +335,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       written_bf.page.ru_epoch = written_ru_epoch;
-                      PPCounters::myCounters().flushed_pages_counter++;
                    }
                 }
                 jumpmuCatch()

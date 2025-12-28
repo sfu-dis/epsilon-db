@@ -66,11 +66,7 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
             p_i = (p_i + 1) % partitions_count;
          }
       });
-      if (FLAGS_iostat || FLAGS_use_fdp_rumaw) {
-         per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
-      }
-      // write credit in term of number of database pages.
-      write_credit_available = FLAGS_ssd_gib * 1048576UL / (PAGE_SIZE / 1024ul);
+      per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
       if (FLAGS_wal && FLAGS_wal_pwrite) {
          ensure(!FLAGS_redo_log_file.empty());
          log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
@@ -166,7 +162,7 @@ void BufferManager::startBackgroundThreads()
                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                u64 local_tot = 0;
                for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-                  u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
+                  u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::acquire);
                   ensure(new_value >= last_seen[pp_id]);
                   u64 diff = new_value - last_seen[pp_id];
                   local_tot += diff;
@@ -177,17 +173,6 @@ void BufferManager::startBackgroundThreads()
                tot_page_written += (seen - last_seen_tot_gc_writes);
                local_tot += (seen - last_seen_tot_gc_writes);
                last_seen_tot_gc_writes = seen;
-#if 0
-               s64 old_wc = write_credit_available.fetch_sub(local_tot, std::memory_order_relaxed);
-               ensure(old_wc > local_tot);
-               bool must_gc = (old_wc < (12 * RU_SIZE));
-#endif
-               bool must_gc = false;
-               if (must_gc) {
-                  // XXX(mfd) : We will assume the GC will successed freeing an RU epoch, That's fine
-                  write_credit_available.fetch_add(RU_SIZE, std::memory_order_relaxed);
-                  printf("[WARN] Free pages shortage...Forcing GC\n");
-               }
                if (tot_page_written >= RU_SIZE) {
                   tot_page_written = tot_page_written - RU_SIZE;
                   u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
@@ -195,8 +180,8 @@ void BufferManager::startBackgroundThreads()
                   ru_epoch.store(new_epoch, std::memory_order_release);
                   printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
                }
-               if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed) &&
-                   (must_gc || ru_discard_set[oldest_uncollected_epoch].shouldGC())) {
+               if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed)
+                   && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
                   if (gc_m.try_lock()) {
                      to_gc_epochs.push_back(oldest_uncollected_epoch);
                      oldest_uncollected_epoch++;
@@ -444,62 +429,6 @@ void BufferManager::startBackgroundThreads()
             t.detach();
          }
       }
-   }
-   if (FLAGS_iostat) {
-      std::thread iostat_timer;
-      if (FLAGS_pin_threads) {
-         utils::pinThisThread(FLAGS_worker_threads + FLAGS_wal + FLAGS_pp_threads + 1);
-      } else {
-         // utils::pinThisThread(FLAGS_wal + FLAGS_pp_threads);
-      }
-      CPUCounters::registerThread("iostat");
-      if (FLAGS_root) {
-         posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);
-      }
-      iostat_timer = std::thread([&]() {
-         FILE* fp;
-         fp = fopen(FLAGS_iostat_output_file.c_str(), "w");
-         ensure(fp != nullptr);
-         FILE* ru_fp;
-         ru_fp = fopen("ru_distribution.log", "w");
-         ensure(ru_fp != nullptr);
-        
-         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
-         std::vector<u64> last_seen_discard(FLAGS_pp_threads, 0);
-         bg_threads_counter++;
-         while (bg_threads_keep_running) {
-            u64 tot_page_evicted = 0;
-            u64 tot_page_discard = 0;
-            // grab the sum for each thread
-            for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-               u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::relaxed);
-               ensure(new_value >= last_seen[pp_id]);
-               u64 diff = new_value - last_seen[pp_id];
-               tot_page_evicted += diff;
-               last_seen[pp_id] = new_value;
-               // ------------------------------------------------------
-               u64 new_discard_value = per_pp_iostats[pp_id].discard.load(std::memory_order::relaxed);
-               ensure(new_discard_value >= last_seen_discard[pp_id]);
-               diff = new_discard_value - last_seen_discard[pp_id];
-               tot_page_discard += diff;
-               last_seen_discard[pp_id] = new_discard_value;
-            }
-            double wps = (tot_page_evicted * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
-            double dps = (tot_page_discard * PAGE_SIZE / 1024) * 1.0f / FLAGS_iostat_interval;
-            double free_per = write_credit_available.load(std::memory_order_acquire) * 100.0f / (FLAGS_ssd_gib * 1048576ul) * 4ul;
-            fprintf(fp, "[iostat] : %.2f kb_written/s, %.2f kb_discard/s, %.2f%% nand free\n", wps, dps, free_per);
-            u64 e = ru_epoch.load(std::memory_order_acquire);
-            fprintf(ru_fp, "%lu\n", e);
-            for (u32 i = 0; i < e; ++i) {
-               auto &set = ru_discard_set[i];
-               fprintf(ru_fp, "(%u,%u,%u),", set.size(), set.invalid.load(), set.total.load());
-            }
-            fprintf(ru_fp, "\n");
-            sleep(FLAGS_iostat_interval);
-         }
-         bg_threads_counter--;
-      });
-      iostat_timer.detach();
    }
 }
 // -------------------------------------------------------------------------------------
