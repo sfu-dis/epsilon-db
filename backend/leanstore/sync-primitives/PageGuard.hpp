@@ -126,7 +126,7 @@ class HybridPageGuard
    inline void incrementGSN()
    {
       assert(bf != nullptr);
-      assert(bf->page.GSN <= cr::Worker::my().getCurrentGSN());
+      ensure(bf->page.GSN <= cr::Worker::my().getCurrentGSN());
       bf->page.PLSN++;
       LID new_gsn = cr::Worker::my().getCurrentGSN() + 1;
       bf->page.GSN = new_gsn;
@@ -144,9 +144,10 @@ class HybridPageGuard
                cr::Worker::my().per_worker_logging_info.remote_flush_dependency = true;
             }
          }
-         LID new_gsn = std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN);
+         LID new_gsn = std::max<LID>(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
          cr::Worker::my().setCurrentGSN(new_gsn);
          // XXX(mfd) : The page GSN should also by synchronized here !!!
+         // bf->page.GSN = new_gsn;
       }
    }
    template <typename WT>

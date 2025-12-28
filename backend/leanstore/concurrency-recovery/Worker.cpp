@@ -63,7 +63,7 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       active_tx.wal_larger_than_buffer = false;
       // current_tx_wal_start is used for undoing aborted transactions.
       logging.current_tx_wal_start = logging.wal_gct_cursor;
-      if (!read_only) {
+      if (!read_only && false) {
          // XXX(mfd) : prev tx start ts ?
          WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_START);
          logging.submitWALMetaEntry(active_tx.start_ts);
@@ -72,9 +72,11 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       assert(prev_tx.state != Transaction::STATE::STARTED);
       // -------------------------------------------------------------------------------------
       const LID sync_point = Logging::global_sync_to_this_gsn.load();
-      if (sync_point > logging.getCurrentGSN()) {
-         logging.setCurrentGSN(sync_point);
-         logging.publishMaxGSNOffset();
+      if (sync_point > worker_gsn_clock) {
+         worker_gsn_clock = sync_point;
+         // XXX(mfd) : I think the max GSN observed should not be propagated to the log
+         //  immediately, this may commit non-durable transactions.
+         // logging.publishMaxGSNOffset();
       }
       if (FLAGS_wal_rfa) {
          per_worker_logging_info.rfa_gsn_flushed = Logging::global_min_gsn_flushed.load();
