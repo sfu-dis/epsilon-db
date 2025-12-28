@@ -72,7 +72,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                BMOptimisticGuard r_guard(r_buffer->header.latch);
                repickIf(r_buffer->header.keep_in_memory || r_buffer->header.is_being_written_back || r_buffer->header.latch.isExclusivelyLatched());
-               repickIf(r_buffer->page.GSN > cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire));
+               if (FLAGS_wal) {
+                  repickIf(r_buffer->page.GSN > cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire));
+               }
                // FIXME(mfd) : Temporarly avoiding evicting inner nodes.
                auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
                repickIf(!node->is_leaf);
