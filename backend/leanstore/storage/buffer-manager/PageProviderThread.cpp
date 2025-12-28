@@ -210,7 +210,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
                raise(SIGTRAP);
             }
-            per_pp_iostats[pp_id].discard.fetch_add(1, std::memory_order_relaxed);
+            COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
             parent_handler.swip.evict(evicted_pid);
             PARANOID_BLOCK() {
