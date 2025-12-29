@@ -661,6 +661,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    auto fix_dirty_page = [&](BufferFrame& bf) {
       ensure(bf.page.ru_epoch >= 0);
       LID lsn = ru_discard_set[bf.page.ru_epoch].erase(pid);
+      if (FLAGS_fake_log_reapply) {
+         bf.page.PLSN++;
+         return;
+      }
       ensure(lsn != LID(-1));
       u64 off = lsn % PAGE_SIZE;
       // TODO(mfd) : remove the pread from the critical section
