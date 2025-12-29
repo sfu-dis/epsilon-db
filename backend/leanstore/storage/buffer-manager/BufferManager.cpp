@@ -457,20 +457,37 @@ void BufferManager::writeAllBufferFrames()
 {
    stopBackgroundThreads();
    ensure(!FLAGS_out_of_place);
+   u64 total_writes_local = 0;
+   for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
+      total_writes_local += per_pp_iostats[pp_id].io_counter.load();
+   }
+   std::atomic<u64> total_writes = total_writes_local;
    utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
       BufferFrame::Page page;
       for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
          auto& bf = bfs[bf_i];
          bf.header.latch.mutex.lock();
-         if (!bf.isFree()) {
+         if (!bf.isFree() && bf.isDirty()) {
             page.dt_id = bf.page.dt_id;
             page.magic_debugging_number = bf.header.pid;
+            s64 prev_ru_epoch = bf.page.ru_epoch;
+            u64 cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
+            page.ru_epoch = cur_ru_epoch;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, page.dt);
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure(ret == PAGE_SIZE);
+            if (prev_ru_epoch != s64(-1)) {
+               ru_discard_set[prev_ru_epoch].invalid.fetch_add(1);
+            }
+            ru_discard_set[cur_ru_epoch].inserted.fetch_add(1);
+            if ((total_writes.fetch_add(1) % RU_SIZE) == 0) {
+               bool ok = ru_epoch.compare_exchange_strong(cur_ru_epoch, cur_ru_epoch + 1);
+               ensure(ok);
+            }
          }
          bf.header.latch.mutex.unlock();
       }
+      // TODO(mfd) : Persist RU state needed
    });
 }
 // -------------------------------------------------------------------------------------
