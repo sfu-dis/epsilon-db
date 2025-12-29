@@ -3,6 +3,7 @@
 #include "Transaction.hpp"
 #include "WALEntry.hpp"
 #include "Logging.hpp"
+#include "LogManager.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 // -------------------------------------------------------------------------------------
@@ -67,7 +68,6 @@ struct Worker {
          }
       }
    } per_worker_logging_info;
-   struct Logging &logging;
    LID worker_gsn_clock; // Will be the same as log_gsn_clock in case of per worker log.
    // Shared between Group Committer and Worker
    std::mutex precommitted_queue_mutex;
@@ -189,6 +189,7 @@ struct Worker {
          worker_gsn_clock = other_gsn;
       }
    }
+   Logging& myLog();
 };
 // -------------------------------------------------------------------------------------
 // Shortcuts

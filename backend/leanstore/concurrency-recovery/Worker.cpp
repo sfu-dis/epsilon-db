@@ -1,5 +1,4 @@
 #include "Worker.hpp"
-#include "LogManager.hpp"
 
 #include "leanstore/Config.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
@@ -36,8 +35,7 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       all_workers(all_workers),
       workers_count(workers_count),
       ssd_fd(fd),
-      is_page_provider(is_page_provider),
-      logging(LogManager::global->all_logs[worker_id]) // specific for txn partitioned logs
+      is_page_provider(is_page_provider)
 {
    Worker::tls_ptr = this;
    CRCounters::myCounters().worker_id = worker_id;
@@ -61,13 +59,15 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
    active_tx.stats.start = std::chrono::high_resolution_clock::now();
    if (FLAGS_wal) {
       active_tx.wal_larger_than_buffer = false;
-      // current_tx_wal_start is used for undoing aborted transactions.
-      logging.current_tx_wal_start = logging.wal_gct_cursor;
-      if (!read_only && false) {
-         // XXX(mfd) : prev tx start ts ?
-         WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_START);
-         logging.submitWALMetaEntry(active_tx.start_ts);
-         DEBUG_BLOCK() { entry.checkCRC(); }
+      if (FLAGS_wal_worker_partitioning) {
+         auto& logging = myLog();
+         // current_tx_wal_start is used for undoing aborted transactions.
+         logging.current_tx_wal_start = logging.wal_gct_cursor;
+         if (!read_only) {
+            WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_START);
+            logging.submitWALMetaEntry(active_tx.start_ts);
+            DEBUG_BLOCK() { entry.checkCRC(); }
+        }
       }
       assert(prev_tx.state != Transaction::STATE::STARTED);
       // -------------------------------------------------------------------------------------
@@ -87,8 +87,7 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
       // -------------------------------------------------------------------------------------
       active_tx.state = Transaction::STATE::STARTED;
       active_tx.has_wrote = false;
-      // TODO(mfd) : This should be the worker gsn
-      active_tx.min_observed_gsn_when_started = logging.log_gsn_clock;
+      active_tx.min_observed_gsn_when_started = worker_gsn_clock;
       active_tx.current_tx_mode = next_tx_type;
       active_tx.current_tx_isolation_level = next_tx_isolation_level;
       active_tx.is_read_only = read_only;
@@ -148,19 +147,18 @@ void Worker::commitTX()
         active_tx.commit_ts = commit_ts;
       }
       // -------------------------------------------------------------------------------------
-      // TODO(mfd) : This should be the worker gsn
-      active_tx.max_observed_gsn = logging.log_gsn_clock;
+      active_tx.max_observed_gsn = worker_gsn_clock;
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
-      if (false) {
-         WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
+      if (FLAGS_wal_worker_partitioning) {
+         WALMetaEntry& entry = myLog().reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
          // TODO: commit_ts in log
-         logging.submitWALMetaEntry(active_tx.start_ts);
+         myLog().submitWALMetaEntry(active_tx.start_ts);
       }
       // XXX(mfd) : the use of start_ts is sceptical.
       last_precommitted_tx_commit_ts.store(active_tx.start_ts, std::memory_order_release);
       if (FLAGS_wal_variant == 2) {
-        logging.wt_to_lw.optimistic_latch.notify_all();
+        myLog().wt_to_lw.optimistic_latch.notify_all();
       }
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
@@ -189,6 +187,7 @@ void Worker::abortTX()
    ensure(active_tx.state == Transaction::STATE::STARTED);
    const u64 tx_id = active_tx.startTS();
    std::vector<const WALEntry*> entries;
+   auto& logging = myLog();
    logging.iterateOverCurrentTXEntries([&](const WALEntry& entry) {
       if (entry.type == WALEntry::TYPE::DT_SPECIFIC) {
          entries.push_back(&entry);
@@ -201,12 +200,17 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    cc.history_tree.purgeVersions(worker_id, active_tx.startTS(), active_tx.startTS(), [&](const TXID, const DTID, const u8*, u64, const bool) {});
    // -------------------------------------------------------------------------------------
-   if (false) {
+   if (FLAGS_wal_worker_partitioning) {
       WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
       logging.submitWALMetaEntry(active_tx.start_ts);
    }
    active_tx.state = Transaction::STATE::ABORTED;
    jumpmu::jump();
+}
+// -------------------------------------------------------------------------------------
+Logging& Worker::myLog() {
+   ensure(FLAGS_wal_worker_partitioning);
+   return LogManager::global->all_logs[worker_id];
 }
 // -------------------------------------------------------------------------------------
 void Worker::shutdown()

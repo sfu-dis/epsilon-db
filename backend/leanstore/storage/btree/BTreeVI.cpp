@@ -178,7 +178,9 @@ OP_RESULT BTreeVI::executeDeterministricUpdate(u8* o_key,
    jumpmuTry()
    {
       cr::activeTX().markAsWrite();
-      cr::Worker::my().logging.walEnsureEnoughSpace(PAGE_SIZE * 1);
+      if (FLAGS_wal_worker_partitioning) {
+         cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
+      }
       Slice key(o_key, o_key_length);
       MutableSlice primary_payload = iterator.mutableValue();
       auto& tuple_head = *reinterpret_cast<ChainedTuple*>(primary_payload.data());
@@ -235,7 +237,9 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
                                          UpdateSameSizeInPlaceDescriptor& update_descriptor)
 {
    cr::activeTX().markAsWrite();
-   cr::Worker::my().logging.walEnsureEnoughSpace(PAGE_SIZE * 1);
+   if (FLAGS_wal_worker_partitioning) {
+      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
+   }
    Slice key(o_key, o_key_length);
    OP_RESULT ret;
    // -------------------------------------------------------------------------------------
@@ -394,7 +398,10 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
 OP_RESULT BTreeVI::insert(u8* o_key, u16 o_key_length, u8* value, u16 value_length)
 {
    cr::activeTX().markAsWrite();
-   cr::Worker::my().logging.walEnsureEnoughSpace(PAGE_SIZE * 1);
+
+   if (FLAGS_wal_worker_partitioning) {
+      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
+   }
    Slice key(o_key, o_key_length);
    const u16 payload_length = value_length + sizeof(ChainedTuple);
    // -------------------------------------------------------------------------------------
@@ -451,7 +458,9 @@ OP_RESULT BTreeVI::remove(u8* o_key, u16 o_key_length)
 {
    // TODO: remove fat tuple
    cr::activeTX().markAsWrite();
-   cr::Worker::my().logging.walEnsureEnoughSpace(PAGE_SIZE * 1);
+   if (FLAGS_wal_worker_partitioning) {
+      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
+   }
    Slice key(o_key, o_key_length);
    // -------------------------------------------------------------------------------------
    jumpmuTry()

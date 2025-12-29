@@ -167,12 +167,12 @@ class HybridPageGuard
       ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
       LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN());
       logging.setCurrentGSN(logGSN);
-      auto handler = cr::Worker::my().logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
+      auto handler = logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
       bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
-   inline void submitWALEntry(u64 total_size) { cr::Worker::my().logging.submitDTEntry(total_size); }
+   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog().submitDTEntry(total_size); }
    // -------------------------------------------------------------------------------------
    inline bool hasFacedContention() { return guard.faced_contention; }
    inline void unlock() { guard.unlock(); }

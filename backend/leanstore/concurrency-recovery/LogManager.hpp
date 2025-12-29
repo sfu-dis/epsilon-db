@@ -48,9 +48,9 @@ struct LogManager {
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
 
-   static u32 getLogID() { return Worker::my().worker_id; }
+   // static u32 getLogID() { return Worker::my().worker_id; }
 
-   static Logging& getLog() { return Worker::my().logging; }
+   static Logging& getLog();
 
    static void trimLogSegment(u32 log_segment_id)
    {

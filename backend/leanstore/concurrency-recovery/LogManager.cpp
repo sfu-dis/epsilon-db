@@ -56,6 +56,11 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    }
 }
 
+Logging& LogManager::getLog()
+{ 
+    return Worker::my().myLog();
+}
+
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
 {
    ensure(size % LOG_DEV_BLK_SIZE == 0);
