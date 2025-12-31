@@ -660,6 +660,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    //  it will be used by the gc thread also.
    auto fix_dirty_page = [&](BufferFrame& bf) {
       ensure(bf.page.ru_epoch >= 0);
+      COUNTERS_BLOCK(dirty_read_operations_counter)
+      {
+         WorkerCounters::myCounters().dirty_read_operations_counter++;
+      }
       LID lsn = ru_discard_set[bf.page.ru_epoch].erase(pid);
       if (FLAGS_fake_log_reapply) {
          bf.page.PLSN++;
@@ -669,7 +673,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       u64 off = lsn % PAGE_SIZE;
       // TODO(mfd) : remove the pread from the critical section
       s64 br = pread(log_fd, log_record_buf, 2 * PAGE_SIZE, lsn - off);
-      ensure(br == (2 * PAGE_SIZE));
+      ensure_equal(br, (2 * PAGE_SIZE));
       auto* entry = (cr::WALEntry*)&log_record_buf[off];
 
       if (entry->type != cr::WALEntry::TYPE::DT_SPECIFIC) {
@@ -845,7 +849,7 @@ void BufferManager::readPageSync(u64 pid, u8* destination)
       }
    }
    // -------------------------------------------------------------------------------------
-   COUNTERS_BLOCK()
+   COUNTERS_BLOCK(read_operations_counter)
    {
       WorkerCounters::myCounters().read_operations_counter++;
    }

@@ -83,7 +83,7 @@ void CRManager::groupCommiter()
                // TODO: add the concept of chunks
                log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
                // -------------------------------------------------------------------------------------
-               COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
+               COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
             }
          } else if (log2gct.wal_written_offset < logging.wal_gct_cursor) {
             {
@@ -95,7 +95,7 @@ void CRManager::groupCommiter()
                if (FLAGS_wal_pwrite) {
                   log_manager->add_pwrite(log_i, lower_offset, size_aligned, true);
                   // -------------------------------------------------------------------------------------
-                  COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
+                  COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
             }
             {
@@ -108,12 +108,11 @@ void CRManager::groupCommiter()
                if (FLAGS_wal_pwrite) {
                   log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
                   // -------------------------------------------------------------------------------------
-                  COUNTERS_BLOCK() { CRCounters::myCounters().gct_write_bytes += size_aligned; }
+                  COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
                }
             }
          }
       }
-      if (log_manager->io_slot == 0) continue;
       // -------------------------------------------------------------------------------------
       // Phase 2
       COUNTERS_BLOCK()
@@ -190,6 +189,7 @@ void CRManager::groupCommiter()
       log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
       if (FLAGS_wal_pwrite) {
          log_manager->persistMetaBlock();
+         COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += log_manager->meta_size; }
       }
    }
    running_threads--;

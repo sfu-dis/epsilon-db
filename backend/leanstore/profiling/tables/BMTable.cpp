@@ -58,8 +58,11 @@ void BMTable::open()
    // -------------------------------------------------------------------------------------
    columns.emplace("allocate_ops", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::allocate_operations_counter)); });
    columns.emplace("r_mib", [&](Column& col) {
-      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_counter) * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0);
+      col << (local_read_operations_counter * PAGE_SIZE / 1024.0 / 1024.0);
    });
+   columns.emplace("dirty_pct", [&](Column& col) {
+      col << 
+      (sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_read_operations_counter) * 100.0 / local_read_operations_counter);   });
    columns.emplace("order_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::order_deletions)); });
    columns.emplace("history_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::history_deletions)); });
    columns.emplace("tpcc_time_in_truncate", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::tpcc_time_in_truncate)/1000); });
@@ -151,6 +154,8 @@ void BMTable::next()
       local_total_free += bm.getPartition(p_i).dram_free_list.counter.load();
    }
    total = local_phase_1_ms + local_phase_2_ms + local_phase_3_ms;
+   // -------------------------------------------------------------------------------------
+   local_read_operations_counter = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_counter);
    // -------------------------------------------------------------------------------------
    // worker io read latency histogram, every N seconds
    WorkerCounters::worker_counters.begin()->seconds++;

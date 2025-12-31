@@ -39,6 +39,7 @@ struct WorkerCounters {
    atomic<u64> hot_hit_counter = 0;  // TODO: give it a try ?
    atomic<u64> cold_hit_counter = 0;
    atomic<u64> read_operations_counter = 0;
+   atomic<u64> dirty_read_operations_counter = 0;
    atomic<u64> allocate_operations_counter = 0;
    atomic<u64> restarts_counter = 0;
    atomic<u64> tx = 0;

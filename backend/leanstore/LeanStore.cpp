@@ -221,6 +221,7 @@ void LeanStore::startProfilingThread()
          // -------------------------------------------------------------------------------------
          const u64 min_hardened_gsn = cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire);
          const u64 max_hardened_gsn = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
+         const double dirty_read_pct = std::stod(bm_table.get("0", "dirty_pct"));
          // using RowType = std::vector<variant<std::string, const char*, Table>>;
          if (FLAGS_print_tx_console) {
             tabulate::Table table;
@@ -256,18 +257,19 @@ void LeanStore::startProfilingThread()
             table.add_row({"t", "OLTP TX", "RF %", "Abort%", 
                           "W MiB", "R MiB", /*"Instrs/TX", "Cycles/TX", "CPUs", "L1/TX", "LLC/TX", "GHz",
                            "WAL GiB/s", "GCT GiB/s","Space G", "GCT Rounds", */ 
-                           "Discard MiB", "MinGSN", "MaxGSN" });
+                           "Discard MiB", "Dirty Read %" , "MinDurGSN", "MaxDurGSN", "WAL GiB/s"});
             table.add_row({std::to_string(seconds), std::to_string(tx), 
                         to_string_rounded(remote_flushes_pct), to_string_rounded(tx_abort_pct),
                            /*std::to_string(olap_tx),*/ 
                            bm_table.get("0", "w_mib"), bm_table.get("0", "r_mib"), /*std::to_string(instr_per_tx),
                            std::to_string(cycles_per_tx), std::to_string(cpu_table.workers_agg_events["CPU"]), std::to_string(l1_per_tx),
                            std::to_string(llc_per_tx), std::to_string(cpu_table.workers_agg_events["GHz"]), cr_table.get("0", "wal_write_gib"),
-                           cr_table.get("0", "gct_write_gib"),
                             bm_table.get("0", "space_usage_gib"), cr_table.get("0", "gct_rounds"), */
                             bm_table.get("0", "discarded_mib"),
+                            to_string_rounded(dirty_read_pct),
                             std::to_string(min_hardened_gsn),
                             std::to_string(max_hardened_gsn),
+                            cr_table.get("0", "gct_write_gib"),
                            });
             // -------------------------------------------------------------------------------------
             table.format().width(10);

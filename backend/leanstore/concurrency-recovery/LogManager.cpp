@@ -14,7 +14,6 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    ensure(all_logs != nullptr);
    // -------------------------------------------------------------------------------------
    meta_size = log_start_offset = utils::upAlign(sizeof(meta_block) + nb_logs * sizeof(per_worker_log_segment), LOG_DEV_BLK_SIZE);
-   ensure_equal(meta_size, 4096);
    u8* meta_block_buffer = (u8*)aligned_alloc(4096, meta_size);
    ensure(meta_block_buffer != nullptr);
    memset(meta_block_buffer, 0, meta_size);
