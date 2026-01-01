@@ -100,6 +100,7 @@ class BufferManager
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
    std::atomic<u64> tot_gc_writes = 0;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
+   void ruGarbageCollectorThread(u32 gc_id);
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
    // -------------------------------------------------------------------------------------
