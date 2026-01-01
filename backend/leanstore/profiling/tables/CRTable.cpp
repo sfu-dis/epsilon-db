@@ -73,6 +73,9 @@ void CRTable::open()
    columns.emplace("cc_ms_start_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_start_tx); });
    columns.emplace("cc_ms_commit_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_commit_tx); });
    columns.emplace("cc_ms_abort_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_abort_tx); });
+   // -------------------------------------------------------------------------------------
+   columns.emplace("walbuf_mutex", [](Column& col) { 
+      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls)); });
 }
 // -------------------------------------------------------------------------------------
 void CRTable::next()

@@ -79,7 +79,8 @@ DECLARE_bool(wal_fsync);
 DECLARE_int64(wal_variant);
 DECLARE_uint64(wal_log_writers);
 DECLARE_uint64(wal_buffer_size);
-DECLARE_bool(wal_worker_partitioning);
+DECLARE_string(wal_partition_by);
+DECLARE_uint64(wal_partitions_count);
 // -------------------------------------------------------------------------------------
 DECLARE_string(isolation_level);
 DECLARE_bool(mv);

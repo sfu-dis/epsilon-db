@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Logging.hpp"
 #include "Units.hpp"
 #include "Worker.hpp"
 
@@ -25,6 +24,8 @@ struct meta_block {
    struct per_worker_log_segment log_segments[0];
 };
 
+struct Logging;
+
 struct LogManager {
    static constexpr u64 LOG_DEV_BLK_SIZE = 4096;
    static LogManager* global;
@@ -45,12 +46,18 @@ struct LogManager {
    std::unique_ptr<struct iocb*[]> iocbs_ptr = make_unique<struct iocb*[]>(batch_max_size);
    std::unique_ptr<struct io_event[]> events = make_unique<struct io_event[]>(batch_max_size);
    io_context_t aio_context;
+   // -------------------------------------------------------------------------------------
+   enum class PARTITION_BY : u8 { WORKER, PAGE };
+   PARTITION_BY partition_by;
+   // -------------------------------------------------------------------------------------
+   // temporary
+   static std::atomic<bool> wal_pwrite;
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
 
    // static u32 getLogID() { return Worker::my().worker_id; }
 
-   static Logging& getLog();
+   static Logging& getLog(PID pid);
 
    static void trimLogSegment(u32 log_segment_id)
    {
@@ -62,6 +69,10 @@ struct LogManager {
    void submitAndWait();
    
    void persistMetaBlock();
+
+   bool isPartitionedByWorker() { return partition_by == PARTITION_BY::WORKER; }
+   bool isPartitionedByPage() { return partition_by == PARTITION_BY::PAGE; }
+   // -------------------------------------------------------------------------------------
 };
 
 }  // namespace cr

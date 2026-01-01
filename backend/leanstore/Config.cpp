@@ -84,7 +84,8 @@ DEFINE_bool(wal_fsync, false, "");
 DEFINE_int64(wal_variant, 0, "");
 DEFINE_uint64(wal_log_writers, 1, "");
 DEFINE_uint64(wal_buffer_size, 1024 * 1024 * 10, "");
-DEFINE_bool(wal_worker_partitioning, true, "log per worker partitioning");
+DEFINE_string(wal_partition_by, "worker", "options: worker, page");
+DEFINE_uint64(wal_partitions_count, 32, "Valid only when we use page based partitioning");
 // -------------------------------------------------------------------------------------
 DEFINE_string(isolation_level, "si", "options: ru (READ_UNCOMMITTED), rc (READ_COMMITTED), si (SNAPSHOT_ISOLATION), ser (SERIALIZABLE)");
 DEFINE_bool(mv, true, "Multi-version");

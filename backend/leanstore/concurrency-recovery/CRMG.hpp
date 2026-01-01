@@ -2,8 +2,9 @@
 #include "Exceptions.hpp"
 #include "HistoryTreeInterface.hpp"
 #include "Units.hpp"
-#include "Worker.hpp"
+#include "Logging.hpp"
 #include "LogManager.hpp"
+#include "Worker.hpp"
 #include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------

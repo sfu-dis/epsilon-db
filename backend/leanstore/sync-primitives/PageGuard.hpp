@@ -146,8 +146,6 @@ class HybridPageGuard
          }
          LID new_gsn = std::max<LID>(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
          cr::Worker::my().setCurrentGSN(new_gsn);
-         // XXX(mfd) : The page GSN should also by synchronized here !!!
-         // bf->page.GSN = new_gsn;
       }
    }
    template <typename WT>
@@ -162,8 +160,11 @@ class HybridPageGuard
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;
       // TODO: verify
-      auto& logging = cr::LogManager::getLog();
-      // TODO logging.walEnsureEnoughSpace(sizeof(WT) + extra_size);
+      auto& logging = cr::LogManager::getLog(pid);
+      logging.mutex.lock();
+      if (!cr::LogManager::global->isPartitionedByWorker()) {
+         logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
+      }
       ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
       LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN());
       logging.setCurrentGSN(logGSN);
@@ -172,7 +173,7 @@ class HybridPageGuard
       bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
-   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog().submitDTEntry(total_size); }
+   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog(bf->header.pid).submitDTEntry(total_size); }
    // -------------------------------------------------------------------------------------
    inline bool hasFacedContention() { return guard.faced_contention; }
    inline void unlock() { guard.unlock(); }

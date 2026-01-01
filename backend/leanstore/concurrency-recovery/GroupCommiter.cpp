@@ -48,7 +48,7 @@ void CRManager::groupCommiter()
       log_manager->io_slot = 0;
       round_i++;
       CRCounters::myCounters().gct_rounds++;
-      COUNTERS_BLOCK() { phase_1_begin = std::chrono::high_resolution_clock::now(); }
+      COUNTERS_BLOCK(gct_phases) { phase_1_begin = std::chrono::high_resolution_clock::now(); }
       // -------------------------------------------------------------------------------------
       min_all_workers_hardened_commit_ts = std::numeric_limits<TXID>::max();
       for (WORKERID w_i = 0; w_i < workers_count; w_i++) { 
@@ -115,7 +115,7 @@ void CRManager::groupCommiter()
       }
       // -------------------------------------------------------------------------------------
       // Phase 2
-      COUNTERS_BLOCK()
+      COUNTERS_BLOCK(gct_phases)
       {
          phase_1_end = std::chrono::high_resolution_clock::now();
          write_begin = phase_1_end;
@@ -126,7 +126,7 @@ void CRManager::groupCommiter()
          log_manager->submitAndWait();
       }
       // -------------------------------------------------------------------------------------
-      COUNTERS_BLOCK()
+      COUNTERS_BLOCK(gct_phases)
       {
          write_end = std::chrono::high_resolution_clock::now();
          phase_2_begin = write_end;
@@ -175,7 +175,7 @@ void CRManager::groupCommiter()
          }
       }
       CRCounters::myCounters().gct_committed_tx += committed_tx;
-      COUNTERS_BLOCK()
+      COUNTERS_BLOCK(gct_phases)
       {
          phase_2_end = std::chrono::high_resolution_clock::now();
          CRCounters::myCounters().gct_phase_1_ms += (std::chrono::duration_cast<std::chrono::microseconds>(phase_1_end - phase_1_begin).count());

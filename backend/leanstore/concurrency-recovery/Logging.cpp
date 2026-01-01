@@ -99,10 +99,12 @@ void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
 // -------------------------------------------------------------------------------------
 void Logging::submitDTEntry(u64 total_size)
 {
+#if 0
    if(!((wal_log_cursor >= current_tx_wal_start) || (wal_log_cursor + total_size  < current_tx_wal_start))) {
       // my().active_tx.wal_larger_than_buffer = true;
       raise(SIGTRAP);
    }
+#endif
    DEBUG_BLOCK()
    {
       active_dt_entry->computeCRC();
@@ -113,11 +115,13 @@ void Logging::submitDTEntry(u64 total_size)
    }
    wal_log_cursor += total_size;
    publishMaxGSNOffset();
+   this->mutex.unlock();
 }
 // -------------------------------------------------------------------------------------
 // Called by worker, so concurrent writes on the buffer
 void Logging::iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback)
 {
+   raise(SIGTRAP);
    u64 cursor = current_tx_wal_start;
    while (cursor != wal_log_cursor) {
       const WALEntry& entry = *reinterpret_cast<WALEntry*>(wal_buffer + cursor);

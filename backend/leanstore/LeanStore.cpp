@@ -107,7 +107,7 @@ LeanStore::LeanStore()
    // -------------------------------------------------------------------------------------
    history_tree = std::make_unique<cr::HistoryTree>();
    u64 log_device_size;
-   if (FLAGS_wal && FLAGS_wal_pwrite) {
+   if (FLAGS_wal) {
       ensure(FLAGS_redo_log_file != "");
       ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
@@ -222,6 +222,7 @@ void LeanStore::startProfilingThread()
          const u64 min_hardened_gsn = cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire);
          const u64 max_hardened_gsn = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
          const double dirty_read_pct = std::stod(bm_table.get("0", "dirty_pct"));
+         const double walbuf_contention = std::stod(cr_table.get("0", "walbuf_mutex"));
          // using RowType = std::vector<variant<std::string, const char*, Table>>;
          if (FLAGS_print_tx_console) {
             tabulate::Table table;
@@ -257,7 +258,8 @@ void LeanStore::startProfilingThread()
             table.add_row({"t", "OLTP TX", "RF %", "Abort%", 
                           "W MiB", "R MiB", /*"Instrs/TX", "Cycles/TX", "CPUs", "L1/TX", "LLC/TX", "GHz",
                            "WAL GiB/s", "GCT GiB/s","Space G", "GCT Rounds", */ 
-                           "Discard MiB", "Dirty Read %" , "MinDurGSN", "MaxDurGSN", "WAL GiB/s"});
+                           "Discard MiB", "Dirty Read %" , "MinDurGSN", "MaxDurGSN", "WAL GiB/s", "WALmtx %", 
+                           "gct_p1%", "gct_p2%", "gct_w%"});
             table.add_row({std::to_string(seconds), std::to_string(tx), 
                         to_string_rounded(remote_flushes_pct), to_string_rounded(tx_abort_pct),
                            /*std::to_string(olap_tx),*/ 
@@ -270,6 +272,10 @@ void LeanStore::startProfilingThread()
                             std::to_string(min_hardened_gsn),
                             std::to_string(max_hardened_gsn),
                             cr_table.get("0", "gct_write_gib"),
+                            to_string_rounded(walbuf_contention),
+                            cr_table.get("0", "gct_phase_1_pct"),
+                            cr_table.get("0", "gct_phase_2_pct"),
+                            cr_table.get("0", "gct_write_pct"),
                            });
             // -------------------------------------------------------------------------------------
             table.format().width(10);

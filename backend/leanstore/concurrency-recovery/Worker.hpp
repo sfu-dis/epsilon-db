@@ -2,7 +2,6 @@
 #include "HistoryTreeInterface.hpp"
 #include "Transaction.hpp"
 #include "WALEntry.hpp"
-#include "Logging.hpp"
 #include "LogManager.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -22,6 +21,8 @@ namespace leanstore
 {
 namespace cr
 {
+// -------------------------------------------------------------------------------------
+struct Logging;
 // -------------------------------------------------------------------------------------
 static constexpr u16 STATIC_MAX_WORKERS = std::numeric_limits<WORKERID>::max();
 // -------------------------------------------------------------------------------------

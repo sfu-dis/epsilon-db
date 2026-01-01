@@ -2,8 +2,10 @@
 
 #include "Units.hpp"
 #include "WALEntry.hpp"
+#include "LogManager.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/utils/OptimisticSpinStruct.hpp"
+#include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 
 namespace leanstore
 {
@@ -21,6 +23,7 @@ struct Logging {
    static atomic<u64> global_min_commit_ts_flushed;
    // -------------------------------------------------------------------------------------
    s64 WORKER_WAL_SIZE = 0;
+   instrumented_mutex mutex;
    WALMetaEntry* active_mt_entry;
    WALDTEntry* active_dt_entry;
    // -------------------------------------------------------------------------------------
@@ -69,7 +72,9 @@ struct Logging {
    {
       const auto lsn = this->log_segment_start + wal_lsn_counter;
       const u64 total_size = sizeof(WALDTEntry) + requested_size;
-      wal_lsn_counter += total_size;
+      if (LogManager::wal_pwrite) {
+         wal_lsn_counter += total_size;
+      }
       ensure(walContiguousFreeSpace() >= total_size);
       active_dt_entry = new (wal_buffer + wal_log_cursor) WALDTEntry();
       active_dt_entry->lsn.store(lsn, std::memory_order_release);

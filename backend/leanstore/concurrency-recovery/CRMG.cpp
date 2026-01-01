@@ -25,8 +25,9 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
    // -------------------------------------------------------------------------------------
    Worker::global_workers_current_snapshot = std::make_unique<atomic<u64>[]>(workers_count);
    // -------------------------------------------------------------------------------------
-   if (FLAGS_wal && FLAGS_wal_pwrite) {
-      log_manager = std::make_unique<cr::LogManager>(workers_count, log_dev_fd, log_device_size);
+   if (FLAGS_wal) {
+      u32 log_count = FLAGS_wal_partition_by == "worker" ? workers_count : FLAGS_wal_partitions_count;
+      log_manager = std::make_unique<cr::LogManager>(log_count, log_dev_fd, log_device_size);
    } else {
       log_manager = nullptr;
    }

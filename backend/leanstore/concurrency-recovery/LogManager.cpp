@@ -1,3 +1,5 @@
+#include "Logging.hpp"
+
 #include "LogManager.hpp"
 
 namespace leanstore
@@ -6,10 +8,19 @@ namespace cr
 {
 
 LogManager* LogManager::global = nullptr;
+extern std::atomic<bool> LogManager::wal_pwrite = false;
 
 LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
     : log_count(nb_logs), log_dev_fd(log_dev_fd), log_dev_size(log_dev_size), batch_max_size(nb_logs * 2 + 2)
 {
+   // -------------------------------------------------------------------------------------
+   if (FLAGS_wal_partition_by == "worker") {
+      partition_by = PARTITION_BY::WORKER;
+   } else if (FLAGS_wal_partition_by == "page") {
+      partition_by = PARTITION_BY::PAGE;
+   } else {
+      throw std::invalid_argument("FLAGS_wal_partition_by");
+   }
    all_logs = new Logging[nb_logs];
    ensure(all_logs != nullptr);
    // -------------------------------------------------------------------------------------
@@ -55,13 +66,20 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    }
 }
 
-Logging& LogManager::getLog()
+Logging& LogManager::getLog(PID pid)
 { 
-    return Worker::my().myLog();
+   u32 log_id = -1;
+   if (global->isPartitionedByWorker()) {
+      log_id = Worker::my().worker_id;
+   } else {
+      log_id = pid % global->log_count;
+   }
+   return global->all_logs[log_id];
 }
 
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
 {
+   if (!wal_pwrite) return;
    ensure(size % LOG_DEV_BLK_SIZE == 0);
    if (size == 0)
       return;
@@ -84,6 +102,7 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
 
 void LogManager::submitAndWait()
 {
+   if (!wal_pwrite) return;
    u32 submitted = 0;
    u32 left = io_slot;
    while (left) {
@@ -113,6 +132,7 @@ void LogManager::submitAndWait()
 
 void LogManager::persistMetaBlock()
 {
+   if (!wal_pwrite) return;
    s64 ret = pwrite(log_dev_fd, meta, meta_size, 0);
    ensure(ret == meta_size);
    if (FLAGS_wal_fsync) {

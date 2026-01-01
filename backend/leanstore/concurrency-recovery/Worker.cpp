@@ -1,5 +1,6 @@
 #include "Worker.hpp"
 
+#include "Logging.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/storage/buffer-manager/DTRegistry.hpp"
@@ -59,7 +60,7 @@ void Worker::startTX(TX_MODE next_tx_type, TX_ISOLATION_LEVEL next_tx_isolation_
    active_tx.stats.start = std::chrono::high_resolution_clock::now();
    if (FLAGS_wal) {
       active_tx.wal_larger_than_buffer = false;
-      if (FLAGS_wal_worker_partitioning) {
+      if (LogManager::global->isPartitionedByWorker()) {
          auto& logging = myLog();
          // current_tx_wal_start is used for undoing aborted transactions.
          logging.current_tx_wal_start = logging.wal_gct_cursor;
@@ -150,7 +151,7 @@ void Worker::commitTX()
       active_tx.max_observed_gsn = worker_gsn_clock;
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
-      if (FLAGS_wal_worker_partitioning) {
+      if (LogManager::global->isPartitionedByWorker()) {
          WALMetaEntry& entry = myLog().reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
          // TODO: commit_ts in log
          myLog().submitWALMetaEntry(active_tx.start_ts);
@@ -200,7 +201,7 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    cc.history_tree.purgeVersions(worker_id, active_tx.startTS(), active_tx.startTS(), [&](const TXID, const DTID, const u8*, u64, const bool) {});
    // -------------------------------------------------------------------------------------
-   if (FLAGS_wal_worker_partitioning) {
+   if (LogManager::global->isPartitionedByWorker()) {
       WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
       logging.submitWALMetaEntry(active_tx.start_ts);
    }
@@ -209,7 +210,7 @@ void Worker::abortTX()
 }
 // -------------------------------------------------------------------------------------
 Logging& Worker::myLog() {
-   ensure(FLAGS_wal_worker_partitioning);
+   ensure(LogManager::global->isPartitionedByWorker());
    return LogManager::global->all_logs[worker_id];
 }
 // -------------------------------------------------------------------------------------

@@ -178,7 +178,7 @@ OP_RESULT BTreeVI::executeDeterministricUpdate(u8* o_key,
    jumpmuTry()
    {
       cr::activeTX().markAsWrite();
-      if (FLAGS_wal_worker_partitioning) {
+      if (cr::LogManager::global->isPartitionedByWorker()) {
          cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
       }
       Slice key(o_key, o_key_length);
@@ -237,7 +237,7 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
                                          UpdateSameSizeInPlaceDescriptor& update_descriptor)
 {
    cr::activeTX().markAsWrite();
-   if (FLAGS_wal_worker_partitioning) {
+   if (cr::LogManager::global->isPartitionedByWorker()) {
       cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
    }
    Slice key(o_key, o_key_length);
@@ -399,7 +399,7 @@ OP_RESULT BTreeVI::insert(u8* o_key, u16 o_key_length, u8* value, u16 value_leng
 {
    cr::activeTX().markAsWrite();
 
-   if (FLAGS_wal_worker_partitioning) {
+   if (cr::LogManager::global->isPartitionedByWorker()) {
       cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
    }
    Slice key(o_key, o_key_length);
@@ -458,7 +458,7 @@ OP_RESULT BTreeVI::remove(u8* o_key, u16 o_key_length)
 {
    // TODO: remove fat tuple
    cr::activeTX().markAsWrite();
-   if (FLAGS_wal_worker_partitioning) {
+   if (cr::LogManager::global->isPartitionedByWorker()) {
       cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
    }
    Slice key(o_key, o_key_length);
