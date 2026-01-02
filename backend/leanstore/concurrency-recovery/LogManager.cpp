@@ -31,27 +31,48 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    meta = (struct meta_block*)meta_block_buffer;
    log_segment_size = utils::downAlign((log_dev_size - meta_size) / nb_logs, LOG_DEV_BLK_SIZE);
    // -------------------------------------------------------------------------------------
-   // TODO : if we're recovering
-   //   read the meta block
-   //   assert that the current number of logs is the same as the one before.
-   meta->number_logs = nb_logs;
-   meta->min_all_workers_gsn = 0;
-   meta->min_all_workers_hardened_commit_ts = 0;
+   if (FLAGS_recover) {
+      s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, 0);
+      ensure_equal(ret, s64(meta_size));
+      ensure_equal(meta->number_logs, nb_logs);
+      Logging::global_min_gsn_flushed.store(meta->min_all_workers_gsn);
+      Logging::global_sync_to_this_gsn.store(meta->global_sync_to_this_gsn);
+      printf("[INFO] Recovering min all workers gsn %lu\n", meta->min_all_workers_gsn);
+      printf("[INFO] Recovering max all workers gsn %lu\n", meta->global_sync_to_this_gsn);
+      // Should TX timestamp be recovered ?
+   } else {
+      meta->number_logs = nb_logs;
+      meta->min_all_workers_gsn = 0;
+      meta->global_sync_to_this_gsn = 0;
+      meta->min_all_workers_hardened_commit_ts = 0;
+   }
    for (u32 log_i = 0; log_i < log_count; ++log_i) {
       auto* seg = &meta->log_segments[log_i];
-      seg->start_off = log_start_offset + log_i * log_segment_size;
-      seg->end_off = seg->start_off + log_segment_size;
-      seg->offset = seg->last_start_offset = 0;
+      if (!FLAGS_recover) {
+         seg->start_off = log_start_offset + log_i * log_segment_size;
+         seg->end_off = seg->start_off + log_segment_size;
+         seg->offset = seg->last_start_offset = 0;
+         seg->hardened_gsn = 0;
+      } else {
+         printf("[INFO] Recovering offset of log segment to %lu\n", seg->offset);
+         printf("[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
+         printf("[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
+      }
       // -------------------------------------------------------------------------------------
       auto& logging = all_logs[log_i];
       logging.log_segment_start = seg->start_off;
+      logging.wal_lsn_counter = FLAGS_recover ? (seg->offset) : 0;
+      logging.log_gsn_clock = FLAGS_recover ? (seg->hardened_gsn) : 0;
+      logging.wt_to_lw.current_value.last_gsn = logging.hardened_gsn = logging.log_gsn_clock;
       logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
       ensure(logging.wal_buffer != nullptr);
       ensure_equal(u64(logging.wal_buffer) % 4096, 0);
       std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    }
-   s64 ret = pwrite(log_dev_fd, meta_block_buffer, meta_size, /*offset*/ 0);
-   ensure_equal(ret, s64(meta_size));
+   if (!FLAGS_recover) {
+      s64 ret = pwrite(log_dev_fd, meta_block_buffer, meta_size, /*offset*/ 0);
+      ensure_equal(ret, s64(meta_size));
+   }
    // -------------------------------------------------------------------------------------
    // initialize aio context
    iocbs = make_unique<struct iocb[]>(batch_max_size);

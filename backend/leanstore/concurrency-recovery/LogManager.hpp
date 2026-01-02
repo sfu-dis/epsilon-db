@@ -15,11 +15,13 @@ struct per_worker_log_segment {
    u64 end_off;
    u64 offset;
    u64 last_start_offset;
+   LID hardened_gsn;
 };
 
 struct meta_block {
    u64 number_logs;
    LID min_all_workers_gsn;
+   LID global_sync_to_this_gsn;
    TXID min_all_workers_hardened_commit_ts;
    struct per_worker_log_segment log_segments[0];
 };

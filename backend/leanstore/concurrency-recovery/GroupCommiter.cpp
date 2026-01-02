@@ -122,6 +122,7 @@ void CRManager::groupCommiter()
       for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
          Logging& logging = log_manager->all_logs[log_i];
          logging.wal_gct_cursor.store(wt_to_lw_copy[log_i].wal_written_offset, std::memory_order_release);
+         log_manager->meta->log_segments[log_i].hardened_gsn = wt_to_lw_copy[log_i].last_gsn;
       }
       // Phase 2, commit
       u64 committed_tx = 0;
@@ -173,6 +174,7 @@ void CRManager::groupCommiter()
       Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
       Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
       log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
+      log_manager->meta->global_sync_to_this_gsn = max_all_workers_gsn;
       log_manager->persistMetaBlock();
    }
    running_threads--;
