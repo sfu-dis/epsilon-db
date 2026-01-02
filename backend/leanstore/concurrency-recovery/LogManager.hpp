@@ -50,8 +50,6 @@ struct LogManager {
    enum class PARTITION_BY : u8 { WORKER, PAGE };
    PARTITION_BY partition_by;
    // -------------------------------------------------------------------------------------
-   // temporary
-   static std::atomic<bool> wal_pwrite;
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
 

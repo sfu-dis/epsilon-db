@@ -53,7 +53,6 @@ int main(int argc, char** argv)
    // -------------------------------------------------------------------------------------
    // Always init with the maximum number of threads (FLAGS_worker_threads)
    LeanStore db;
-   leanstore::cr::LogManager::wal_pwrite = false;
    auto& crm = db.getCRManager();
    std::vector<LeanStoreAdapter<KVTable>> tables;
    const u64 ycsb_n_tables = FLAGS_ycsb_worker_per_table ? FLAGS_worker_threads : 1UL;
@@ -172,7 +171,6 @@ int main(int argc, char** argv)
       cout << "Inserted volume: (pages, MiB) = (" << written_pages << ", " << mib << ")" << endl;
       cout << "-------------------------------------------------------------------------------------" << endl;
    }
-   leanstore::cr::LogManager::wal_pwrite = true;
    // -------------------------------------------------------------------------------------
    auto zipf_random = std::make_unique<utils::ScrambledZipfGenerator>(0, ycsb_tuple_count, FLAGS_zipf_factor);
    auto rjzipf = RejectionInversionZipfSampler(ycsb_tuple_count, FLAGS_zipf_factor);

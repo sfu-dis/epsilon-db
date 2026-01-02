@@ -79,12 +79,8 @@ void CRManager::groupCommiter()
             const u64 size_aligned = upper_offset - lower_offset;
             const bool block_full = (upper_offset == log2gct.wal_written_offset);
             // -------------------------------------------------------------------------------------
-            if (FLAGS_wal_pwrite) {
-               // TODO: add the concept of chunks
-               log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
-               // -------------------------------------------------------------------------------------
-               COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
-            }
+            // TODO: add the concept of chunks
+            log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
          } else if (log2gct.wal_written_offset < logging.wal_gct_cursor) {
             {
                // ------------XXXXXXXXX
@@ -92,11 +88,7 @@ void CRManager::groupCommiter()
                const u64 upper_offset = FLAGS_wal_buffer_size;
                const u64 size_aligned = upper_offset - lower_offset;
                // -------------------------------------------------------------------------------------
-               if (FLAGS_wal_pwrite) {
-                  log_manager->add_pwrite(log_i, lower_offset, size_aligned, true);
-                  // -------------------------------------------------------------------------------------
-                  COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
-               }
+               log_manager->add_pwrite(log_i, lower_offset, size_aligned, true);
             }
             {
                // XXXXXX---------------
@@ -105,11 +97,7 @@ void CRManager::groupCommiter()
                const u64 size_aligned = upper_offset - lower_offset;
                const bool block_full = (upper_offset == log2gct.wal_written_offset);
                // -------------------------------------------------------------------------------------
-               if (FLAGS_wal_pwrite) {
-                  log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
-                  // -------------------------------------------------------------------------------------
-                  COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size_aligned; }
-               }
+               log_manager->add_pwrite(log_i, lower_offset, size_aligned, block_full);
             }
          }
       }
@@ -122,9 +110,7 @@ void CRManager::groupCommiter()
       }
       // -------------------------------------------------------------------------------------
       // Flush
-      if (FLAGS_wal_pwrite) {
-         log_manager->submitAndWait();
-      }
+      log_manager->submitAndWait();
       // -------------------------------------------------------------------------------------
       COUNTERS_BLOCK(gct_phases)
       {
@@ -187,10 +173,7 @@ void CRManager::groupCommiter()
       Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
       Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
       log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
-      if (FLAGS_wal_pwrite) {
-         log_manager->persistMetaBlock();
-         COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += log_manager->meta_size; }
-      }
+      log_manager->persistMetaBlock();
    }
    running_threads--;
 }

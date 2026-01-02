@@ -72,7 +72,7 @@ struct Logging {
    {
       const auto lsn = this->log_segment_start + wal_lsn_counter;
       const u64 total_size = sizeof(WALDTEntry) + requested_size;
-      if (LogManager::wal_pwrite) {
+      if (FLAGS_wal_pwrite) {
          wal_lsn_counter += total_size;
       }
       ensure(walContiguousFreeSpace() >= total_size);

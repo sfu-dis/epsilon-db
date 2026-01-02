@@ -1,6 +1,7 @@
 #include "Logging.hpp"
 
 #include "LogManager.hpp"
+#include "leanstore/profiling/counters/CRCounters.hpp"
 
 namespace leanstore
 {
@@ -8,7 +9,6 @@ namespace cr
 {
 
 LogManager* LogManager::global = nullptr;
-extern std::atomic<bool> LogManager::wal_pwrite = false;
 
 LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
     : log_count(nb_logs), log_dev_fd(log_dev_fd), log_dev_size(log_dev_size), batch_max_size(nb_logs * 2 + 2)
@@ -79,7 +79,7 @@ Logging& LogManager::getLog(PID pid)
 
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
 {
-   if (!wal_pwrite) return;
+   if (!FLAGS_wal_pwrite) return;
    ensure(size % LOG_DEV_BLK_SIZE == 0);
    if (size == 0)
       return;
@@ -98,11 +98,12 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    }
    lseg.last_start_offset = buffer_offset;
    ensure(lseg.offset < log_segment_size);
+   COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
 }
 
 void LogManager::submitAndWait()
 {
-   if (!wal_pwrite) return;
+   if (!FLAGS_wal_pwrite) return;
    u32 submitted = 0;
    u32 left = io_slot;
    while (left) {
@@ -132,9 +133,10 @@ void LogManager::submitAndWait()
 
 void LogManager::persistMetaBlock()
 {
-   if (!wal_pwrite) return;
+   if (!FLAGS_wal_pwrite) return;
    s64 ret = pwrite(log_dev_fd, meta, meta_size, 0);
-   ensure(ret == meta_size);
+   ensure_equal(ret, s64(meta_size));
+   COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += meta_size; }
    if (FLAGS_wal_fsync) {
       fdatasync(log_dev_fd);
    }
