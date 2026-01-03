@@ -266,7 +266,7 @@ void BufferManager::writeAllBufferFrames()
             if (prev_ru_epoch != s64(-1)) {
                ru_discard_set[prev_ru_epoch].invalid.fetch_add(1);
             }
-            ru_discard_set[cur_ru_epoch].inserted.fetch_add(1);
+            ru_discard_set[cur_ru_epoch].total.fetch_add(1);
             if ((total_writes.fetch_add(1) % RU_SIZE) == 0) {
                bool ok = ru_epoch.compare_exchange_strong(cur_ru_epoch, cur_ru_epoch + 1);
                ensure(ok);
