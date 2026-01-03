@@ -23,7 +23,7 @@ struct Logging {
    static atomic<u64> global_min_commit_ts_flushed;
    // -------------------------------------------------------------------------------------
    s64 WORKER_WAL_SIZE = 0;
-   instrumented_mutex mutex;
+   instrumented_mutex mutex{"log_buf"};
    WALMetaEntry* active_mt_entry;
    WALDTEntry* active_dt_entry;
    // -------------------------------------------------------------------------------------

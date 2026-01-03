@@ -1,4 +1,5 @@
 #pragma once
+#include "Exceptions.hpp"
 #include "Units.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 // -------------------------------------------------------------------------------------
@@ -10,30 +11,40 @@ namespace leanstore
 {
 // -------------------------------------------------------------------------------------
 struct instrumented_mutex {
+   static atomic<u64> mutex_id;
+   static std::unordered_map<std::string, u64> name2id;
+   static std::mutex init_mutex;
 
-    instrumented_mutex() {
-        // TODO(mfd) : get a lock id 
-        // map from lock name to lock id
-    }
-    instrumented_mutex(const instrumented_mutex&) = delete;
-    instrumented_mutex& operator=(const instrumented_mutex&) = delete;
+   instrumented_mutex(const std::string& name)
+   {
+      std::lock_guard _l(init_mutex);
+      if (name2id.count(name) == 0) {
+         id = mutex_id.fetch_add(1);
+         ensure(id < WorkerCounters::max_instrumented_mutexes);
+         name2id[name] = id;
+      } else {
+         id = name2id[name];
+      }
+   }
 
-    void lock() {
-        WorkerCounters::myCounters().total_lock_calls++;
-        if (m_.try_lock()) {
-            return;
-        }
-        WorkerCounters::myCounters().contended_lock_calls++;
-        m_.lock();
-    }
+   instrumented_mutex(const instrumented_mutex&) = delete;
+   instrumented_mutex& operator=(const instrumented_mutex&) = delete;
 
-    void unlock() {
-        m_.unlock();
-    }
+   void lock()
+   {
+      WorkerCounters::myCounters().total_lock_calls[id]++;
+      if (m.try_lock()) {
+         return;
+      }
+      WorkerCounters::myCounters().contended_lock_calls[id]++;
+      m.lock();
+   }
 
-private:
-   std::mutex m_;
+   void unlock() { m.unlock(); }
 
+  private:
+   std::mutex m;
+   u64 id;
 };
 // -------------------------------------------------------------------------------------
-} // namespace leanstore
+}  // namespace leanstore

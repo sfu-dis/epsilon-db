@@ -259,7 +259,7 @@ void LeanStore::startProfilingThread()
                           "W MiB", "R MiB", /*"Instrs/TX", "Cycles/TX", "CPUs", "L1/TX", "LLC/TX", "GHz",
                            "WAL GiB/s", "GCT GiB/s","Space G", "GCT Rounds", */ 
                            "Discard MiB", "Dirty Read %" , "MinDurGSN", "MaxDurGSN", "WAL GiB/s", "WALmtx %", 
-                           "gct_p1%", "gct_p2%", "gct_w%"});
+                           "gct_p1%", "gct_p2%", "gct_w%", "RUset mtx%"});
             table.add_row({std::to_string(seconds), std::to_string(tx), 
                         to_string_rounded(remote_flushes_pct), to_string_rounded(tx_abort_pct),
                            /*std::to_string(olap_tx),*/ 
@@ -276,6 +276,7 @@ void LeanStore::startProfilingThread()
                             cr_table.get("0", "gct_phase_1_pct"),
                             cr_table.get("0", "gct_phase_2_pct"),
                             cr_table.get("0", "gct_write_pct"),
+                            cr_table.get("0", "ru_discard_set_mutex"),
                            });
             // -------------------------------------------------------------------------------------
             table.format().width(10);

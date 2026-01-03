@@ -1,6 +1,7 @@
 #include "CRTable.hpp"
 
 #include "leanstore/Config.hpp"
+#include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/utils/ThreadLocalAggregator.hpp"
@@ -74,8 +75,15 @@ void CRTable::open()
    columns.emplace("cc_ms_commit_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_commit_tx); });
    columns.emplace("cc_ms_abort_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_abort_tx); });
    // -------------------------------------------------------------------------------------
-   columns.emplace("walbuf_mutex", [](Column& col) { 
-      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls)); });
+   // Instrumented Mutexes
+   u64 wal_buffer_id = instrumented_mutex::name2id["log_buffer"];
+   columns.emplace("walbuf_mutex", [wal_buffer_id](Column& col) { 
+      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, wal_buffer_id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, wal_buffer_id));
+   });
+   u64 ru_discard_set_id = instrumented_mutex::name2id["ru_discard_set_id"];
+   columns.emplace("ru_discard_set_mutex", [ru_discard_set_id](Column& col) { 
+      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, ru_discard_set_id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, ru_discard_set_id));
+   });
 }
 // -------------------------------------------------------------------------------------
 void CRTable::next()

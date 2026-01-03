@@ -8,6 +8,7 @@
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 #include "PerfEvent.hpp"
+#include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 // -------------------------------------------------------------------------------------
 #include <libaio.h>
 #include <sys/mman.h>
@@ -107,7 +108,7 @@ class BufferManager
    atomic<u64> ru_epoch = 0;
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
    struct RUEpochDiscardSet {
-      std::mutex m;
+      instrumented_mutex m{"ru_discard_set"};
       std::unordered_map<PID, LID> pids;
       // Do we need padding here?
       alignas(64) atomic<s32> inserted{0};
@@ -118,13 +119,13 @@ class BufferManager
 
 
       void insert(PID pid, LID lsn) {
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          bool ok = pids.insert({pid, lsn}).second;
          ensure(ok);
          inserted.fetch_add(1, std::memory_order_relaxed);
       }
       LID erase(PID pid) {
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          if (pids.count(pid) == 0) return -1;
          LID lsn = pids[pid];
          pids.erase(pid);
@@ -132,7 +133,7 @@ class BufferManager
          return lsn;
       }
       void ensureInexistant(PID pid) {
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          ensure(pids.count(pid) == 0);
          PARANOID_BLOCK() {
             log.emplace_back(pid, 'i', nullptr);
@@ -153,13 +154,12 @@ class BufferManager
          // return (( invalid.load(std::memory_order_acquire) + inserted.load(std::memory_order_relaxed)) * 1.0f/ ) > 0.9;
          return ok;
       }
-      bool getBatch(std::vector<PID> &out_pids, u32 batch_size) {
+      bool getBatch(std::vector<std::pair<PID, LID>> &out_pids, u32 batch_size) {
          out_pids.clear();
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          auto it = pids.begin();
          for (; it != pids.end(); ++it) {
-            out_pids.push_back(it->first);
-            // it = pids.erase(it);
+            out_pids.emplace_back(*it);
             if (out_pids.size() == batch_size) {
                break;
             }
@@ -168,7 +168,7 @@ class BufferManager
          return !out_pids.empty();
       }
       u64 size() {
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          return pids.size();
       }
       // Debugging 
@@ -184,7 +184,7 @@ class BufferManager
          return ok;
       }
       bool erase(PID pid, BufferFrame *bf, char c = 'E') {
-         std::lock_guard _l(m);
+         std::lock_guard<instrumented_mutex> _l(m);
          bool ok = pids.erase(pid);
          if (ok) deleted.fetch_add(1, std::memory_order_relaxed);
          PARANOID_BLOCK() {
@@ -195,7 +195,7 @@ class BufferManager
       }
       void log_op(PID pid, BufferFrame *bf, char c) {
          PARANOID_BLOCK() {
-            std::lock_guard _l(m);
+            std::lock_guard<instrumented_mutex> _l(m);
             log.emplace_back(pid, c, bf);
          }
       }

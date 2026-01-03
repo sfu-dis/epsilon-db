@@ -137,9 +137,9 @@ struct WorkerCounters {
    std::mutex txIncWaitHistLock;
    Hist<int, u64> txIncWaitHist{20000, 0, 200000};
    // -------------------------------------------------------------------------------------
-   // XXX(mfd) : for now will be aggregated for all mutexes, use mutex_id later
-   atomic<u64> total_lock_calls = 0;
-   atomic<u64> contended_lock_calls = 0;
+   static constexpr u32 max_instrumented_mutexes = 32;
+   atomic<u64> total_lock_calls[max_instrumented_mutexes] = {0};
+   atomic<u64> contended_lock_calls[max_instrumented_mutexes] = {0};
    // -------------------------------------------------------------------------------------
    WorkerCounters() { t_id = workers_counter++; }
    // -------------------------------------------------------------------------------------
