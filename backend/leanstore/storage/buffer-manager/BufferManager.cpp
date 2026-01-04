@@ -67,6 +67,21 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
          }
       });
       per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
+      if (FLAGS_recover) {
+         u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
+         s64 ret = pread(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
+         ensure_equal(ret, PAGE_SIZE);
+         s64 prev_ru_epoch = *reinterpret_cast<s64*>(buf);
+         printf("[INFO] Recovering, RU epoch is %lu\n", prev_ru_epoch);
+         ru_epoch.store(prev_ru_epoch);
+         u64 rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
+         per_pp_iostats[0].io_counter = RU_SIZE - rmb;
+         printf("[INFO] Recovering, written in RU is %lu\n", RU_SIZE - rmb);
+         for (s64 e = 0; e < prev_ru_epoch - 1; ++e) {
+            ru_discard_set[e].total.store(RU_SIZE);
+         }
+         ru_discard_set[prev_ru_epoch - 1].total.store(RU_SIZE-rmb);
+      }
       if (FLAGS_wal && FLAGS_wal_pwrite) {
          ensure(!FLAGS_redo_log_file.empty());
          log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
@@ -158,6 +173,9 @@ void BufferManager::startBackgroundThreads()
             std::vector<u64> last_seen(FLAGS_pp_threads, 0);
             u64 last_seen_tot_gc_writes = 0;
             u64 tot_page_written = 0;
+            u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
+            s64 *ru_epoch_ptr = (s64*)buf;
+            *ru_epoch_ptr = ru_epoch.load();
             while (bg_threads_keep_running) {
                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                u64 local_tot = 0;
@@ -178,6 +196,9 @@ void BufferManager::startBackgroundThreads()
                   u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
                   ensure(new_epoch < 8192);
                   ru_epoch.store(new_epoch, std::memory_order_release);
+                  *ru_epoch_ptr = new_epoch;
+                  s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
+                  ensure_equal(ret, PAGE_SIZE);
                   printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
                }
                if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed)
@@ -274,8 +295,19 @@ void BufferManager::writeAllBufferFrames()
          }
          bf.header.latch.mutex.unlock();
       }
-      // TODO(mfd) : Persist RU state needed
-   });
+  });
+   // TODO(mfd) : Persist RU state needed
+   u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
+   *(s64*)buf = ru_epoch;
+   s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
+   ensure_equal(ret, PAGE_SIZE);
+   u64 e = ru_epoch.load(std::memory_order_acquire);
+   fprintf(stdout, "%lu\n", e);
+   for (u32 i = 0; i < e; ++i) {
+      auto &set = ru_discard_set[i];
+      fprintf(stdout, "(%u,%u,%u),", set.size(), set.invalid.load(), set.total.load());
+   }
+   fprintf(stdout, "\n");
 }
 // -------------------------------------------------------------------------------------
 u64 BufferManager::consumedPages()
