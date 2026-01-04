@@ -122,62 +122,37 @@ void BufferManager::startBackgroundThreads()
          thread.detach();
       }
 
-      // TODO(mfd) : Refactor those two
-      if (FLAGS_use_fdp_rumaw) {
-         std::thread ru_epoch_mgr = std::thread([&]() {
-            pthread_setname_np(pthread_self(), "ru_epoch_mgr");
-            bg_threads_counter++;
-            u64 prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
-            u64 rmb = prev_rmb;
+      std::thread ru_epoch_mgr = std::thread([&]() {
+         pthread_setname_np(pthread_self(), "ru_epoch_mgr");
+         bg_threads_counter++;
+         u64 oldest_uncollected_epoch = 0;
+         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         u64 last_seen_tot_gc_writes = 0;
+         u64 tot_page_written = 0;
+         u64 prev_rmb, rmb;
+         if (FLAGS_use_fdp_rumaw) {
+            prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
+            rmb = prev_rmb;
             if (rmb != RU_SIZE) {
                fdp_reset_free_ru(ssd_fd, /* default plid*/ 0);
             }
             ensure(fdp_get_remaining_bytes_in_ru(ssd_fd, 0) == s64(RU_SIZE));
             prev_rmb = RU_SIZE;
-            u64 oldest_uncollected_epoch = 0;
-            while (bg_threads_keep_running) {
-               std::this_thread::sleep_for(std::chrono::milliseconds(50));
+         }
+         u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
+         s64 *ru_epoch_ptr = (s64*)buf;
+         *ru_epoch_ptr = ru_epoch.load();
+         while (bg_threads_keep_running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            bool open_new_ru_epoch = false;
+            if (FLAGS_use_fdp_rumaw) {
                rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
-               // XXX(mfd) Ugly hack to avoid fluctuations
+               // XXX(mfd) Ugly heuristic to avoid fluctuations
                if (prev_rmb < rmb && rmb > (RU_SIZE - 200000)) {
-                  u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
-                  ensure(new_epoch < 8192);
-                  ru_epoch.store(new_epoch, std::memory_order_release);
-                  printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
+                  open_new_ru_epoch = true;
                }
                prev_rmb = rmb;
-               // if oldest uncollected has utilzation of 80% or higher
-               // add it to the gc set
-               // and if the garbage collector thread is sleeping, wake him up.
-               if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed) && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
-                  if (gc_m.try_lock()) {
-                     to_gc_epochs.push_back(oldest_uncollected_epoch);
-                     oldest_uncollected_epoch++;
-                     if (is_gc_sleeping) {
-                        gc_m.unlock();
-                        gc_cv.notify_one();
-                     } else {
-                        gc_m.unlock();
-                     }
-                  }
-               }
-            }
-            bg_threads_counter--;
-         });
-         ru_epoch_mgr.detach();
-      } else {
-         std::thread ru_epoch_mgr = std::thread([&]() {
-            pthread_setname_np(pthread_self(), "ru_epoch_mgr");
-            bg_threads_counter++;
-            u64 oldest_uncollected_epoch = 0;
-            std::vector<u64> last_seen(FLAGS_pp_threads, 0);
-            u64 last_seen_tot_gc_writes = 0;
-            u64 tot_page_written = 0;
-            u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
-            s64 *ru_epoch_ptr = (s64*)buf;
-            *ru_epoch_ptr = ru_epoch.load();
-            while (bg_threads_keep_running) {
-               std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            } else {
                u64 local_tot = 0;
                for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
                   u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::acquire);
@@ -191,39 +166,42 @@ void BufferManager::startBackgroundThreads()
                tot_page_written += (seen - last_seen_tot_gc_writes);
                local_tot += (seen - last_seen_tot_gc_writes);
                last_seen_tot_gc_writes = seen;
-               if (tot_page_written >= RU_SIZE) {
+               if (tot_page_written >= RU_SIZE ) {
+                  open_new_ru_epoch = true;
                   tot_page_written = tot_page_written - RU_SIZE;
-                  u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
-                  ensure(new_epoch < 8192);
-                  ru_epoch.store(new_epoch, std::memory_order_release);
-                  *ru_epoch_ptr = new_epoch;
-                  s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
-                  ensure_equal(ret, PAGE_SIZE);
-                  printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
                }
-               if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed)
-                   && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
-                  if (gc_m.try_lock()) {
-                     to_gc_epochs.push_back(oldest_uncollected_epoch);
-                     oldest_uncollected_epoch++;
-                     if (is_gc_sleeping > 0) {
-                        gc_m.unlock();
-                        gc_cv.notify_all();
-                     } else {
-                        gc_m.unlock();
-                     }
+            }
+            if (open_new_ru_epoch) {
+               u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
+               ensure(new_epoch < 8192);
+               ru_epoch.store(new_epoch, std::memory_order_release);
+               *ru_epoch_ptr = new_epoch;
+               s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
+               ensure_equal(ret, PAGE_SIZE);
+               printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
+            }
+            if (oldest_uncollected_epoch < ru_epoch.load(std::memory_order_relaxed)
+                && ru_discard_set[oldest_uncollected_epoch].shouldGC()) {
+               if (gc_m.try_lock()) {
+                  to_gc_epochs.push_back(oldest_uncollected_epoch);
+                  oldest_uncollected_epoch++;
+                  if (is_gc_sleeping > 0) {
+                     gc_m.unlock();
+                     gc_cv.notify_all();
+                  } else {
+                     gc_m.unlock();
                   }
                }
             }
-            // Wake up all grabage collection threads so that they could exit normally
-            {
-               std::lock_guard _l(gc_m);
-               gc_cv.notify_all(); 
-            }
-            bg_threads_counter--;
-         });
-         ru_epoch_mgr.detach();
-      }
+         }
+         // Wake up all grabage collection threads so that they could exit normally
+         {
+            std::lock_guard _l(gc_m);
+            gc_cv.notify_all(); 
+         }
+         bg_threads_counter--;
+      });
+      ru_epoch_mgr.detach();
 
       auto garbage_collector_routine = [&](u32 gc_id) {
          ruGarbageCollectorThread(gc_id);
