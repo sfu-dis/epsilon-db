@@ -455,18 +455,18 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    // -------------------------------------------------------------------------------------
    // TODO(mfd) : Refactor this as a method of the buffer pool
    //  it will be used by the gc thread also.
-   auto fix_dirty_page = [&](BufferFrame& bf) {
+   auto fix_dirty_page = [&](BufferFrame& bf, LID lsn) {
       ensure(bf.page.ru_epoch >= 0);
+      ensure(lsn != INEXISTANT_LSN);
       COUNTERS_BLOCK(dirty_read_operations_counter)
       {
          WorkerCounters::myCounters().dirty_read_operations_counter++;
       }
-      LID lsn = ru_discard_set[bf.page.ru_epoch].erase(pid);
       if (FLAGS_fake_log_reapply) {
          bf.page.PLSN++;
          return;
       }
-      ensure(lsn != LID(-1));
+      ensure(lsn != INVALID_LSN);
       u64 off = lsn % PAGE_SIZE;
       // TODO(mfd) : remove the pread from the critical section
       s64 br = pread(log_fd, log_record_buf, 2 * PAGE_SIZE, lsn - off);
@@ -500,7 +500,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
+      LID lsn;
+      bool gc_fixed = false;
+      if (swip_value.isDIRTY()) {
+         lsn = ru_discard_set[ru_epoch].erase(pid);
+         if (lsn == INEXISTANT_LSN) {
+            // the garbage collector thread has already fixed the page.
+            gc_fixed = true;
+         } 
+      }
+      // -------------------------------------------------------------------------------------
       readPageSync(pid, bf.page);
+      if (!gc_fixed) {
+         ensure_equal(bf.page.ru_epoch, ru_epoch);
+      }
       // -------------------------------------------------------------------------------------
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
       COUNTERS_BLOCK()
@@ -522,8 +535,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }
       // -------------------------------------------------------------------------------------
-      if (swip_value.isDIRTY()) {
-         fix_dirty_page(bf);
+      if (swip_value.isDIRTY() && !gc_fixed) {
+         fix_dirty_page(bf, lsn);
       }
       // -------------------------------------------------------------------------------------
       jumpmuTry()

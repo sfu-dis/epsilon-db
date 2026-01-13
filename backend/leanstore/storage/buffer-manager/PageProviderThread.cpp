@@ -204,7 +204,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          if (discard) {
             LID last_write_lsn = bf.page.last_written_lsn;
             if (!FLAGS_fake_log_reapply) {
-               ensure(last_write_lsn != LID(-1));
+               ensure(last_write_lsn != INVALID_LSN);
             }
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn, &bf);

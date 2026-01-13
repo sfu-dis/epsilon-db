@@ -121,6 +121,7 @@ class BufferManager
 
 
       void insert(PID pid, LID lsn) {
+         ensure(is_garbage_collected == false);
          std::lock_guard<instrumented_mutex> _l(m);
          bool ok = pids.insert({pid, lsn}).second;
          ensure(ok);
@@ -128,7 +129,7 @@ class BufferManager
       }
       LID erase(PID pid) {
          std::lock_guard<instrumented_mutex> _l(m);
-         if (pids.count(pid) == 0) return -1;
+         if (pids.count(pid) == 0) return INEXISTANT_LSN;
          LID lsn = pids[pid];
          pids.erase(pid);
          deleted.fetch_add(1, std::memory_order_relaxed);

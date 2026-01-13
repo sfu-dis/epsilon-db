@@ -13,7 +13,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    pthread_setname_np(pthread_self(), gc_thread_name.c_str());
    const u32 batch_size = 64;
    void* buf;
-   // std::vector<u64> to_gc_epochs_snapshot;
+   s64 current_gc_epoch = -1;
 
    bg_threads_counter++;
    if (posix_memalign(&buf, 4096, batch_size * PAGE_SIZE) != 0) {
@@ -35,7 +35,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    std::unique_ptr<struct io_uring_cqe*[]> cqes;
    cqes = std::make_unique<struct io_uring_cqe*[]>(2 * batch_size);
 
-   auto fix_page_cb = [this, &w_ring, buf_pages](struct io_uring_cqe* cqe) {
+   auto fix_page_cb = [this, &w_ring, buf_pages, &current_gc_epoch] (struct io_uring_cqe* cqe) {
       // FIXME(mfd) : What if the read fails?
       ensure(cqe->res == PAGE_SIZE);
       // Get where it was written
@@ -44,9 +44,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       u64 idx = data >> 48;
       assert(idx < batch_size);
       BufferFrame::Page* page = &buf_pages[idx];
-      ensure(page->magic_debugging_number == fixed_pid);
-      // TODO(mfd) : Pass in the gc epoch for debugging.
-      // ensure(page->ru_epoch == cgc_epoch);
+      ensure_equal(page->magic_debugging_number, fixed_pid);
+      ensure_equal(page->ru_epoch, current_gc_epoch);
       // TODO(mfd) : Apply the log here
       page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
       page->PLSN = page->PLSN + 1;
@@ -112,38 +111,53 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       // ensure(!to_gc_epochs_snapshot.empty());
       printf("[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
       for (u64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
+         current_gc_epoch = gc_ru_epoch;
          auto& set = ru_discard_set[gc_ru_epoch];
-         set.is_garbage_collected.store(true, std::memory_order_release);
-         printf("[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
+         if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
+            printf("[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
+         }
          auto start = std::chrono::system_clock::now();
-         // We get a batch without removing it from the set and we release
-         // the lock because other code paths acquire locks in this order:
-         // Guard Lock -> Set lock.
-         std::vector<u64> pids_batch;
-         while (set.getBatch(pids_batch, batch_size)) {
-            u64 pages_to_fix = 0;
-            for (auto& pid : pids_batch) {
+         while (set.size() > 0) {
+            std::vector<LID> fixed_pids;
+            fixed_pids.reserve(batch_size);
+
+            // -------------------------------------------------------------------------------------
+            set.m.lock();
+            auto it = set.pids.begin();
+            u32 attempts = 0;
+            while (it != set.pids.end() && attempts < batch_size) {
+               attempts++;
+               auto [pid, lsn] = *it;
+               it++;
                Partition& partition = getPartition(pid);
-               std::unique_lock g_guard(partition.ht_mutex);
+               if (!partition.ht_mutex.try_lock())
+               {
+                  // do not block, just move on
+                  continue;
+               }
                auto frame_handler = partition.io_ht.lookup(pid);
                if (frame_handler) {
                   // someone is reading the page, so he will fix it.
+                  partition.ht_mutex.unlock();
                   continue;
                }
-               // still it is not safe to read and fix the page, someone
-               // may have just finished fixing the page and removed the frame.
-               // We acquire the set lock and try to remove the pid from the set.
-               // if (set.erase(pid, nullptr, 'R') == false) {
-               // someone has already fixed the page.
-               //   continue;
-               // }
+               
+               set.pids.erase(pid);
 
                IOFrame& io_frame = partition.io_ht.insert(pid);
                io_frame.readers_counter = 1;
                io_frame.state = IOFrame::STATE::READING;
                io_frame.mutex.lock();
-               g_guard.unlock();
+               // g_guard.unlock();
+               partition.ht_mutex.unlock();
+              
+               fixed_pids.push_back(pid);
+           }
+           set.m.unlock();
+           // -------------------------------------------------------------------------------------
 
+           u64 pages_to_fix = 0;
+           for (const auto& pid : fixed_pids) {
                // issue the async read.
                struct io_uring_sqe* sqe = io_uring_get_sqe(&r_ring);
                ensure(sqe != nullptr);
@@ -178,7 +192,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                      fix_page_cb(cqe);
                      ++i;
                   }
-                  ensure(i == remaining);
+                  ensure_equal(i, remaining);
                   io_uring_cq_advance(&r_ring, remaining);
                }
                // We already removed the pages from the set
@@ -206,7 +220,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                      ack_fixed_page(cqe);
                      ++i;
                   }
-                  ensure(i == remaining);
+                  ensure_equal(i, remaining);
                   io_uring_cq_advance(&w_ring, remaining);
                }
                tot_gc_writes.fetch_add(pages_to_fix, std::memory_order_acq_rel);

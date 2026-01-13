@@ -36,6 +36,9 @@ using LID = u64;   // Log ID
 using TTS = u64;   // Transaction Time Stamp
 using DTID = s64;  // Datastructure ID
 // -------------------------------------------------------------------------------------
+constexpr LID INVALID_LSN = LID(-1);
+constexpr LID INEXISTANT_LSN = LID(-2);
+// -------------------------------------------------------------------------------------
 using WORKERID = u16;
 using TXID = u64;
 using COMMANDID = u32;
