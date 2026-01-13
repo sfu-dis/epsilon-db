@@ -206,7 +206,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (!FLAGS_fake_log_reapply) {
                ensure(last_write_lsn != LID(-1));
             }
-            parent_handler.swip.evictAndMarkDirty(evicted_pid);
+            parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn, &bf);
             if (!ok) {
                PARANOID_BLOCK() {
@@ -216,7 +216,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
-            parent_handler.swip.evict(evicted_pid);
+            parent_handler.swip.evict(evicted_pid, bf.page.ru_epoch);
             PARANOID_BLOCK() {
                ru_discard_set[bf.page.ru_epoch].log_op(evicted_pid, &bf ,'e');
             }

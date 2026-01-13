@@ -388,7 +388,7 @@ void BufferManager::evictLastPage()
          // -------------------------------------------------------------------------------------
          assert(!last_read_bf->header.is_being_written_back);
          assert(last_read_bf->header.state != BufferFrame::STATE::FREE);
-         parent_handler.swip.evict(last_pid);
+         parent_handler.swip.evict(last_pid, last_read_bf->page.ru_epoch);
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
          last_read_bf->reset();
@@ -447,6 +447,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    // -------------------------------------------------------------------------------------
    swip_guard.unlock();  // Otherwise we would get a deadlock, P->G, G->P
    const PID pid = swip_value.asPageID();
+   const s64 ru_epoch = swip_value.ru_epoch();
    Partition& partition = getPartition(pid);
    JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
    swip_guard.recheck();

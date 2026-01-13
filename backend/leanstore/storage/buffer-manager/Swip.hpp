@@ -31,8 +31,17 @@ class Swip
    static_assert(evicted_mask == 0x7FFFFFFFFFFFFFFF, "");
    static_assert(hot_mask == 0x3FFFFFFFFFFFFFFF, "");
 
+   struct PageID
+   {
+      u32 page_id; // 32 bits enough for 16 TiB databases with 4K pages.
+      u32 meta;    // 3 status bits + RU epoch
+   };
+
+   static_assert(sizeof(PageID) == sizeof(u64), "");
+
    union {
       u64 pid;
+      PageID pid2;
       BufferFrame* bf;
    };
   public:
@@ -52,14 +61,16 @@ class Swip
    bool isDIRTY() { return pid & dirty_bit; }
    // -------------------------------------------------------------------------------------
    u64 asPageID() { 
-      u64 ret = pid & (evicted_mask & dirty_mask);
-      always_check((ret & cool_bit) == 0);
-      always_check((ret & 0xffffffff) == ret);
-      return ret;
+      return pid2.page_id;
    }
    BufferFrame& asBufferFrame() { return *bf; }
    BufferFrame& asBufferFrameMasked() { return *reinterpret_cast<BufferFrame*>(pid & hot_mask); }
    u64 raw() const { return pid; }
+   u32 ru_epoch()
+   {
+      ensure((pid2.meta & 0x80000000) == 0x80000000);
+      return pid2.meta & 0x1FFFFFFF;
+   }
    // -------------------------------------------------------------------------------------
    template <typename T2>
    void warm(T2* bf)
@@ -75,9 +86,19 @@ class Swip
    // -------------------------------------------------------------------------------------
    void cool() { this->pid = pid | cool_bit; }
    // -------------------------------------------------------------------------------------
-   void evict(PID pid) { this->pid = pid | evicted_bit; }
-   void evictAndMarkDirty(PID pid) { 
-      this->pid = (pid | evicted_bit | dirty_bit);
+   void evict(PID pid, u64 ru_epoch)
+   { 
+      // this->pid = pid | evicted_bit;
+      ensure((pid & ~(0xFFFFFFFF)) == 0);
+      ensure((ru_epoch & ~(0x1FFFFFFF)) == 0);
+      this->pid2.page_id = pid;
+      this->pid2.meta = (ru_epoch | 0x80000000);
+   }
+   void evictAndMarkDirty(PID pid, u64 ru_epoch)
+   { 
+      evict(pid, ru_epoch);
+      this->pid2.meta |= 0x20000000;
+      // this->pid = (pid | evicted_bit | dirty_bit);
    }
    // -------------------------------------------------------------------------------------
    template <typename T2>
