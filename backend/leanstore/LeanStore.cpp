@@ -63,6 +63,9 @@ LeanStore::LeanStore()
       SetupFailed("You have to enable wal or turn of wal_pwrite");
    }
    FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
+   if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
+      SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
+   }
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool

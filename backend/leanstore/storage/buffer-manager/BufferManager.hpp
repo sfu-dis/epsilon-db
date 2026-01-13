@@ -105,7 +105,9 @@ class BufferManager
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
    // -------------------------------------------------------------------------------------
-   atomic<u64> ru_epoch = 0;
+   atomic<u64> ru_epoch = 0; // persistant
+   atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
+   atomic<s64> reclaimed_ru_epoch = -1; // persistant
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
    struct RUEpochDiscardSet {
       instrumented_mutex m{"ru_discard_set"};

@@ -46,7 +46,7 @@ void BTreeGeneric::create(DTID dtid, Config config)
 // -------------------------------------------------------------------------------------
 void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
 {
-   if (cr::LogManager::global->isPartitionedByWorker()) {
+   if (FLAGS_wal && cr::LogManager::global->isPartitionedByWorker()) {
       cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
    }
    auto parent_handler = findParentEager(*this, to_split);
