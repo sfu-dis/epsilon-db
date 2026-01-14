@@ -498,8 +498,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_frame.readers_counter = 1;
       io_frame.mutex.lock();
       // -------------------------------------------------------------------------------------
-      g_guard->unlock();
-      // -------------------------------------------------------------------------------------
       LID lsn;
       bool gc_fixed = false;
       if (swip_value.isDIRTY()) {
@@ -509,6 +507,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             gc_fixed = true;
          } 
       }
+      // -------------------------------------------------------------------------------------
+      g_guard->unlock();
       // -------------------------------------------------------------------------------------
       readPageSync(pid, bf.page);
       if (!gc_fixed) {
