@@ -118,7 +118,19 @@ class BufferManager
       alignas(64) atomic<bool> is_garbage_collected{false};
       alignas(64) atomic<s32> total{0};
       alignas(64) atomic<s32> invalid{0};
+      alignas(64) atomic<s32> done_gc{FLAGS_ru_gc_threads};
 
+      void reset() {
+         ensure_equal(pids.size(), 0);
+         ensure(is_garbage_collected == true);
+         ensure_equal(done_gc, 0);
+         inserted = 0;
+         deleted = 0;
+         is_garbage_collected = false;
+         total = 0;
+         invalid = 0;
+         done_gc = FLAGS_ru_gc_threads;
+      }
 
       void insert(PID pid, LID lsn) {
          ensure(is_garbage_collected == false);
@@ -212,7 +224,20 @@ class BufferManager
          }
       }      
    };
-   RUEpochDiscardSet ru_discard_set[4096 * 2];
+   // XXX(mfd) : this depends on how many RUs are in the device
+   //  good number is : (device_size/ru_size)
+   static constexpr u32 MAX_OPEN_RU_EPOCHS = 238;
+   struct ru_discard_set {
+    private:
+      RUEpochDiscardSet data[MAX_OPEN_RU_EPOCHS];
+    public:
+      RUEpochDiscardSet& operator[](size_t index) {
+         return data[index % MAX_OPEN_RU_EPOCHS];
+      }
+      const RUEpochDiscardSet& operator[](size_t index) const {
+         return data[index % MAX_OPEN_RU_EPOCHS];
+      }
+   } ru_discard_set;
    std::mutex gc_m;
    std::condition_variable gc_cv;
    std::vector<u64> to_gc_epochs;

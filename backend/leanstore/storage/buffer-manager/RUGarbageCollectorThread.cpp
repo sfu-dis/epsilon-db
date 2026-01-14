@@ -228,7 +228,16 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          }
          auto end = std::chrono::system_clock::now();
          auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
-         printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
+         // Tell everyone that I am done.
+         if (set.done_gc.fetch_sub(1) == 1) {
+            // I am the last one to finish
+            // I should free up the log space
+            // And reset the RU discard set.
+            set.reset();
+            reclaimed_ru_epoch.fetch_add(1);
+            printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
+            // trim the RU log
+         }
       }
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;
    }
