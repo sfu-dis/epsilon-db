@@ -255,14 +255,15 @@ void BufferManager::writeAllBufferFrames()
          if (!bf.isFree() && bf.isDirty()) {
             page.dt_id = bf.page.dt_id;
             page.magic_debugging_number = bf.header.pid;
-            s64 prev_ru_epoch = bf.page.ru_epoch;
+            s64 previous_ru_epoch = bf.page.ru_epoch;
             u64 cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
             page.ru_epoch = cur_ru_epoch;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, page.dt);
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure(ret == PAGE_SIZE);
-            if (prev_ru_epoch != s64(-1)) {
-               ru_discard_set[prev_ru_epoch].invalid.fetch_add(1);
+            if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch) {
+               s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
+               ensure(invalid <= ru_discard_set[previous_ru_epoch].total.load(std::memory_order_acquire));
             }
             ru_discard_set[cur_ru_epoch].total.fetch_add(1);
             if ((total_writes.fetch_add(1) % RU_SIZE) == 0) {

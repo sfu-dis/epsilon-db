@@ -334,9 +334,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
                       s64 previous_ru_epoch = written_bf.page.ru_epoch;
-                      if (previous_ru_epoch != -1) {
-                         s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_sub(-1);
-                         ensure(invalid >= 0);
+                      if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch) {
+                         s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
+                         ensure(invalid <= ru_discard_set[previous_ru_epoch].total.load(std::memory_order_acquire));
                       }
                       ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       written_bf.page.ru_epoch = written_ru_epoch;
