@@ -86,18 +86,19 @@ class Swip
    // -------------------------------------------------------------------------------------
    void cool() { this->pid = pid | cool_bit; }
    // -------------------------------------------------------------------------------------
-   void evict(PID pid, u64 ru_epoch)
+   void evict(PID pid)
    { 
       // this->pid = pid | evicted_bit;
-      ensure((pid & ~(0xFFFFFFFF)) == 0);
-      ensure((ru_epoch & ~(0x1FFFFFFF)) == 0);
+      ensure_equal((pid & ~(0xFFFFFFFF)), 0);
       this->pid2.page_id = pid;
-      this->pid2.meta = (ru_epoch | 0x80000000);
+      this->pid2.meta = 0x80000000;
    }
    void evictAndMarkDirty(PID pid, u64 ru_epoch)
    { 
-      evict(pid, ru_epoch);
-      this->pid2.meta |= 0x20000000;
+      ensure_equal((pid & ~(0xFFFFFFFF)), 0);
+      ensure_equal((ru_epoch & ~(0x1FFFFFFF)), 0);
+      this->pid2.page_id = pid;
+      this->pid2.meta = (ru_epoch | 0xA0000000);
       // this->pid = (pid | evicted_bit | dirty_bit);
    }
    // -------------------------------------------------------------------------------------

@@ -30,9 +30,12 @@ namespace storage
 {
 // -------------------------------------------------------------------------------------
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
-thread_local alignas(PAGE_SIZE) u8 log_record_buf[2 * PAGE_SIZE];
+thread_local u8* log_record_buf = static_cast<u8*>(
+  mmap(nullptr, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+);
 // -------------------------------------------------------------------------------------
-BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
+BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) : 
+  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs), ru_discard_set(max_open_ru_epochs)
 {
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
@@ -66,6 +69,7 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
             p_i = (p_i + 1) % partitions_count;
          }
       });
+      // -------------------------------------------------------------------------------------
       per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
       if (FLAGS_recover) {
          u8 *buf = (u8*)aligned_alloc(PAGE_SIZE, PAGE_SIZE);
@@ -73,6 +77,7 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
          ensure_equal(ret, PAGE_SIZE);
          s64 prev_ru_epoch = *reinterpret_cast<s64*>(buf);
          printf("[INFO] Recovering, RU epoch is %lu\n", prev_ru_epoch);
+         ensure(prev_ru_epoch < max_open_ru_epochs);
          ru_epoch.store(prev_ru_epoch);
          u64 rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
          per_pp_iostats[0].io_counter = RU_SIZE - rmb;
@@ -87,6 +92,7 @@ BufferManager::BufferManager(s32 ssd_fd) : ssd_fd(ssd_fd)
          log_fd = open(FLAGS_redo_log_file.c_str(), O_DIRECT | O_RDONLY);
          ensure(log_fd > 0);
       }
+      // -------------------------------------------------------------------------------------
    }
 }
 // -------------------------------------------------------------------------------------
@@ -165,14 +171,14 @@ void BufferManager::startBackgroundThreads()
                tot_page_written += (seen - last_seen_tot_gc_writes);
                local_tot += (seen - last_seen_tot_gc_writes);
                last_seen_tot_gc_writes = seen;
-               if (tot_page_written >= RU_SIZE ) {
+               if (tot_page_written >= RU_SIZE) {
                   open_new_ru_epoch = true;
                   tot_page_written = tot_page_written - RU_SIZE;
                }
             }
             if (open_new_ru_epoch) {
                u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
-               ensure((new_epoch - reclaimed_ru_epoch) <= MAX_OPEN_RU_EPOCHS);
+               ensure((new_epoch - reclaimed_ru_epoch) <= max_open_ru_epochs);
                ru_epoch.store(new_epoch, std::memory_order_release);
                *ru_epoch_ptr = new_epoch;
                s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
@@ -389,7 +395,7 @@ void BufferManager::evictLastPage()
          // -------------------------------------------------------------------------------------
          assert(!last_read_bf->header.is_being_written_back);
          assert(last_read_bf->header.state != BufferFrame::STATE::FREE);
-         parent_handler.swip.evict(last_pid, last_read_bf->page.ru_epoch);
+         parent_handler.swip.evict(last_pid);
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
          last_read_bf->reset();
@@ -449,6 +455,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    swip_guard.unlock();  // Otherwise we would get a deadlock, P->G, G->P
    const PID pid = swip_value.asPageID();
    const s64 ru_epoch = swip_value.ru_epoch();
+   const bool page_need_fixing = swip_value.isDIRTY();
    Partition& partition = getPartition(pid);
    JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
    swip_guard.recheck();
@@ -501,7 +508,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       LID lsn;
       bool gc_fixed = false;
-      if (swip_value.isDIRTY()) {
+      if (page_need_fixing) {
          lsn = ru_discard_set[ru_epoch].erase(pid);
          if (lsn == INEXISTANT_LSN) {
             // the garbage collector thread has already fixed the page.
@@ -512,7 +519,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
       readPageSync(pid, bf.page);
-      if (!gc_fixed) {
+      if (page_need_fixing && !gc_fixed) {
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
       // -------------------------------------------------------------------------------------
@@ -536,7 +543,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }
       // -------------------------------------------------------------------------------------
-      if (swip_value.isDIRTY() && !gc_fixed) {
+      if (page_need_fixing && !gc_fixed) {
          fix_dirty_page(bf, lsn);
       }
       // -------------------------------------------------------------------------------------

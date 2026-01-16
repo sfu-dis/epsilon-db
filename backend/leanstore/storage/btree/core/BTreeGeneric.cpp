@@ -549,12 +549,12 @@ void BTreeGeneric::checkpoint(BTreeGeneric&, BufferFrame& bf, u8* dest)
       for (u64 t_i = 0; t_i < dest_node.count; t_i++) {
          if (!dest_node.getChild(t_i).isEVICTED()) {
             auto& child_bf = dest_node.getChild(t_i).asBufferFrameMasked();
-            dest_node.getChild(t_i).evict(child_bf.header.pid, child_bf.page.ru_epoch);
+            dest_node.getChild(t_i).evict(child_bf.header.pid);
          }
       }
       if (!dest_node.upper.isEVICTED()) {
          auto& child_bf = dest_node.upper.asBufferFrameMasked();
-         dest_node.upper.evict(child_bf.header.pid, child_bf.page.ru_epoch);
+         dest_node.upper.evict(child_bf.header.pid);
       }
    }
 }
@@ -571,7 +571,7 @@ void BTreeGeneric::deserialize(BTreeGeneric& btree, std::unordered_map<std::stri
 {
    btree.dt_id = std::stol(map["dt_id"]);
    btree.height = std::stol(map["height"]);
-   btree.meta_node_bf.evict(std::stol(map["meta_pid"]), -1);
+   btree.meta_node_bf.evict(std::stol(map["meta_pid"]));
    HybridLatch dummy_latch;
    Guard dummy_guard(&dummy_latch);
    dummy_guard.toOptimisticSpin();

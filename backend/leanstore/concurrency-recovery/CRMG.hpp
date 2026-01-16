@@ -47,12 +47,12 @@ class CRManager
    // -------------------------------------------------------------------------------------
    const s32 ssd_fd; // TODO(mfd) : Remove
    const s32 log_dev_fd;
-   const u64 end_of_block_device; // TODO(mfd) : Remove
+   const u64 log_dev_size;
    HistoryTreeInterface& versions_space;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<cr::LogManager> log_manager;
    // -------------------------------------------------------------------------------------
-   CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 end_of_block_device);
+   CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 log_dev_size);
    ~CRManager();
    // -------------------------------------------------------------------------------------
    void registerMeAsSpecialWorker();

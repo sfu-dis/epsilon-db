@@ -118,7 +118,7 @@ class BufferManager
       alignas(64) atomic<bool> is_garbage_collected{false};
       alignas(64) atomic<s32> total{0};
       alignas(64) atomic<s32> invalid{0};
-      alignas(64) atomic<s32> done_gc{FLAGS_ru_gc_threads};
+      alignas(64) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
 
       void reset() {
          ensure_equal(pids.size(), 0);
@@ -226,16 +226,22 @@ class BufferManager
    };
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
-   static constexpr u32 MAX_OPEN_RU_EPOCHS = 238;
+   u32 max_open_ru_epochs;
+   // TODO(mfd) : partially persist this struct.
+   //  perist, total + invalid.
+   // TODO(mfd) : move this to templated circular buffer in utils
    struct ru_discard_set {
     private:
-      RUEpochDiscardSet data[MAX_OPEN_RU_EPOCHS];
+      u32 size;
+      std::unique_ptr<RUEpochDiscardSet[]> data;
     public:
+      ru_discard_set(u64 size)
+        : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size)) {}
       RUEpochDiscardSet& operator[](size_t index) {
-         return data[index % MAX_OPEN_RU_EPOCHS];
+         return data[index % size];
       }
       const RUEpochDiscardSet& operator[](size_t index) const {
-         return data[index % MAX_OPEN_RU_EPOCHS];
+         return data[index % size];
       }
    } ru_discard_set;
    std::mutex gc_m;
@@ -254,7 +260,7 @@ class BufferManager
 
   public:
    // -------------------------------------------------------------------------------------
-   BufferManager(s32 ssd_fd);
+   BufferManager(s32 ssd_fd, u32 max_open_ru_epoch);
    ~BufferManager();
    // -------------------------------------------------------------------------------------
    BufferFrame& allocatePage();

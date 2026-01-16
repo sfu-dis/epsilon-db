@@ -14,13 +14,11 @@ namespace cr
 // Threads id order: workers (xN) -> Group Committer Thread (x1) -> Page Provider Threads (xP)
 CRManager* CRManager::global = nullptr;
 std::atomic<u64> CRManager::fsync_counter = 0;
-std::atomic<u64> CRManager::g_ssd_offset = 0; // TODO(mfd) : Remove
 // -------------------------------------------------------------------------------------
 CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_dev_fd, u64 log_device_size)
-    : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), end_of_block_device(log_device_size), versions_space(versions_space)
+    : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), log_dev_size(log_device_size), versions_space(versions_space)
 {
    workers_count = FLAGS_worker_threads;
-   g_ssd_offset = end_of_block_device;
    ensure(workers_count < MAX_WORKER_THREADS);
    // -------------------------------------------------------------------------------------
    Worker::global_workers_current_snapshot = std::make_unique<atomic<u64>[]>(workers_count);
