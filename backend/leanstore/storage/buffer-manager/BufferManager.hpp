@@ -113,13 +113,12 @@ public:
    struct RUEpochDiscardSet {
       instrumented_mutex m{"ru_discard_set"};
       std::unordered_map<PID, LID> pids;
-      // Do we need padding here?
-      alignas(64) atomic<s32> inserted{0};
-      alignas(64) atomic<s32> deleted{0};
-      alignas(64) atomic<bool> is_garbage_collected{false};
-      alignas(64) atomic<s32> total{0};
-      alignas(64) atomic<s32> invalid{0};
-      alignas(64) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
+      alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
+      alignas(CACHE_LINE_SIZE) atomic<s32> deleted{0};
+      alignas(CACHE_LINE_SIZE) atomic<bool> is_garbage_collected{false};
+      alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
+      alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
+      alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
 
       void reset() {
          ensure_equal(pids.size(), 0);
@@ -151,9 +150,6 @@ public:
       void ensureInexistant(PID pid) {
          std::lock_guard<instrumented_mutex> _l(m);
          ensure(pids.count(pid) == 0);
-         PARANOID_BLOCK() {
-            log.emplace_back(pid, 'i', nullptr);
-         }
       }
       bool shouldGC() {
          // XXX(mfd) : The number of inserted elements could execeed  the RU_SIZE
@@ -163,67 +159,17 @@ public:
          // s32 d = inserted.load(std::memory_order_relaxed);
          s32 tot = total.load(std::memory_order_acquire);
          double per = (i+d) * 1.0f / tot;
-         bool ok = per > 0.9;
-         if (ok) {
-            printf("tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
+         bool ok = per > 0.8;
+         if (ok || (cnt % 200) == 0) {
+            printf("\ntot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
          }
          // return (( invalid.load(std::memory_order_acquire) + inserted.load(std::memory_order_relaxed)) * 1.0f/ ) > 0.9;
          return ok;
-      }
-      bool getBatch(std::vector<std::pair<PID, LID>> &out_pids, u32 batch_size) {
-         out_pids.clear();
-         std::lock_guard<instrumented_mutex> _l(m);
-         auto it = pids.begin();
-         for (; it != pids.end(); ++it) {
-            out_pids.emplace_back(*it);
-            if (out_pids.size() == batch_size) {
-               break;
-            }
-         }
-         pids.erase(pids.begin(), it);
-         return !out_pids.empty();
       }
       u64 size() {
          std::lock_guard<instrumented_mutex> _l(m);
          return pids.size();
       }
-      // Debugging 
-      std::vector<std::tuple<PID, char, BufferFrame*>> log;
-      bool insert(PID pid, LID lsn, BufferFrame *bf) {
-         std::unique_lock _l(m);
-         bool ok = pids.insert({pid, lsn}).second;
-         ensure(ok);
-         PARANOID_BLOCK() {
-            log.emplace_back(pid, 'I', bf);
-         }
-         inserted.fetch_add(1, std::memory_order_relaxed);
-         return ok;
-      }
-      bool erase(PID pid, BufferFrame *bf, char c = 'E') {
-         std::lock_guard<instrumented_mutex> _l(m);
-         bool ok = pids.erase(pid);
-         if (ok) deleted.fetch_add(1, std::memory_order_relaxed);
-         PARANOID_BLOCK() {
-            if (ok) log.emplace_back(pid, '+', bf);
-            else log.emplace_back(pid, '-', bf);
-         }
-         return ok;
-      }
-      void log_op(PID pid, BufferFrame *bf, char c) {
-         PARANOID_BLOCK() {
-            std::lock_guard<instrumented_mutex> _l(m);
-            log.emplace_back(pid, c, bf);
-         }
-      }
-      void dump_history_of_page(PID pid) {
-         int c = 0;
-         for (const auto& e : log) {
-            if (std::get<0>(e) == pid) {
-               printf("(%c, %p) ", std::get<1>(e), std::get<2>(e));
-               ++c;
-            }
-         }
-      }      
    };
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
@@ -302,16 +248,7 @@ public:
    DTRegistry& getDTRegistry() { return DTRegistry::global_dt_registry; }
    u64 consumedPages();
    BufferFrame& getContainingBufferFrame(const u8*);  // get the buffer frame containing the given ptr address
-   // Just for debugging
-   void dump_history_of_pid(PID pid) {
-      u64 epoch = ru_epoch.load() + 3;
-      printf("History of page with pid %u\n", pid);
-      for (u64 e = 0; e < epoch; ++e) {
-         printf("\n%lu ", e);
-         ru_discard_set[e].dump_history_of_page(pid);
-      }
-   }   
-};                                                    // namespace storage
+};
 // -------------------------------------------------------------------------------------
 class BMC
 {

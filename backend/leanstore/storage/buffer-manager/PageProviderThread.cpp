@@ -207,19 +207,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                ensure(last_write_lsn != INVALID_LSN);
             }
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
-            bool ok = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn, &bf);
-            if (!ok) {
-               PARANOID_BLOCK() {
-                  BMC::global_bf->dump_history_of_pid(evicted_pid);
-               }
-               raise(SIGTRAP);
-            }
+            ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
             parent_handler.swip.evict(evicted_pid);
-            PARANOID_BLOCK() {
-               ru_discard_set[bf.page.ru_epoch].log_op(evicted_pid, &bf ,'e');
-            }
          }
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
