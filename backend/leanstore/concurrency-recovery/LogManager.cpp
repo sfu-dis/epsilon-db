@@ -2,6 +2,8 @@
 
 #include "LogManager.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
+#include "leanstore/storage/buffer-manager/BufferFrame.hpp"
+#include "leanstore/storage/buffer-manager/BufferManager.hpp"
 
 namespace leanstore
 {
@@ -18,6 +20,8 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       partition_by = PARTITION_BY::WORKER;
    } else if (FLAGS_wal_partition_by == "page") {
       partition_by = PARTITION_BY::PAGE;
+   } else if (FLAGS_wal_partition_by == "ru_epoch") {
+      partition_by = PARTITION_BY::RU_EPOCH;
    } else {
       throw std::invalid_argument("FLAGS_wal_partition_by");
    }
@@ -85,17 +89,41 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
+   fp = fopen("log_usage.txt", "w");
+   ensure(fp != nullptr);
 }
 
-Logging& LogManager::getLog(PID pid)
+Logging& LogManager::getLog(storage::BufferFrame *bf)
 { 
-   u32 log_id = -1;
+   s32 log_id = -1;
    if (global->isPartitionedByWorker()) {
       log_id = Worker::my().worker_id;
+   } else if (global->isPartitionedByRUepoch()) {
+      auto ru_epoch = bf->page.ru_epoch;
+      if ((ru_epoch == -1)
+          || (u64(ru_epoch) <= storage::BMC::global_bf->oldest_uncollected_ru_epoch.load(std::memory_order_acquire))) {
+         // map to default log. FIXME : decay to centralized log during loading.
+         log_id = global->log_count - 1;
+      } else {
+         // for now one to one mapping
+         log_id = ru_epoch % (global->log_count - 1);
+      }
    } else {
-      log_id = pid % global->log_count;
+      log_id = bf->header.pid % global->log_count;
    }
+   ensure(log_id != -1);
    return global->all_logs[log_id];
+}
+
+
+void LogManager::resetLogSegment(s64 ru_epoch)
+{
+   ensure(global->isPartitionedByRUepoch());
+   ensure(ru_epoch >= 0); 
+   u32 log_id = ru_epoch % (global->log_count - 1);
+   auto& lseg = global->meta->log_segments[log_id];
+   printf("offset = %lu, hardened GSN = %lu", lseg.offset, lseg.hardened_gsn);
+   lseg.offset = 0;
 }
 
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
@@ -118,7 +146,15 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
       lseg.offset -= LOG_DEV_BLK_SIZE;
    }
    lseg.last_start_offset = buffer_offset;
-   ensure(lseg.offset < log_segment_size);
+   if (lseg.offset >= log_segment_size) {
+      if (log_i == (log_count - 1)) {
+         lseg.offset = 0;
+         cout << "[INFO] finished round for extra log" << endl;
+      } else {
+         cerr << "Log space is not enough!!!" << endl;
+         raise(SIGTRAP);
+      }
+   }
    COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
 }
 

@@ -1,5 +1,7 @@
 #include "BufferManager.hpp"
 // -------------------------------------------------------------------------------------
+#include "leanstore/concurrency-recovery/LogManager.hpp"
+// -------------------------------------------------------------------------------------
 #include <liburing.h>
 // -------------------------------------------------------------------------------------
 namespace leanstore
@@ -237,6 +239,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             reclaimed_ru_epoch.fetch_add(1);
             printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
             // trim the RU log
+            cr::LogManager::resetLogSegment(ru_epoch);
          }
       }
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;

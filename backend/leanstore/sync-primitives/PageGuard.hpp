@@ -160,7 +160,7 @@ class HybridPageGuard
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;
       // TODO: verify
-      auto& logging = cr::LogManager::getLog(pid);
+      auto& logging = cr::LogManager::getLog(bf);
       logging.mutex.lock();
       if (!cr::LogManager::global->isPartitionedByWorker()) {
          logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
@@ -173,7 +173,7 @@ class HybridPageGuard
       bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
-   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog(bf->header.pid).submitDTEntry(total_size); }
+   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog(bf).submitDTEntry(total_size); }
    // -------------------------------------------------------------------------------------
    inline bool hasFacedContention() { return guard.faced_contention; }
    inline void unlock() { guard.unlock(); }

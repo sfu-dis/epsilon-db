@@ -1,15 +1,19 @@
 #pragma once
-
 #include "Units.hpp"
 #include "Worker.hpp"
-
+// -------------------------------------------------------------------------------------
 #include <libaio.h>
-
+// -------------------------------------------------------------------------------------
 namespace leanstore
 {
+namespace storage
+{
+struct BufferFrame; // Forward declaration
+}
 namespace cr
 {
-
+struct Logging; // Forward declaration
+// -------------------------------------------------------------------------------------
 struct per_worker_log_segment {
    u64 start_off;
    u64 end_off;
@@ -17,7 +21,7 @@ struct per_worker_log_segment {
    u64 last_start_offset;
    LID hardened_gsn;
 };
-
+// -------------------------------------------------------------------------------------
 struct meta_block {
    u64 number_logs;
    LID min_all_workers_gsn;
@@ -25,9 +29,7 @@ struct meta_block {
    TXID min_all_workers_hardened_commit_ts;
    struct per_worker_log_segment log_segments[0];
 };
-
-struct Logging;
-
+// -------------------------------------------------------------------------------------
 struct LogManager {
    static constexpr u64 LOG_DEV_BLK_SIZE = 4096;
    static LogManager* global;
@@ -49,20 +51,16 @@ struct LogManager {
    std::unique_ptr<struct io_event[]> events = make_unique<struct io_event[]>(batch_max_size);
    io_context_t aio_context;
    // -------------------------------------------------------------------------------------
-   enum class PARTITION_BY : u8 { WORKER, PAGE };
+   enum class PARTITION_BY : u8 { WORKER, PAGE, RU_EPOCH };
    PARTITION_BY partition_by;
    // -------------------------------------------------------------------------------------
+   FILE* fp;
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
 
-   // static u32 getLogID() { return Worker::my().worker_id; }
+   static Logging& getLog(storage::BufferFrame *bf);
 
-   static Logging& getLog(PID pid);
-
-   static void trimLogSegment(u32 log_segment_id)
-   {
-      // TODO
-   }
+   static void resetLogSegment(s64 ru_epoch);
 
    void add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full);
 
@@ -72,8 +70,10 @@ struct LogManager {
 
    bool isPartitionedByWorker() { return partition_by == PARTITION_BY::WORKER; }
    bool isPartitionedByPage() { return partition_by == PARTITION_BY::PAGE; }
+   bool isPartitionedByRUepoch() { return partition_by == PARTITION_BY::RU_EPOCH; }
    // -------------------------------------------------------------------------------------
 };
-
+// -------------------------------------------------------------------------------------
 }  // namespace cr
 }  // namespace leanstore
+// -------------------------------------------------------------------------------------

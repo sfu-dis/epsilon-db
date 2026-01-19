@@ -91,8 +91,27 @@ LeanStore::LeanStore()
    }
    ensure(fcntl(ssd_fd, F_GETFL) != -1);
    // -------------------------------------------------------------------------------------
-   buffer_manager = make_unique<storage::BufferManager>(ssd_fd);
+   u64 total_blocks_in_ssd; // depends on how the namespace is formatted
+   if (FLAGS_ssd_gib == 0) {
+      u64 ssd_size; // in bytes
+      if (ioctl(ssd_fd, BLKGETSIZE64, &ssd_size) == 0) {
+         std::cout << "[INFO] SSD size: " << ssd_size << " bytes" << std::endl;
+         total_blocks_in_ssd = ssd_size / 4096;
+      } else {
+         perror("ioctl");
+      }
+   } else {
+      total_blocks_in_ssd = (FLAGS_ssd_gib * 1048576) / 4;
+   }
+   u64 max_open_ru_epochs = total_blocks_in_ssd / 3193344UL; // Hardcoded ru size
+   // -------------------------------------------------------------------------------------
+   buffer_manager = make_unique<storage::BufferManager>(ssd_fd, max_open_ru_epochs);
    BMC::global_bf = buffer_manager.get();
+   // -------------------------------------------------------------------------------------
+   if (FLAGS_wal_partition_by == "ru_epoch") {
+      FLAGS_wal_partitions_count = max_open_ru_epochs + 1;
+      cout << "[INFO] number of Log partitions : " << FLAGS_wal_partitions_count << endl;
+   }
    // -------------------------------------------------------------------------------------
    DTRegistry::global_dt_registry.registerDatastructureType(0, storage::btree::BTreeLL::getMeta());
    DTRegistry::global_dt_registry.registerDatastructureType(2, storage::btree::BTreeVI::getMeta());

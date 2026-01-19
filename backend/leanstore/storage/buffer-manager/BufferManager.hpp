@@ -105,6 +105,7 @@ class BufferManager
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
    // -------------------------------------------------------------------------------------
+public:
    atomic<u64> ru_epoch = 0; // persistant
    atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
