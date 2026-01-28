@@ -56,7 +56,7 @@ void CRManager::groupCommiter()
          per_worker_hardened_precommit_ts[w_i] = worker.last_precommitted_tx_commit_ts.load(std::memory_order_acquire);
          min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, per_worker_hardened_precommit_ts[w_i]);
          {
-            std::unique_lock<std::mutex> g(worker.precommitted_queue_mutex);
+            std::unique_lock<instrumented_mutex> g(worker.precommitted_queue_mutex);
             ready_to_commit_rfa_cut[w_i] = worker.precommitted_queue_rfa.size();
          }
       }
@@ -132,7 +132,7 @@ void CRManager::groupCommiter()
          TXID signaled_up_to = std::numeric_limits<TXID>::max();
          // TODO: prevent contention on mutex
          {
-            std::unique_lock<std::mutex> g(worker.precommitted_queue_mutex);
+            std::unique_lock<instrumented_mutex> g(worker.precommitted_queue_mutex);
             // -------------------------------------------------------------------------------------
             u64 tx_i = 0;
             for (tx_i = 0;

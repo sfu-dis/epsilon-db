@@ -76,14 +76,12 @@ void CRTable::open()
    columns.emplace("cc_ms_abort_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_abort_tx); });
    // -------------------------------------------------------------------------------------
    // Instrumented Mutexes
-   u64 wal_buffer_id = instrumented_mutex::name2id["log_buffer"];
-   columns.emplace("walbuf_mutex", [wal_buffer_id](Column& col) { 
-      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, wal_buffer_id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, wal_buffer_id));
-   });
-   u64 ru_discard_set_id = instrumented_mutex::name2id["ru_discard_set_id"];
-   columns.emplace("ru_discard_set_mutex", [ru_discard_set_id](Column& col) { 
-      col << ( sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, ru_discard_set_id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, ru_discard_set_id));
-   });
+   for (const auto&[name, id] : instrumented_mutex::name2id)
+   {
+      columns.emplace(name, [id](Column& col) { 
+         col << (sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, id));
+      });
+   }
 }
 // -------------------------------------------------------------------------------------
 void CRTable::next()

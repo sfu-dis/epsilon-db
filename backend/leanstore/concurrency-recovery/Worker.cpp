@@ -163,12 +163,13 @@ void Worker::commitTX()
       }
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
-      std::unique_lock<std::mutex> g(precommitted_queue_mutex);
+      std::unique_lock<instrumented_mutex> g(precommitted_queue_mutex);
+      // TODO(mfd) : RFA is only relevant for Worker based log partitioning ?
       if (per_worker_logging_info.remote_flush_dependency) {  // RFA
-        precommitted_queue.push_back(active_tx);
+         precommitted_queue.push_back(active_tx);
       } else {
-        CRCounters::myCounters().rfa_committed_tx++;
-        precommitted_queue_rfa.push_back(active_tx);
+         CRCounters::myCounters().rfa_committed_tx++;
+         precommitted_queue_rfa.push_back(active_tx);
       }
     }
     // Only committing snapshot/ changing between SI and lower modes

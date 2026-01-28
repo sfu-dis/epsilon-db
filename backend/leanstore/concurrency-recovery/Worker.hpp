@@ -5,6 +5,7 @@
 #include "LogManager.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
+#include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 // -------------------------------------------------------------------------------------
 #include <atomic>
 #include <functional>
@@ -71,7 +72,7 @@ struct Worker {
    } per_worker_logging_info;
    LID worker_gsn_clock; // Will be the same as log_gsn_clock in case of per worker log.
    // Shared between Group Committer and Worker
-   std::mutex precommitted_queue_mutex;
+   instrumented_mutex precommitted_queue_mutex{"precommitted_queue"};
    std::vector<Transaction> precommitted_queue;
    std::vector<Transaction> precommitted_queue_rfa;
    std::atomic<TXID>  last_precommitted_tx_commit_ts = 0;

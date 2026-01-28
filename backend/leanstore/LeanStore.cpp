@@ -205,6 +205,8 @@ void LeanStore::startProfilingThread()
       u64 seconds = 0;
       u64 inital_max_pid = 0;
       double inital_gib = 0;
+      LID prev_min_dur_gsn = 0;
+      LID prev_max_seen_gsn = 0;
       while (bg_threads_keep_running) {
          for (u64 t_i = 0; t_i < tables.size(); t_i++) {
             tables[t_i]->next();
@@ -236,15 +238,22 @@ void LeanStore::startProfilingThread()
          // -------------------------------------------------------------------------------------
          // Console
          // -------------------------------------------------------------------------------------
+#if 0
          const double instr_per_tx = cpu_table.workers_agg_events["instr"] / tx;
          const double cycles_per_tx = cpu_table.workers_agg_events["cycle"] / tx;
          const double l1_per_tx = cpu_table.workers_agg_events["L1-miss"] / tx;
          const double llc_per_tx = cpu_table.workers_agg_events["LLC-miss"] / tx;
+#endif
          // -------------------------------------------------------------------------------------
          const u64 min_hardened_gsn = cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire);
          const u64 max_hardened_gsn = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
+         ensure(min_hardened_gsn >= prev_min_dur_gsn);
+         ensure(max_hardened_gsn >= prev_max_seen_gsn);
+         const u64 min_dur_gsn_increment = min_hardened_gsn - prev_min_dur_gsn;
+         const u64 max_dur_gsn_increment = max_hardened_gsn - prev_max_seen_gsn;
+         prev_min_dur_gsn = min_hardened_gsn;
+         prev_max_seen_gsn = max_hardened_gsn;
          const double dirty_read_pct = std::stod(bm_table.get("0", "dirty_pct"));
-         const double walbuf_contention = std::stod(cr_table.get("0", "walbuf_mutex"));
          // using RowType = std::vector<variant<std::string, const char*, Table>>;
          if (FLAGS_print_tx_console) {
             tabulate::Table table;
@@ -280,8 +289,8 @@ void LeanStore::startProfilingThread()
             table.add_row({"t", "OLTP TX", "RF %", "Abort%", 
                           "W MiB", "R MiB", /*"Instrs/TX", "Cycles/TX", "CPUs", "L1/TX", "LLC/TX", "GHz",
                            "WAL GiB/s", "GCT GiB/s","Space G", "GCT Rounds", */ 
-                           "Discard MiB", "Dirty Read %" , "MinDurGSN", "MaxDurGSN", "WAL GiB/s", "WALmtx %", 
-                           "gct_p1%", "gct_p2%", "gct_w%", "RUset mtx%"});
+                           "Discard MiB", "Dirty Read %" , "DurGSNIncr", "MaxGSNIncr", "GSN skew", "WAL GiB/s", "WALmtx %", 
+                           "gct_p1%", "gct_p2%", "gct_w%", "RUset mtx%", "pq mtx%"});
             table.add_row({std::to_string(seconds), std::to_string(tx), 
                         to_string_rounded(remote_flushes_pct), to_string_rounded(tx_abort_pct),
                            /*std::to_string(olap_tx),*/ 
@@ -291,14 +300,17 @@ void LeanStore::startProfilingThread()
                             bm_table.get("0", "space_usage_gib"), cr_table.get("0", "gct_rounds"), */
                             bm_table.get("0", "discarded_mib"),
                             to_string_rounded(dirty_read_pct),
-                            std::to_string(min_hardened_gsn),
-                            std::to_string(max_hardened_gsn),
+                            std::to_string(min_dur_gsn_increment),
+                            std::to_string(max_dur_gsn_increment),
+                            std::to_string(max_hardened_gsn - min_hardened_gsn),
                             cr_table.get("0", "gct_write_gib"),
-                            to_string_rounded(walbuf_contention),
+                            /* to_string_rounded(walbuf_contention), */
+                            cr_table.get("0", "log_buf"),
                             cr_table.get("0", "gct_phase_1_pct"),
                             cr_table.get("0", "gct_phase_2_pct"),
                             cr_table.get("0", "gct_write_pct"),
-                            cr_table.get("0", "ru_discard_set_mutex"),
+                            cr_table.get("0", "ru_discard_set"),
+                            cr_table.get("0", "precommitted_queue"),
                            });
             // -------------------------------------------------------------------------------------
             table.format().width(10);
