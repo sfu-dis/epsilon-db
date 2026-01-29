@@ -170,7 +170,7 @@ void CRManager::groupCommiter()
          CRCounters::myCounters().gct_write_ms += (std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_begin).count());
       }
       // -------------------------------------------------------------------------------------
-      assert(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
+      ensure(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
       Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
       Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
       log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;

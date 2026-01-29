@@ -237,9 +237,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             // And reset the RU discard set.
             set.reset();
             reclaimed_ru_epoch.fetch_add(1);
+            cr::LogManager::global->resetLogSegment(ru_epoch);
             printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
-            // trim the RU log
-            cr::LogManager::resetLogSegment(ru_epoch);
          }
       }
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;

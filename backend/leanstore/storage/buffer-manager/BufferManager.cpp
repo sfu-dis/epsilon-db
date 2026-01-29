@@ -181,8 +181,10 @@ void BufferManager::startBackgroundThreads()
                ensure((new_epoch - reclaimed_ru_epoch) <= max_open_ru_epochs);
                ru_epoch.store(new_epoch, std::memory_order_release);
                *ru_epoch_ptr = new_epoch;
-               s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
-               ensure_equal(ret, PAGE_SIZE);
+               if (FLAGS_persist) {
+                  s64 ret = pwrite(ssd_fd, buf, PAGE_SIZE, utils::upAlign(FLAGS_ssd_gib * 1024 * 1048576, 4096));
+                  ensure_equal(ret, PAGE_SIZE);
+               }
                printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
             }
             if (oldest_uncollected_ru_epoch < ru_epoch.load(std::memory_order_relaxed)

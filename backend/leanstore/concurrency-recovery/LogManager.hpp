@@ -60,7 +60,7 @@ struct LogManager {
 
    static Logging& getLog(storage::BufferFrame *bf);
 
-   static void resetLogSegment(s64 ru_epoch);
+   void resetLogSegment(s64 ru_epoch);
 
    void add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full);
 

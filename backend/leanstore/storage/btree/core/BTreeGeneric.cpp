@@ -592,7 +592,7 @@ void BTreeGeneric::deserialize(BTreeGeneric& btree, std::unordered_map<std::stri
       }
    }
    btree.meta_node_bf.asBufferFrame().header.keep_in_memory = true;
-   assert(btree.meta_node_bf.asBufferFrame().page.dt_id == btree.dt_id);
+   ensure_equal(btree.meta_node_bf.asBufferFrame().page.dt_id, btree.dt_id);
 }
 // -------------------------------------------------------------------------------------
 void BTreeGeneric::iterateChildrenSwips(void*, BufferFrame& bf, std::function<bool(Swip<BufferFrame>&)> callback)
