@@ -558,10 +558,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          swip_guard.recheck();
          JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
          BMExclusiveUpgradeIfNeeded swip_x_guard(swip_guard);
-         if (!swip_value.isDIRTY()) {
-            ensure(bf.page.ru_epoch >= 0);
-            ru_discard_set[bf.page.ru_epoch].ensureInexistant(pid);
-         }
          io_frame.mutex.unlock();
          swip_value.warm(&bf);
          bf.header.state = BufferFrame::STATE::HOT;  // ATTENTION: SET TO HOT AFTER
@@ -619,14 +615,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          BMExclusiveGuard bf_x_guard(bf_guard);
          // -------------------------------------------------------------------------------------
          io_frame.bf = nullptr;
-         paranoid(bf->header.pid == pid);
-         if (!swip_value.isDIRTY()) {
-            ensure(bf->page.ru_epoch >= 0);
-            ru_discard_set[bf->page.ru_epoch].ensureInexistant(pid);
-         }
+         ensure_equal(bf->header.pid, pid);
          swip_value.warm(bf);
          paranoid(swip_value.isHOT());
-         paranoid(bf->header.state == BufferFrame::STATE::LOADED);
+         ensure_equal(bf->header.state, BufferFrame::STATE::LOADED);
          bf->header.state = BufferFrame::STATE::HOT;  // ATTENTION: SET TO HOT AFTER
                                                       // IT IS SWIZZLED IN
          // -------------------------------------------------------------------------------------

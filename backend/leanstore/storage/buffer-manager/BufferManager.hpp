@@ -120,56 +120,11 @@ public:
       alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
 
-      void reset() {
-         ensure_equal(pids.size(), 0);
-         ensure(is_garbage_collected == true);
-         ensure_equal(done_gc, 0);
-         inserted = 0;
-         deleted = 0;
-         is_garbage_collected = false;
-         total = 0;
-         invalid = 0;
-         done_gc = FLAGS_ru_gc_threads;
-      }
-
-      void insert(PID pid, LID lsn) {
-         ensure(is_garbage_collected == false);
-         std::lock_guard<instrumented_mutex> _l(m);
-         bool ok = pids.insert({pid, lsn}).second;
-         ensure(ok);
-         inserted.fetch_add(1, std::memory_order_relaxed);
-      }
-      LID erase(PID pid) {
-         std::lock_guard<instrumented_mutex> _l(m);
-         if (pids.count(pid) == 0) return INEXISTANT_LSN;
-         LID lsn = pids[pid];
-         pids.erase(pid);
-         deleted.fetch_add(1, std::memory_order_relaxed);
-         return lsn;
-      }
-      void ensureInexistant(PID pid) {
-         std::lock_guard<instrumented_mutex> _l(m);
-         ensure(pids.count(pid) == 0);
-      }
-      bool shouldGC() {
-         // XXX(mfd) : The number of inserted elements could execeed  the RU_SIZE
-         //  because we're approximating the ru_epoch boundary.
-         s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
-         s32 i = invalid.load(std::memory_order_acquire);
-         // s32 d = inserted.load(std::memory_order_relaxed);
-         s32 tot = total.load(std::memory_order_acquire);
-         double per = (i+d) * 1.0f / tot;
-         bool ok = per > 0.8;
-         if (ok || (cnt % 200) == 0) {
-            printf("\ntot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
-         }
-         // return (( invalid.load(std::memory_order_acquire) + inserted.load(std::memory_order_relaxed)) * 1.0f/ ) > 0.9;
-         return ok;
-      }
-      u64 size() {
-         std::lock_guard<instrumented_mutex> _l(m);
-         return pids.size();
-      }
+      void reset();
+      void insert(PID pid, LID lsn);
+      LID erase(PID pid);
+      bool shouldGC();
+      u64 size();
    };
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
