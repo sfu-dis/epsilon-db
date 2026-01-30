@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Units.hpp"
+#include "Backtrace.hpp"
 // -------------------------------------------------------------------------------------
 #define imply(lhs, rhs) (!(lhs) || (rhs))
 //--------------------------------------------------------------------------------------
@@ -58,6 +59,7 @@ Generic_Exception(TODO);
         if ((a) != (b)) { \
             fprintf(stderr, "Equality check failed: %s != %s (values: %lld vs %lld) at %s:%d\n", \
                     #a, #b, (long long)(a), (long long)(b), __FILE__, __LINE__); \
+            leanstore::print_backtrace(); \
             abort(); \
         } \
     } while (0)
