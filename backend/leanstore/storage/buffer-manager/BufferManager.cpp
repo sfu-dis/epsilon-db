@@ -511,11 +511,15 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       LID lsn;
       bool gc_fixed = false;
       if (page_need_fixing) {
-         lsn = ru_discard_set[ru_epoch].erase(pid);
-         if (lsn == INEXISTANT_LSN) {
-            // the garbage collector thread has already fixed the page.
+         if (ru_epoch <= reclaimed_ru_epoch) {
             gc_fixed = true;
-         } 
+         } else {
+            lsn = ru_discard_set[ru_epoch].erase(pid);
+            if (lsn == INEXISTANT_LSN) {
+               // the garbage collector thread has already fixed the page.
+               gc_fixed = true;
+            }
+         }
       }
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
