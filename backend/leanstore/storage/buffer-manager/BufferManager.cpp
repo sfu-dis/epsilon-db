@@ -459,7 +459,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    const s64 ru_epoch = swip_value.ru_epoch();
    const bool page_need_fixing = swip_value.isDIRTY();
    Partition& partition = getPartition(pid);
-   JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
+   JMUW<std::unique_lock<instrumented_mutex>> g_guard(partition.ht_mutex);
    swip_guard.recheck();
    paranoid(!swip_value.isHOT());
    // -------------------------------------------------------------------------------------
@@ -556,7 +556,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       jumpmuTry()
       {
          swip_guard.recheck();
-         JMUW<std::unique_lock<std::mutex>> g_guard(partition.ht_mutex);
+         JMUW<std::unique_lock<instrumented_mutex>> g_guard(partition.ht_mutex);
          BMExclusiveUpgradeIfNeeded swip_x_guard(swip_guard);
          io_frame.mutex.unlock();
          swip_value.warm(&bf);

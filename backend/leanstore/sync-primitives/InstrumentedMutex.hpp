@@ -42,6 +42,8 @@ struct instrumented_mutex {
 
    void unlock() { m.unlock(); }
 
+   bool try_lock() { return m.try_lock(); }
+
   private:
    std::mutex m;
    u64 id;

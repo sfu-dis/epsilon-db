@@ -3,6 +3,7 @@
 #include "FreeList.hpp"
 #include "Units.hpp"
 #include "leanstore/Config.hpp"
+#include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <list>
@@ -63,7 +64,7 @@ struct HashTable {
 };
 // -------------------------------------------------------------------------------------
 struct Partition {
-   std::mutex ht_mutex;
+   instrumented_mutex ht_mutex{"partition_ht"};
    HashTable io_ht;
    // -------------------------------------------------------------------------------------
    const u64 free_bfs_limit;

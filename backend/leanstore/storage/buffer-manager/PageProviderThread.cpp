@@ -250,7 +250,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // Prevent evicting a page that already has an IO Frame with (possibly) threads working on it.
             {
                Partition& partition = getPartition(p_i);
-               JMUW<std::unique_lock<std::mutex>> io_guard(partition.ht_mutex);
+               JMUW<std::unique_lock<instrumented_mutex>> io_guard(partition.ht_mutex);
                if (partition.io_ht.lookup(cooled_bf_pid)) {
                   jumpmu_continue;
                }
