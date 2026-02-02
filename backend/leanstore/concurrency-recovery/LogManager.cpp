@@ -103,10 +103,11 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
       if ((ru_epoch == -1)
           || (u64(ru_epoch) < storage::BMC::global_bf->oldest_uncollected_ru_epoch.load(std::memory_order_acquire))) {
          // map to default log. FIXME : decay to centralized log during loading.
-         log_id = global->log_count - 1;
+         // log_id = global->log_count - 1;
+         log_id = bf->header.pid % global->log_count;
       } else {
          // for now one to one mapping
-         log_id = ru_epoch % (global->log_count - 1);
+         log_id = ru_epoch % (global->log_count);
       }
    } else {
       log_id = bf->header.pid % global->log_count;
@@ -120,7 +121,7 @@ void LogManager::resetLogSegment(s64 ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
    ensure(ru_epoch >= 0); 
-   u32 log_id = ru_epoch % (global->log_count - 1);
+   u32 log_id = ru_epoch % (global->log_count);
    auto& lseg = global->meta->log_segments[log_id];
    printf("offset = %lu, hardened GSN = %lu", lseg.offset, lseg.hardened_gsn);
    lseg.offset = 0;
@@ -147,13 +148,8 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    }
    lseg.last_start_offset = buffer_offset;
    if (lseg.offset >= log_segment_size) {
-      if (log_i == (log_count - 1)) {
-         lseg.offset = 0;
-         cout << "[INFO] finished round for extra log" << endl;
-      } else {
-         cerr << "Log space is not enough!!!" << endl;
-         raise(SIGTRAP);
-      }
+      cerr << "Log space is not enough!!!" << endl;
+      raise(SIGTRAP);
    }
    COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
 }
