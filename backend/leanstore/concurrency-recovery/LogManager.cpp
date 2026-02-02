@@ -101,7 +101,7 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
    } else if (global->isPartitionedByRUepoch()) {
       auto ru_epoch = bf->page.ru_epoch;
       if ((ru_epoch == -1)
-          || (u64(ru_epoch) <= storage::BMC::global_bf->oldest_uncollected_ru_epoch.load(std::memory_order_acquire))) {
+          || (u64(ru_epoch) < storage::BMC::global_bf->oldest_uncollected_ru_epoch.load(std::memory_order_acquire))) {
          // map to default log. FIXME : decay to centralized log during loading.
          log_id = global->log_count - 1;
       } else {
