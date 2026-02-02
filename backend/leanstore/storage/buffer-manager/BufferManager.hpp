@@ -110,6 +110,9 @@ public:
    atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
    const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
+   // XXX(mfd) : this depends on how many RUs are in the device
+   //  good number is : (device_size/ru_size)
+   u32 max_open_ru_epochs;
    struct RUEpochDiscardSet {
       instrumented_mutex m{"ru_discard_set"};
       std::unordered_map<PID, LID> pids;
@@ -119,6 +122,7 @@ public:
       alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
+      s64 cur_ru_epoch = -1;
 
       void reset();
       void insert(PID pid, LID lsn);
@@ -126,23 +130,29 @@ public:
       bool shouldGC();
       u64 size();
    };
-   // XXX(mfd) : this depends on how many RUs are in the device
-   //  good number is : (device_size/ru_size)
-   u32 max_open_ru_epochs;
    // TODO(mfd) : partially persist this struct.
    //  perist, total + invalid.
-   // TODO(mfd) : move this to templated circular buffer in utils
    struct ru_discard_set {
     private:
       u32 size;
       std::unique_ptr<RUEpochDiscardSet[]> data;
     public:
       ru_discard_set(u64 size)
-        : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size)) {}
+        : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size))
+      {
+         // XXX(mfd): Is is enough for proper recovery ?
+         // u64 cur_open = ru_epoch.load();
+         u64 cur_open = 0;
+         for (u64 e = 0; e < size; e++) {
+            data[e].cur_ru_epoch = cur_open + e;
+         }
+      }
       RUEpochDiscardSet& operator[](size_t index) {
+         ensure_equal(data[index % size].cur_ru_epoch, s64(index));
          return data[index % size];
       }
       const RUEpochDiscardSet& operator[](size_t index) const {
+         ensure_equal(data[index % size].cur_ru_epoch, s64(index));
          return data[index % size];
       }
    } ru_discard_set;
