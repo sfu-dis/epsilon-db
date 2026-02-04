@@ -17,6 +17,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    void* buf;
    s64 current_gc_epoch = -1;
 
+   gc_threads_counter++;
    bg_threads_counter++;
    if (posix_memalign(&buf, 4096, batch_size * PAGE_SIZE) != 0) {
       printf("posix_memalign failed !!");
@@ -246,6 +247,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;
    }
    bg_threads_counter--;
+   gc_threads_counter--;
 }
 // -------------------------------------------------------------------------------------
 }  // namespace storage

@@ -358,6 +358,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       COUNTERS_BLOCK() { PPCounters::myCounters().pp_thread_rounds++; }
    }
    bg_threads_counter--;
+   pp_threads_counter--;
    //   delete cr::Worker::tls_ptr;
 }
 // -------------------------------------------------------------------------------------

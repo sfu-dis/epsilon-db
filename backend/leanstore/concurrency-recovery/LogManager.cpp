@@ -41,8 +41,8 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       ensure_equal(meta->number_logs, nb_logs);
       Logging::global_min_gsn_flushed.store(meta->min_all_workers_gsn);
       Logging::global_sync_to_this_gsn.store(meta->global_sync_to_this_gsn);
-      printf("[INFO] Recovering min all workers gsn %lu\n", meta->min_all_workers_gsn);
-      printf("[INFO] Recovering max all workers gsn %lu\n", meta->global_sync_to_this_gsn);
+      // printf("[INFO] Recovering min all workers gsn %lu\n", meta->min_all_workers_gsn);
+      // printf("[INFO] Recovering max all workers gsn %lu\n", meta->global_sync_to_this_gsn);
       // Should TX timestamp be recovered ?
    } else {
       meta->number_logs = nb_logs;
@@ -58,9 +58,9 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          seg->offset = seg->last_start_offset = 0;
          seg->hardened_gsn = 0;
       } else {
-         printf("[INFO] Recovering offset of log segment to %lu\n", seg->offset);
-         printf("[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
-         printf("[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
+         // printf("[INFO] Recovering offset of log segment to %lu\n", seg->offset);
+         // printf("[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
+         // printf("[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
       }
       // -------------------------------------------------------------------------------------
       auto& logging = all_logs[log_i];

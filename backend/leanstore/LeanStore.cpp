@@ -106,6 +106,7 @@ LeanStore::LeanStore()
    u64 max_open_ru_epochs = total_blocks_in_ssd / 3193344UL; // Hardcoded ru size
    // -------------------------------------------------------------------------------------
    buffer_manager = make_unique<storage::BufferManager>(ssd_fd, max_open_ru_epochs);
+   ensure_equal(BMC::global_bf, buffer_manager.get());
    BMC::global_bf = buffer_manager.get();
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "ru_epoch") {

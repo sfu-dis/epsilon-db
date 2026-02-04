@@ -104,6 +104,8 @@ class BufferManager
    void ruGarbageCollectorThread(u32 gc_id);
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
+   atomic<u64> pp_threads_counter = 0;
+   atomic<u64> gc_threads_counter = 0;
    // -------------------------------------------------------------------------------------
 public:
    atomic<u64> ru_epoch = 0; // persistant
@@ -130,8 +132,25 @@ public:
       bool shouldGC();
       u64 size();
    };
-   // TODO(mfd) : partially persist this struct.
-   //  perist, total + invalid.
+   u64 persistant_ru_state_offset;
+   struct alignas(4096) PersistantRUState {
+      u64 max_open_ru_epochs; // serves as a magic debugging number also.
+      s64 ru_epoch;
+      s64 oldest_active_ru_epoch;
+      s64 reclaimed_ru_epoch;
+      // XXX(mfd) : Persisting only totals is enough for now, we assume 
+      //  invalid count is always 0. In other words, we assume we're 
+      //   recovering from a load only workload.
+      u32 totals[0];
+
+      PersistantRUState(u32 max_open_ru_epochs); 
+      u64 getSize() const {
+         return sizeof(PersistantRUState) + max_open_ru_epochs * sizeof(u32);
+      }
+      void loadFromPersistantStorage(); 
+      void writetoPersistantStorage(); 
+   };
+   PersistantRUState *persistant_ru_state; 
    struct ru_discard_set {
     private:
       u32 size;
@@ -156,6 +175,7 @@ public:
          return data[index % size];
       }
    } ru_discard_set;
+   // -------------------------------------------------------------------------------------
    std::mutex gc_m;
    std::condition_variable gc_cv;
    std::vector<u64> to_gc_epochs;

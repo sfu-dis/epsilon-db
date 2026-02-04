@@ -1,4 +1,5 @@
 #include "BufferManager.hpp"
+#include "leanstore/utils/Misc.hpp"
 
 
 namespace leanstore
@@ -58,6 +59,23 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
       printf("\ntot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
    }
    return ok;
+}
+// -------------------------------------------------------------------------------------
+BufferManager::PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) :
+   max_open_ru_epochs(max_open_ru_epochs) {}
+// -------------------------------------------------------------------------------------
+void BufferManager::PersistantRUState::loadFromPersistantStorage() 
+{
+   u64 sz = utils::upAlign(getSize(), 4096);
+   s64 ret = pread(BMC::global_bf->ssd_fd, this, sz, BMC::global_bf->persistant_ru_state_offset);
+   ensure_equal(ret, sz);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::PersistantRUState::writetoPersistantStorage()
+{
+   u64 sz = utils::upAlign(getSize(), 4096);
+   s64 ret = pwrite(BMC::global_bf->ssd_fd, this, sz, BMC::global_bf->persistant_ru_state_offset);
+   ensure_equal(ret, sz);
 }
 // -------------------------------------------------------------------------------------
 } // namespace storage
