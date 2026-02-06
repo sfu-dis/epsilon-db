@@ -123,6 +123,7 @@ void CRManager::groupCommiter()
          Logging& logging = log_manager->all_logs[log_i];
          logging.wal_gct_cursor.store(wt_to_lw_copy[log_i].wal_written_offset, std::memory_order_release);
          log_manager->meta->log_segments[log_i].hardened_gsn = wt_to_lw_copy[log_i].last_gsn;
+         logging.hardened_gsn.store(wt_to_lw_copy[log_i].last_gsn, std::memory_order_release);
       }
       // Phase 2, commit
       u64 committed_tx = 0;
