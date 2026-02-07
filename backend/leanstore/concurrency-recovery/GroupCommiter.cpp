@@ -118,7 +118,6 @@ void CRManager::groupCommiter()
          phase_2_begin = write_end;
       }
       // -------------------------------------------------------------------------------------
-      // XXX(mfd) : this could be done earlier in a callback for each completed io write
       for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
          Logging& logging = log_manager->all_logs[log_i];
          logging.wal_gct_cursor.store(wt_to_lw_copy[log_i].wal_written_offset, std::memory_order_release);

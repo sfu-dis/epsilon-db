@@ -15,11 +15,12 @@ namespace cr
 atomic<u64> Logging::global_min_gsn_flushed = 0;
 atomic<u64> Logging::global_min_commit_ts_flushed = 0;
 atomic<u64> Logging::global_sync_to_this_gsn = 0;
+static constexpr u64 LOG_DEV_BLK_SIZE = 4096UL;
 // -------------------------------------------------------------------------------------
 u32 Logging::walFreeSpace()
 {
    // A , B , C : a - b + c % c
-   const auto gct_cursor = wal_gct_cursor.load();
+   const auto gct_cursor = utils::downAlign(wal_gct_cursor.load(), LOG_DEV_BLK_SIZE);
    if (gct_cursor == wal_log_cursor) {
       return FLAGS_wal_buffer_size;
    } else if (gct_cursor < wal_log_cursor) {
@@ -31,7 +32,7 @@ u32 Logging::walFreeSpace()
 // -------------------------------------------------------------------------------------
 u32 Logging::walContiguousFreeSpace()
 {
-   const auto gct_cursor = wal_gct_cursor.load();
+   const auto gct_cursor = utils::downAlign(wal_gct_cursor.load(), LOG_DEV_BLK_SIZE);
    return (gct_cursor > wal_log_cursor) ? gct_cursor - wal_log_cursor : FLAGS_wal_buffer_size - wal_log_cursor;
 }
 // -------------------------------------------------------------------------------------

@@ -36,13 +36,13 @@ struct Logging {
       u64 wal_written_offset = 0;
    };
    utils::OptimisticSpinStruct<WorkerToLW> wt_to_lw;
-  // -------------------------------------------------------------------------------------
+   // -------------------------------------------------------------------------------------
    // Accessible only by the group commit thread
    u64 wal_log_cursor = 0;
    u64 wal_buffer_round = 0, wal_next_to_clean = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> wal_gct_cursor = 0;  // GCT->W
-   alignas(4096) u8* wal_buffer;    // W->GCT
+   u8* wal_buffer;    // W->GCT
    LID wal_lsn_counter = 0;
    LID log_gsn_clock;
    u64 log_segment_start = -1;
