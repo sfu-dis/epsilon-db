@@ -35,18 +35,21 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    meta = (struct meta_block*)meta_block_buffer;
    log_segment_size = utils::downAlign((log_dev_size - meta_size) / nb_logs, LOG_DEV_BLK_SIZE);
    // -------------------------------------------------------------------------------------
+   fp = fopen("log_manager_journal.txt", "w");
+   ensure(fp != nullptr);
+   // -------------------------------------------------------------------------------------
    if (FLAGS_recover) {
       s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, 0);
       ensure_equal(ret, s64(meta_size));
       ensure_equal(meta->number_logs, nb_logs);
-      Logging::global_min_gsn_flushed.store(meta->min_all_workers_gsn);
+      Logging::global_min_gsn_flushed.store(meta->min_all_logs_gsn);
       Logging::global_sync_to_this_gsn.store(meta->global_sync_to_this_gsn);
-      // printf("[INFO] Recovering min all workers gsn %lu\n", meta->min_all_workers_gsn);
-      // printf("[INFO] Recovering max all workers gsn %lu\n", meta->global_sync_to_this_gsn);
+      fprintf(fp, "[INFO] Recovering min all logs gsn %lu\n", meta->min_all_logs_gsn);
+      fprintf(fp, "[INFO] Recovering max all logs gsn %lu\n", meta->global_sync_to_this_gsn);
       // Should TX timestamp be recovered ?
    } else {
       meta->number_logs = nb_logs;
-      meta->min_all_workers_gsn = 0;
+      meta->min_all_logs_gsn = 0;
       meta->global_sync_to_this_gsn = 0;
       meta->min_all_workers_hardened_commit_ts = 0;
    }
@@ -58,9 +61,9 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          seg->offset = seg->last_start_offset = 0;
          seg->hardened_gsn = 0;
       } else {
-         // printf("[INFO] Recovering offset of log segment to %lu\n", seg->offset);
-         // printf("[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
-         // printf("[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
+         fprintf(fp, "[INFO] Recovering offset of log segment to %lu\n", seg->offset);
+         fprintf(fp, "[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
+         fprintf(fp, "[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
       }
       // -------------------------------------------------------------------------------------
       auto& logging = all_logs[log_i];
@@ -89,8 +92,6 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
-   fp = fopen("log_usage.txt", "w");
-   ensure(fp != nullptr);
 }
 
 Logging& LogManager::getLog(storage::BufferFrame *bf)
@@ -123,7 +124,8 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    ensure(ru_epoch >= 0); 
    u32 log_id = ru_epoch % (global->log_count);
    auto& lseg = global->meta->log_segments[log_id];
-   printf("offset = %lu, hardened GSN = %lu", lseg.offset, lseg.hardened_gsn);
+   fprintf(fp, "[INFO] Reclaiming log of RU epoch %ld mapped to %u\n", ru_epoch, log_id);
+   fprintf(fp, "[INFO] Log space consumption was %.1f when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
    lseg.offset = 0;
 }
 

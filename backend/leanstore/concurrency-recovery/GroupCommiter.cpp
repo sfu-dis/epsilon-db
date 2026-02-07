@@ -34,8 +34,8 @@ void CRManager::groupCommiter()
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    // -------------------------------------------------------------------------------------
-   LID min_all_workers_gsn;  // For Remote Flush Avoidance
-   LID max_all_workers_gsn;  // Sync all workers to this point
+   LID min_all_logs_gsn;  // For Remote Flush Avoidance
+   LID max_all_logs_gsn;  // Sync all workers to this point
    TXID min_all_workers_hardened_commit_ts;
    std::vector<u64> ready_to_commit_rfa_cut;  // Exclusive ) ==
    std::vector<Logging::WorkerToLW> wt_to_lw_copy;
@@ -62,8 +62,8 @@ void CRManager::groupCommiter()
       }
       // -------------------------------------------------------------------------------------
       // TODO(mfd) : change the name from worker to log
-      min_all_workers_gsn = std::numeric_limits<LID>::max();
-      max_all_workers_gsn = 0;
+      min_all_logs_gsn = std::numeric_limits<LID>::max();
+      max_all_logs_gsn = 0;
       // -------------------------------------------------------------------------------------
       // Phase 1
       for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
@@ -71,8 +71,8 @@ void CRManager::groupCommiter()
          // TODO(mfd) : All this logic should be the responsability of the Log Manager
          auto& log2gct = wt_to_lw_copy[log_i] = logging.wt_to_lw.getSync();
          // -------------------------------------------------------------------------------------
-         max_all_workers_gsn = std::max<LID>(max_all_workers_gsn, log2gct.last_gsn);
-         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, log2gct.last_gsn);
+         max_all_logs_gsn = std::max<LID>(max_all_logs_gsn, log2gct.last_gsn);
+         min_all_logs_gsn = std::min<LID>(min_all_logs_gsn, log2gct.last_gsn);
          if (log2gct.wal_written_offset > logging.wal_gct_cursor) {
             const u64 lower_offset = utils::downAlign(logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(log2gct.wal_written_offset, LOG_DEV_BLK_SIZE);
@@ -136,7 +136,7 @@ void CRManager::groupCommiter()
             // -------------------------------------------------------------------------------------
             u64 tx_i = 0;
             for (tx_i = 0;
-                 tx_i < worker.precommitted_queue.size() && worker.precommitted_queue[tx_i].max_observed_gsn <= min_all_workers_gsn &&
+                 tx_i < worker.precommitted_queue.size() && worker.precommitted_queue[tx_i].max_observed_gsn <= min_all_logs_gsn &&
                  worker.precommitted_queue[tx_i].start_ts <= min_all_workers_hardened_commit_ts;
                  tx_i++) {
                worker.precommitted_queue[tx_i].state = Transaction::STATE::COMMITTED;
@@ -170,11 +170,11 @@ void CRManager::groupCommiter()
          CRCounters::myCounters().gct_write_ms += (std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_begin).count());
       }
       // -------------------------------------------------------------------------------------
-      ensure(Logging::global_min_gsn_flushed.load() <= min_all_workers_gsn);
-      Logging::global_min_gsn_flushed.store(min_all_workers_gsn, std::memory_order_release);
-      Logging::global_sync_to_this_gsn.store(max_all_workers_gsn, std::memory_order_release);
-      log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
-      log_manager->meta->global_sync_to_this_gsn = max_all_workers_gsn;
+      ensure(Logging::global_min_gsn_flushed.load() <= min_all_logs_gsn);
+      Logging::global_min_gsn_flushed.store(min_all_logs_gsn, std::memory_order_release);
+      Logging::global_sync_to_this_gsn.store(max_all_logs_gsn, std::memory_order_release);
+      log_manager->meta->min_all_logs_gsn = min_all_logs_gsn;
+      log_manager->meta->global_sync_to_this_gsn = max_all_logs_gsn;
       log_manager->persistMetaBlock();
    }
    running_threads--;
