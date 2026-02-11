@@ -71,6 +71,7 @@ struct Worker {
       }
    } per_worker_logging_info;
    LID worker_gsn_clock; // Will be the same as log_gsn_clock in case of per worker log.
+   std::atomic<LID> gct_visible_worker_gsn_clock;
    // Shared between Group Committer and Worker
    instrumented_mutex precommitted_queue_mutex{"precommitted_queue"};
    std::vector<Transaction> precommitted_queue;

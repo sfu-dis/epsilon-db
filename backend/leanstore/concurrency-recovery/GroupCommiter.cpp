@@ -34,7 +34,12 @@ void CRManager::groupCommiter()
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    // -------------------------------------------------------------------------------------
-   LID min_all_logs_gsn;  // For Remote Flush Avoidance
+   LID min_durable_gsn;
+   LID prev_min_all_workers_gsn = 0;
+   LID min_all_workers_gsn; 
+   LID min_all_active_logs_gsn;
+   LID min_all_straggler_logs_gsn;
+   LID min_all_logs_gsn;
    LID max_all_logs_gsn;  // Sync all workers to this point
    TXID min_all_workers_hardened_commit_ts;
    std::vector<u64> ready_to_commit_rfa_cut;  // Exclusive ) ==
@@ -43,36 +48,60 @@ void CRManager::groupCommiter()
    ready_to_commit_rfa_cut.resize(workers_count, 0);
    wt_to_lw_copy.resize(log_manager->log_count);
    per_worker_hardened_precommit_ts.resize(workers_count);
+   std::vector<LID> per_log_last_seen_gsn(log_manager->log_count, 0);
+   if (FLAGS_recover) {
+      for (u32 log_i = 0; log_i < log_manager->log_count; ++log_i) {
+         per_log_last_seen_gsn[log_i] = log_manager->meta->log_segments[log_i].hardened_gsn;
+      }
+   }
    // -------------------------------------------------------------------------------------
    while (keep_running) {
+      // TODO(mfd) : remove restting from here to log_manager->submit
       log_manager->io_slot = 0;
       round_i++;
       CRCounters::myCounters().gct_rounds++;
       COUNTERS_BLOCK(gct_phases) { phase_1_begin = std::chrono::high_resolution_clock::now(); }
       // -------------------------------------------------------------------------------------
       min_all_workers_hardened_commit_ts = std::numeric_limits<TXID>::max();
-      for (WORKERID w_i = 0; w_i < workers_count; w_i++) { 
+      min_all_workers_gsn = std::numeric_limits<LID>::max();
+      for (WORKERID w_i = 0; w_i < workers_count; w_i++) {
          Worker& worker = *workers[w_i];
          per_worker_hardened_precommit_ts[w_i] = worker.last_precommitted_tx_commit_ts.load(std::memory_order_acquire);
          min_all_workers_hardened_commit_ts = std::min<TXID>(min_all_workers_hardened_commit_ts, per_worker_hardened_precommit_ts[w_i]);
-         {
+         if (FLAGS_wal_rfa) {
             std::unique_lock<instrumented_mutex> g(worker.precommitted_queue_mutex);
             ready_to_commit_rfa_cut[w_i] = worker.precommitted_queue_rfa.size();
+         } else {
+            ensure_equal(worker.precommitted_queue_rfa.size(), 0);
          }
+         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker.gct_visible_worker_gsn_clock.load(std::memory_order_acquire));
       }
+      ensure_lt(min_all_workers_gsn, std::numeric_limits<LID>::max());
+      ensure_lte(prev_min_all_workers_gsn, min_all_workers_gsn);
       // -------------------------------------------------------------------------------------
-      // TODO(mfd) : change the name from worker to log
+      // The min durable gsn is the minimum gsn of all logs that have new entries and of that 
+      //  of all workers. This is because any new log record that will appear in the future 
+      //   in those logs will have at least the gsn of the worker with smallest gsn.
+      min_durable_gsn = std::numeric_limits<LID>::max();
+      min_all_active_logs_gsn = std::numeric_limits<LID>::max();
+      min_all_straggler_logs_gsn = std::numeric_limits<LID>::max();
       min_all_logs_gsn = std::numeric_limits<LID>::max();
       max_all_logs_gsn = 0;
+      bool straggler = false;
       // -------------------------------------------------------------------------------------
       // Phase 1
       for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
          Logging& logging = log_manager->all_logs[log_i];
-         // TODO(mfd) : All this logic should be the responsability of the Log Manager
          auto& log2gct = wt_to_lw_copy[log_i] = logging.wt_to_lw.getSync();
          // -------------------------------------------------------------------------------------
          max_all_logs_gsn = std::max<LID>(max_all_logs_gsn, log2gct.last_gsn);
-         min_all_logs_gsn = std::min<LID>(min_all_logs_gsn, log2gct.last_gsn);
+         if (log2gct.last_gsn == per_log_last_seen_gsn[log_i]) {
+            straggler = true;
+            min_all_straggler_logs_gsn = std::min<LID>(min_all_straggler_logs_gsn, log2gct.last_gsn);
+            continue;
+         }
+         per_log_last_seen_gsn[log_i] = log2gct.last_gsn;
+         min_all_active_logs_gsn = std::min<LID>(min_all_active_logs_gsn, log2gct.last_gsn);
          if (log2gct.wal_written_offset > logging.wal_gct_cursor) {
             const u64 lower_offset = utils::downAlign(logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(log2gct.wal_written_offset, LOG_DEV_BLK_SIZE);
@@ -101,6 +130,11 @@ void CRManager::groupCommiter()
             }
          }
       }
+      min_all_logs_gsn = std::min<LID>(min_all_straggler_logs_gsn, min_all_active_logs_gsn);
+      if (min_all_active_logs_gsn == std::numeric_limits<LID>::max()) {
+         // no new log records in any log
+         continue;
+      }
       // -------------------------------------------------------------------------------------
       // Phase 2
       COUNTERS_BLOCK(gct_phases)
@@ -124,6 +158,21 @@ void CRManager::groupCommiter()
          log_manager->meta->log_segments[log_i].hardened_gsn = wt_to_lw_copy[log_i].last_gsn;
          logging.hardened_gsn.store(wt_to_lw_copy[log_i].last_gsn, std::memory_order_release);
       }
+      if (straggler) {
+         ensure(min_all_straggler_logs_gsn != std::numeric_limits<LID>::max());
+         if (min_all_straggler_logs_gsn < std::min<LID>(min_all_workers_gsn, min_all_active_logs_gsn)) {
+            // Any new log records in the stragller log is garenteed to have at least
+            //  the gsn of the oldest worker. Use this gsn to increase the LWM of durable
+            //   GSNs. BUT!, pay attention, workers can also be straggling.
+            min_durable_gsn = std::min<LID>(min_all_active_logs_gsn, min_all_workers_gsn);
+         } else {
+            min_durable_gsn = min_all_logs_gsn;
+         }
+      } else {
+         ensure_equal(min_all_active_logs_gsn, min_all_logs_gsn);
+         min_durable_gsn = min_all_logs_gsn;
+      }
+      ensure_lt(min_durable_gsn, std::numeric_limits<LID>::max());
       // Phase 2, commit
       u64 committed_tx = 0;
       for (WORKERID w_i = 0; w_i < workers_count; w_i++) { 
@@ -136,7 +185,7 @@ void CRManager::groupCommiter()
             // -------------------------------------------------------------------------------------
             u64 tx_i = 0;
             for (tx_i = 0;
-                 tx_i < worker.precommitted_queue.size() && worker.precommitted_queue[tx_i].max_observed_gsn <= min_all_logs_gsn &&
+                 tx_i < worker.precommitted_queue.size() && worker.precommitted_queue[tx_i].max_observed_gsn <= min_durable_gsn &&
                  worker.precommitted_queue[tx_i].start_ts <= min_all_workers_hardened_commit_ts;
                  tx_i++) {
                worker.precommitted_queue[tx_i].state = Transaction::STATE::COMMITTED;
@@ -170,12 +219,18 @@ void CRManager::groupCommiter()
          CRCounters::myCounters().gct_write_ms += (std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_begin).count());
       }
       // -------------------------------------------------------------------------------------
-      ensure(Logging::global_min_gsn_flushed.load() <= min_all_logs_gsn);
-      Logging::global_min_gsn_flushed.store(min_all_logs_gsn, std::memory_order_release);
-      Logging::global_sync_to_this_gsn.store(max_all_logs_gsn, std::memory_order_release);
+      ensure_lte(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+      ensure_lt(min_durable_gsn, std::numeric_limits<LID>::max());
+      Logging::global_min_gsn_flushed.store(min_durable_gsn, std::memory_order_release);
+      log_manager->meta->min_durable_gsn = min_durable_gsn;
+      ensure(min_all_logs_gsn != std::numeric_limits<LID>::max());
       log_manager->meta->min_all_logs_gsn = min_all_logs_gsn;
+      ensure(max_all_logs_gsn != 0);
       log_manager->meta->global_sync_to_this_gsn = max_all_logs_gsn;
+      Logging::global_sync_to_this_gsn.store(max_all_logs_gsn, std::memory_order_release);
       log_manager->persistMetaBlock();
+      // -------------------------------------------------------------------------------------
+      prev_min_all_workers_gsn = min_all_workers_gsn;
    }
    running_threads--;
 }

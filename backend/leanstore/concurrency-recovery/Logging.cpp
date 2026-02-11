@@ -116,6 +116,7 @@ void Logging::submitDTEntry(u64 total_size)
    }
    wal_log_cursor += total_size;
    publishMaxGSNOffset();
+   cr::Worker::my().gct_visible_worker_gsn_clock.store(cr::Worker::my().worker_gsn_clock, std::memory_order_release);
    this->mutex.unlock();
 }
 // -------------------------------------------------------------------------------------

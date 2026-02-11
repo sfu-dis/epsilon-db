@@ -42,13 +42,14 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, 0);
       ensure_equal(ret, s64(meta_size));
       ensure_equal(meta->number_logs, nb_logs);
-      Logging::global_min_gsn_flushed.store(meta->min_all_logs_gsn);
+      Logging::global_min_gsn_flushed.store(meta->min_durable_gsn);
       Logging::global_sync_to_this_gsn.store(meta->global_sync_to_this_gsn);
-      fprintf(fp, "[INFO] Recovering min all logs gsn %lu\n", meta->min_all_logs_gsn);
+      fprintf(fp, "[INFO] Recovering min all logs gsn %lu\n", meta->min_durable_gsn);
       fprintf(fp, "[INFO] Recovering max all logs gsn %lu\n", meta->global_sync_to_this_gsn);
       // Should TX timestamp be recovered ?
    } else {
       meta->number_logs = nb_logs;
+      meta->min_durable_gsn = 0;
       meta->min_all_logs_gsn = 0;
       meta->global_sync_to_this_gsn = 0;
       meta->min_all_workers_hardened_commit_ts = 0;

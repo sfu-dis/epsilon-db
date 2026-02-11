@@ -64,6 +64,27 @@ Generic_Exception(TODO);
         } \
     } while (0)
 
+#define ensure_lt(a, b) \
+    do { \
+        if ((a) >= (b)) { \
+            fprintf(stderr, "Less than check failed: %s >= %s (values: %lld vs %lld) at %s:%d\n", \
+                    #a, #b, (long long)(a), (long long)(b), __FILE__, __LINE__); \
+            leanstore::print_backtrace(); \
+            abort(); \
+        } \
+    } while (0)
+
+#define ensure_lte(a, b) \
+    do { \
+        if ((a) > (b)) { \
+            fprintf(stderr, "Less than or equal check failed: %s > %s (values: %lld vs %lld) at %s:%d\n", \
+                    #a, #b, (long long)(a), (long long)(b), __FILE__, __LINE__); \
+            leanstore::print_backtrace(); \
+            abort(); \
+        } \
+    } while (0)
+
+
 // -------------------------------------------------------------------------------------
 #define TODOException() throw leanstore::ex::TODO(std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
 #define SetupFailed(msg) throw leanstore::ex::GenericException(msg + std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
