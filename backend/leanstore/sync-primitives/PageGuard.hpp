@@ -59,7 +59,7 @@ class HybridPageGuard
       bf->page.dt_id = dt_id;
       bf->page.fdp_plid = fdp_plid;
       bf->page.ru_epoch = s64(-1);
-      bf->page.last_written_lsn = LID(-1);
+      bf->page.last_written_lsn = INVALID_LSN;
       markAsDirty();
       jumpmu_registerDestructor();
    }

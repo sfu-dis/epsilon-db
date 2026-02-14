@@ -33,6 +33,7 @@ thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
 thread_local u8* log_record_buf = static_cast<u8*>(
   mmap(nullptr, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
 );
+u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) : 
   ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs), ru_discard_set(max_open_ru_epochs),
@@ -72,6 +73,9 @@ BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) :
          }
       });
       // -------------------------------------------------------------------------------------
+      fp = fopen("buffer_manager_journal.txt", "w");
+      ensure(fp != nullptr);
+      // -------------------------------------------------------------------------------------
       per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
       u64 aligned_size = utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs*sizeof(u32), 4096);
       persistant_ru_state = reinterpret_cast<PersistantRUState*>(std::aligned_alloc(4096, aligned_size));
@@ -81,7 +85,7 @@ BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) :
          persistant_ru_state->loadFromPersistantStorage();
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          s64 prev_ru_epoch = persistant_ru_state->ru_epoch;
-         printf("[INFO] Recovering, RU epoch is %lu\n", prev_ru_epoch);
+         fprintf(fp, "[INFO] Recovering, RU epoch is %lu\n", prev_ru_epoch);
          ensure(prev_ru_epoch < max_open_ru_epochs);
          ru_epoch.store(prev_ru_epoch);
          ensure_equal(persistant_ru_state->oldest_active_ru_epoch, 0);
@@ -91,7 +95,7 @@ BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) :
          // u64 rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
          u32 last_total = persistant_ru_state->totals[prev_ru_epoch];
          per_pp_iostats[0].io_counter = last_total;
-         printf("[INFO] Recovering, written in RU is %lu\n", last_total);
+         fprintf(fp, "[INFO] Recovering, written in RU is %u\n", last_total);
          for (s64 e = oldest_uncollected_ru_epoch; e <= prev_ru_epoch; ++e) {
             ru_discard_set[e].total.store(persistant_ru_state->totals[e - oldest_uncollected_ru_epoch]);
             // FIXME(mfd)
@@ -190,15 +194,19 @@ void BufferManager::startBackgroundThreads()
             }
             if (open_new_ru_epoch) {
                u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
-               ensure((new_epoch - reclaimed_ru_epoch) <= max_open_ru_epochs);
+               // TODO(mfd) : handle with care.
+               if (FLAGS_enable_discarding) {
+                  ensure((new_epoch - reclaimed_ru_epoch) <= max_open_ru_epochs);
+               }
                ru_epoch.store(new_epoch, std::memory_order_release);
-               printf("[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
+               fprintf(fp, "[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
             }
          };
          while (bg_threads_keep_running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             check_for_new_ru_epoch();
-            if (oldest_uncollected_ru_epoch < ru_epoch.load(std::memory_order_relaxed)
+            if (FLAGS_enable_discarding
+                && oldest_uncollected_ru_epoch < ru_epoch.load(std::memory_order_relaxed)
                 && ru_discard_set[oldest_uncollected_ru_epoch].shouldGC()) {
                if (gc_m.try_lock()) {
                   to_gc_epochs.push_back(oldest_uncollected_ru_epoch);
@@ -297,7 +305,7 @@ void BufferManager::writeAllBufferFrames()
                bool ok = ru_epoch.compare_exchange_strong(cur_ru_epoch, cur_ru_epoch + 1);
                ensure(ok);
                ru_discard_set[cur_ru_epoch].total.store(RU_SIZE);
-               printf("[INFO] Opened up a new RU epoch %lld\n", cur_ru_epoch + 1);
+               fprintf(fp, "[INFO] Opened up a new RU epoch %lu\n", cur_ru_epoch + 1);
                // FIXME(mfd) : should force garbage collection if this event is 
                // close to happen.
                ensure((cur_ru_epoch + 1 - reclaimed_ru_epoch) <= max_open_ru_epochs);
@@ -307,7 +315,7 @@ void BufferManager::writeAllBufferFrames()
       }
    });
    ru_discard_set[ru_epoch.load()].total.store(total_writes % RU_SIZE);
-   printf("[INFO] newest RU epoch is left with %llu\n", total_writes  % RU_SIZE);
+   fprintf(fp, "[INFO] newest RU epoch is left with %lu\n", total_writes  % RU_SIZE);
    u64 e = ru_epoch.load(std::memory_order_acquire);
    fprintf(stdout, "%lu\n", e);
    ensure_equal(oldest_uncollected_ru_epoch, 0);
@@ -371,6 +379,7 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.state = BufferFrame::STATE::HOT;
    free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
    free_bf.page.ru_epoch = s64(-1);
+   free_bf.page.last_written_lsn = INVALID_LSN;
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK()

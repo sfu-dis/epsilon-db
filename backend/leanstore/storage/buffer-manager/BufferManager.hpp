@@ -111,7 +111,7 @@ public:
    atomic<u64> ru_epoch = 0; // persistant
    atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
-   const u64 RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later. 
+   static u64 RU_SIZE;
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
    u32 max_open_ru_epochs;
@@ -189,7 +189,8 @@ public:
    // -------------------------------------------------------------------------------------
    // Temporary hack: let workers evict the last page they used
    static thread_local BufferFrame* last_read_bf;
-
+   // Temporary strawman printf logging
+   FILE *fp;
   public:
    // -------------------------------------------------------------------------------------
    BufferManager(s32 ssd_fd, u32 max_open_ru_epoch);

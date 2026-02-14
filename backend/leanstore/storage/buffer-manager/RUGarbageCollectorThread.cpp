@@ -112,12 +112,12 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       if (!bg_threads_keep_running)
          break;
       // ensure(!to_gc_epochs_snapshot.empty());
-      printf("[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
+      fprintf(fp, "[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
       for (u64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
          current_gc_epoch = gc_ru_epoch;
          auto& set = ru_discard_set[gc_ru_epoch];
          if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
-            printf("[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
+            fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
          }
          auto start = std::chrono::system_clock::now();
          while (set.size() > 0) {
@@ -240,8 +240,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             re += 1;
             ensure_equal(re, current_gc_epoch);
             set.reset();
-            cr::LogManager::global->resetLogSegment(re);
-            printf("GC epoch %u, time taken %lu seconds\n", gc_ru_epoch, duration.count());
+            if (FLAGS_wal && FLAGS_wal_pwrite) {
+               cr::LogManager::global->resetLogSegment(re);
+            }
+            fprintf(fp, "GC epoch %lu, time taken %lu seconds\n", gc_ru_epoch, duration.count());
          }
       }
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;

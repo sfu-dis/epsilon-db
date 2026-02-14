@@ -76,8 +76,8 @@ DEFINE_uint64(replacement_chunk_size, 64, "Replacement strategy chunk size");
 DEFINE_bool(recycle_pages, true, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(wal, true, "");
-DEFINE_bool(wal_rfa, true, "Remote Flush Avoidance (RFA)");
-DEFINE_bool(wal_tuple_rfa, true, "tuple-wise tracking");
+DEFINE_bool(wal_rfa, false, "Remote Flush Avoidance (RFA)");
+DEFINE_bool(wal_tuple_rfa, false, "tuple-wise tracking");
 DEFINE_uint64(wal_offset_gib, 10, "");
 DEFINE_bool(wal_pwrite, false, "Does not really write logs on SSD");
 DEFINE_bool(wal_fsync, false, "");
