@@ -28,13 +28,16 @@ u64 BufferManager::RUEpochDiscardSet::size()
    return pids.size();
 }
 // -------------------------------------------------------------------------------------
-void BufferManager::RUEpochDiscardSet::insert(PID pid, LID lsn)
+bool BufferManager::RUEpochDiscardSet::insert(PID pid, LID lsn)
 {
    std::lock_guard<instrumented_mutex> _l(m);
-   ensure(is_garbage_collected == false);
+   if (is_garbage_collected.load(std::memory_order_acquire)) {
+      return false;
+   }
    bool ok = pids.insert({pid, lsn}).second;
    ensure(ok);
    inserted.fetch_add(1, std::memory_order_relaxed);
+   return true;
 }
 // -------------------------------------------------------------------------------------
 LID BufferManager::RUEpochDiscardSet::erase(PID pid)

@@ -127,7 +127,8 @@ public:
       s64 cur_ru_epoch = -1;
 
       void reset();
-      void insert(PID pid, LID lsn);
+      // Fails only when the RU epoch is being garbage collected
+      bool insert(PID pid, LID lsn);
       LID erase(PID pid);
       bool shouldGC();
       u64 size();

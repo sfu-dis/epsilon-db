@@ -206,8 +206,15 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (!FLAGS_fake_log_reapply) {
                ensure(last_write_lsn != INVALID_LSN);
             }
+            if (bf.page.ru_epoch <= reclaimed_ru_epoch.load(std::memory_order_acquire)
+               || ru_discard_set[bf.page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
+               jumpmu::jump();
+            }
+            bool success = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn);
+            if (!success) {
+               jumpmu::jump();
+            }
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
-            ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
             parent_handler.swip.evict(evicted_pid);
@@ -255,11 +262,17 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   jumpmu_continue;
                }
             }
+            /**
+            XXX(mfd) : Quite often we have a lot of RU epoch where the potential invalid exceeds 
+            the threshold and can be Garbage collected. It may be harmful to WAF to stop discarding
+            those pages. => Only write back pages in reclaimed epochs or from the RU epoch that is 
+            currently being reclaimed.
+            */
             if (cooled_bf->isDirty()) {
                if ( FLAGS_enable_discarding
                   && cooled_bf->canDiscard() 
-                  && cooled_bf->page.ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)
-                  && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf 
+                  && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf
+                  && cooled_bf->page.ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)
                   && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()) {
