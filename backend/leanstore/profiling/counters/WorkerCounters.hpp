@@ -143,6 +143,9 @@ struct WorkerCounters {
    // -------------------------------------------------------------------------------------
    WorkerCounters() { t_id = workers_counter++; }
    // -------------------------------------------------------------------------------------
+   atomic<u64> total_try_pop = 0;
+   atomic<u64> failed_try_pop = 0;
+   // -------------------------------------------------------------------------------------
    static atomic<u64> workers_counter;
    static tbb::enumerable_thread_specific<WorkerCounters> worker_counters;
    static tbb::enumerable_thread_specific<WorkerCounters>::reference myCounters() { return worker_counters.local(); }

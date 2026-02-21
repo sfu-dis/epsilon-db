@@ -139,6 +139,9 @@ void BMTable::open()
    columns.emplace("txi99p99", [&](Column& col) { col << (txIncWaitHist.getPercentile(99.99)); });
    columns.emplace("txi99p999", [&](Column& col) { col << (txIncWaitHist.getPercentile(99.999)); });
    columns.emplace("tximax", [&](Column& col) { col << (txIncWaitHist.getMax()); });
+   columns.emplace("failed_try_pop", [&](Column& col) {
+         col << (sum(WorkerCounters::worker_counters, &WorkerCounters::failed_try_pop) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_try_pop));
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

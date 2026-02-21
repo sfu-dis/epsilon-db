@@ -33,7 +33,9 @@ struct BufferFrame& FreeList::tryPop()
 {
    JMUW<std::unique_lock<std::mutex>> guard(mutex);
    BufferFrame* free_bf = head;
+   COUNTERS_BLOCK(failed_try_pop) { ++WorkerCounters::myCounters().total_try_pop; }
    if (head == nullptr) {
+      COUNTERS_BLOCK(failed_try_pop) { ++WorkerCounters::myCounters().failed_try_pop; }
       jumpmu::jump();
    } else {
       head = head->header.next_free_bf;
