@@ -43,6 +43,15 @@ class BTreePessimisticIterator : public BTreePessimisticIteratorInterface
    template <LATCH_FALLBACK_MODE mode = LATCH_FALLBACK_MODE::SHARED>
    void findLeafAndLatch(HybridPageGuard<BTreeNode>& target_guard, const u8* key, u16 key_length)
    {
+      LIVELOCK_DEBUG_INIT_BLOCK()
+      {
+         WorkerCounters::myCounters().reading_retry_debug_counter = 0;
+         WorkerCounters::myCounters().to_delete_retry_debug_counter = 0;
+         WorkerCounters::myCounters().success_resolve_swip = 0;
+         WorkerCounters::myCounters().ready_success = 0;
+         WorkerCounters::myCounters().cool_success = 0;
+         WorkerCounters::myCounters().swizzled = 0;
+      }
       while (true) {
          leaf_pos_in_parent = -1;
          jumpmuTry()
@@ -85,8 +94,8 @@ class BTreePessimisticIterator : public BTreePessimisticIteratorInterface
             // -------------------------------------------------------------------------------------
             jumpmu_return;
          }
-         jumpmuCatch() {}
-      }
+         jumpmuCatchWarnOnLivelock() {}
+     }
    }
    // -------------------------------------------------------------------------------------
    void gotoPage(const Slice& key)

@@ -86,7 +86,7 @@ struct Guard {
       // maybe only if state == optimistic
       assert(state == GUARD_STATE::OPTIMISTIC || version == latch->ref().load());
       if (state == GUARD_STATE::OPTIMISTIC && version != latch->ref().load()) {
-         jumpmu::jump();
+         jumpmu::jump(JumpMURetryCause::GUARD_RECHECK);
       }
    }
    // -------------------------------------------------------------------------------------
@@ -120,7 +120,7 @@ struct Guard {
       assert(state == GUARD_STATE::UNINITIALIZED && latch != nullptr && state != GUARD_STATE::MOVED);
       version = latch->ref().load();
       if ((version & LATCH_EXCLUSIVE_BIT) == LATCH_EXCLUSIVE_BIT) {
-         jumpmu::jump();
+         jumpmu::jump(TO_OPTIMISTIC);
       } else {
          state = GUARD_STATE::OPTIMISTIC;
       }
@@ -163,7 +163,7 @@ struct Guard {
          latch->mutex.lock();  // changed from try_lock because of possible retries b/c lots of readers
          if (!latch->ref().compare_exchange_strong(expected, new_version)) {
             latch->mutex.unlock();
-            jumpmu::jump();
+            jumpmu::jump(TO_EXCLUSIVE);
          }
          version = new_version;
          state = GUARD_STATE::EXCLUSIVE;
@@ -183,7 +183,7 @@ struct Guard {
          latch->mutex.lock_shared();
          if (latch->ref().load() != version) {
             latch->mutex.unlock_shared();
-            jumpmu::jump();
+            jumpmu::jump(TO_SHARED);
          }
          state = GUARD_STATE::SHARED;
       } else {

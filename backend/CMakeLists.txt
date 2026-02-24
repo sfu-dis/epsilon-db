@@ -66,6 +66,11 @@ ELSEIF(CHECKS_LEVEL STREQUAL "benchmark")
   target_compile_definitions(leanstore PUBLIC MACRO_CHECK_BENCHMARK)
 ENDIF()
 # ---------------------------------------------------------------------------
+SET(LIVELOCK_CHECK OFF CACHE BOOL "Enable Livelock checks and warning in leanstore build")
+IF(LIVELOCK_CHECK)
+    target_compile_definitions(leanstore PUBLIC DEBUG_LIVELOCK)
+ENDIF()
+# ---------------------------------------------------------------------------
 target_include_directories(leanstore PUBLIC ${SHARED_INCLUDE_DIRECTORY})
 target_include_directories(leanstore PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 # ---------------------------------------------------------------------------

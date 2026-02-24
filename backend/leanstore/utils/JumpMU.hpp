@@ -16,7 +16,7 @@ extern __thread void (*de_stack_arr[JUMPMU_STACK_SIZE])(void*);
 extern __thread void* de_stack_obj[JUMPMU_STACK_SIZE];
 extern __thread int de_stack_counter;
 extern __thread bool in_jump;
-void jump();
+void jump(int val = 1);
 inline void clearLastDestructor()
 {
    de_stack_obj[de_stack_counter - 1] = nullptr;
@@ -49,8 +49,62 @@ inline void clearLastDestructor()
 
 #define jumpmuCatch()           \
   jumpmu::checkpoint_counter--; } else
-   // clang-format on
 
+// ATTENTION DOES NOT SUPPORT MULTIPLE CATCHES, EITHER USE THIS OR jumpmuCatch()
+#define jumpmuCatchExp(e)           \
+   jumpmu::checkpoint_counter--; } else if (_lval == e) 
+
+enum JumpMURetryCause {
+   NONE = 0,
+   UNKOWN = 1,
+   GUARD_RECHECK = 2,
+   IO_FRAME_PARENT_CHANGE = 3,
+   IO_FRAME_READING = 4,
+   IO_FRAME_TO_DELETE = 5,
+   TRY_POP = 6,
+   TO_OPTIMISTIC = 7,
+   TO_SHARED = 8,
+   TO_EXCLUSIVE = 9,
+   TOTAL_CAUSES = 10
+};
+
+#ifdef DEBUG_LIVELOCK
+#define LIVELOCK_DEBUG_INIT_BLOCK()                \
+   volatile u64 _jump_cause[TOTAL_CAUSES];         \
+   for (int i = 0; i < TOTAL_CAUSES; ++i) {        \
+      _jump_cause[i] = 0;                          \
+   }                                               \
+   volatile u64 _failed_count = 0;                 \
+   if constexpr (true)
+
+#define LIVELOCK_DEBUG_BLOCK() if constexpr (true)
+
+#else
+#define LIVELOCK_DEBUG_INIT_BLOCK()                \
+   if constexpr (false)
+
+#define LIVELOCK_DEBUG_BLOCK() if constexpr (false)
+#endif
+
+#ifdef DEBUG_LIVELOCK
+#define jumpmuCatchWarnOnLivelock()              \
+ jumpmu::checkpoint_counter--; } else            \
+ {                                               \
+    _jump_cause[_lval] = _jump_cause[_lval] + 1; \
+    _failed_count = _failed_count + 1;           \
+    if ((_failed_count % (1048576*16)) == 0) {   \
+       printf("[WARN] %s:%d : Suspect stuck for %lu!!!\n", __FILE__, __LINE__, _failed_count); \
+       for (int i = 0; i < TOTAL_CAUSES; ++i) { \
+	  cout << _jump_cause[i] << ",";        \
+       }                                        \
+       cout << endl;                            \
+    }                                           \
+ }
+#else 
+#define jumpmuCatchWarnOnLivelock() jumpmuCatch()
+#endif
+
+   // clang-format on
 template <typename T>
 class JMUW
 {

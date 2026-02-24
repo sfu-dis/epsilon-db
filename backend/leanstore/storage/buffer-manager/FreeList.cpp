@@ -36,7 +36,7 @@ struct BufferFrame& FreeList::tryPop()
    COUNTERS_BLOCK(failed_try_pop) { ++WorkerCounters::myCounters().total_try_pop; }
    if (head == nullptr) {
       COUNTERS_BLOCK(failed_try_pop) { ++WorkerCounters::myCounters().failed_try_pop; }
-      jumpmu::jump();
+      jumpmu::jump(TRY_POP);
    } else {
       head = head->header.next_free_bf;
       counter--;

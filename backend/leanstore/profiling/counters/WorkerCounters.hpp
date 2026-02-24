@@ -146,6 +146,14 @@ struct WorkerCounters {
    atomic<u64> total_try_pop = 0;
    atomic<u64> failed_try_pop = 0;
    // -------------------------------------------------------------------------------------
+   // Debugging livelock : stuck in jump retry
+   u64 reading_retry_debug_counter = 0;
+   u64 to_delete_retry_debug_counter = 0;
+   u64 success_resolve_swip = 0;
+   u64 ready_success = 0;
+   u64 cool_success = 0;
+   u64 swizzled = 0;
+   // -------------------------------------------------------------------------------------
    static atomic<u64> workers_counter;
    static tbb::enumerable_thread_specific<WorkerCounters> worker_counters;
    static tbb::enumerable_thread_specific<WorkerCounters>::reference myCounters() { return worker_counters.local(); }

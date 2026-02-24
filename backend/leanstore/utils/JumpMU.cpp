@@ -11,7 +11,7 @@ __thread void (*de_stack_arr[JUMPMU_STACK_SIZE])(void*);
 __thread void* de_stack_obj[JUMPMU_STACK_SIZE];
 __thread int de_stack_counter = 0;
 __thread bool in_jump = false;
-void jump()
+void jump(int val)
 {
    assert(checkpoint_counter > 0);
    assert(de_stack_counter >= 0);
@@ -29,6 +29,6 @@ void jump()
    }
    auto& env_to_jump = jumpmu::env[jumpmu::checkpoint_counter - 1];
    checkpoint_counter--;
-   longjmp(env_to_jump, 1);
+   longjmp(env_to_jump, val);
 }
 }  // namespace jumpmu

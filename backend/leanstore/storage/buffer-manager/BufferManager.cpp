@@ -481,6 +481,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       swip_guard.recheck();
       return bf;
    } else if (swip_value.isCOOL()) {
+      LIVELOCK_DEBUG_BLOCK()
+      {
+         WorkerCounters::myCounters().cool_success++;
+      }
       BufferFrame* bf = &swip_value.asBufferFrameMasked();
       swip_guard.recheck();
       BMOptimisticGuard bf_guard(bf->header.latch);
@@ -499,6 +503,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    JMUW<std::unique_lock<instrumented_mutex>> g_guard(partition.ht_mutex);
    swip_guard.recheck();
    paranoid(!swip_value.isHOT());
+   LIVELOCK_DEBUG_BLOCK()
+   {
+      WorkerCounters::myCounters().swizzled++;
+   }
    // -------------------------------------------------------------------------------------
    // TODO(mfd) : Refactor this as a method of the buffer pool
    //  it will be used by the gc thread also.
@@ -617,7 +625,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          g_guard->unlock();
          io_frame.mutex.unlock();
          // -------------------------------------------------------------------------------------
-         jumpmu::jump();
+         jumpmu::jump(IO_FRAME_PARENT_CHANGE);
       }
    }
    // -------------------------------------------------------------------------------------
@@ -636,7 +644,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          g_guard->unlock();
       }
       // -------------------------------------------------------------------------------------
-      jumpmu::jump();
+      LIVELOCK_DEBUG_BLOCK()
+      {
+         WorkerCounters::myCounters().reading_retry_debug_counter++;
+      }
+      jumpmu::jump(JumpMURetryCause::IO_FRAME_READING);
    }
    // -------------------------------------------------------------------------------------
    if (io_frame.state == IOFrame::STATE::READY) {
@@ -675,7 +687,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          partition.io_ht.remove(pid);
       }
       g_guard->unlock();
-      jumpmu::jump();
+      LIVELOCK_DEBUG_BLOCK()
+      {
+         WorkerCounters::myCounters().to_delete_retry_debug_counter++;
+      }
+      jumpmu::jump(JumpMURetryCause::IO_FRAME_TO_DELETE);
    }
    ensure(false);
 }  // namespace storage
