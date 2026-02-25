@@ -43,14 +43,16 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       ensure_equal(ret, s64(meta_size));
       ensure_equal(meta->number_logs, nb_logs);
       Logging::global_min_gsn_flushed.store(meta->min_durable_gsn);
-      Logging::global_sync_to_this_gsn.store(meta->global_sync_to_this_gsn);
+      LID sync_point = std::max<LID>(meta->global_sync_to_this_gsn, meta->min_all_workers_gsn);
+      Logging::global_sync_to_this_gsn.store(sync_point);
       fprintf(fp, "[INFO] Recovering min all logs gsn %lu\n", meta->min_durable_gsn);
       fprintf(fp, "[INFO] Recovering max all logs gsn %lu\n", meta->global_sync_to_this_gsn);
-      // Should TX timestamp be recovered ?
+      // TX timestamp need not be recovered!
    } else {
       meta->number_logs = nb_logs;
       meta->min_durable_gsn = 0;
       meta->min_all_logs_gsn = 0;
+      meta->min_all_workers_gsn = 0;
       meta->global_sync_to_this_gsn = 0;
       meta->min_all_workers_hardened_commit_ts = 0;
    }
@@ -62,9 +64,9 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          seg->offset = seg->last_start_offset = 0;
          seg->hardened_gsn = 0;
       } else {
-         fprintf(fp, "[INFO] Recovering offset of log segment to %lu\n", seg->offset);
-         fprintf(fp, "[INFO] Recovering blocks left for log segment to %lu\n", (seg->start_off + seg->offset)/4096);
-         fprintf(fp, "[INFO] Recovering hardened GSN of log segment to %lu\n", seg->hardened_gsn);
+         ensure_equal(seg->start_off, log_start_offset + log_i * log_segment_size);
+         ensure_equal(seg->end_off, seg->start_off + log_segment_size);
+         ensure_equal(seg->offset, 0);
       }
       // -------------------------------------------------------------------------------------
       auto& logging = all_logs[log_i];

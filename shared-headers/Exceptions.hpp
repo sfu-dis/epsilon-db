@@ -84,6 +84,30 @@ Generic_Exception(TODO);
         } \
     } while (0)
 
+#define WARN_IF_SUSPECT_CONDITION_STUCK(cond)                                       \
+    do {                                                                            \
+        enum { _warn_id = __COUNTER__ };                                            \
+        static bool _warn_flag_##_warn_id = false;                                  \
+        static unsigned long _warn_count_##_warn_id = 0;                            \
+                                                                                    \
+        if (cond) {                                                                 \
+            if (_warn_flag_##_warn_id) {                                            \
+                _warn_count_##_warn_id++;                                           \
+                if ((_warn_count_##_warn_id % 4194304UL) == 0) {                    \
+                    fprintf(stderr,                                                 \
+                        "[WARN] condition %s on line %d in file %s repeated "       \
+                        "consecutively %lu times\n",                                \
+                        #cond, __LINE__, __FILE__, _warn_count_##_warn_id);         \
+                }                                                                   \
+            } else {                                                                \
+                _warn_flag_##_warn_id = true;                                       \
+                _warn_count_##_warn_id = 1;                                         \
+            }                                                                       \
+        } else {                                                                    \
+            _warn_flag_##_warn_id = false;                                          \
+           _warn_count_##_warn_id = 0;                                              \
+        }                                                                           \
+    } while (0)
 
 // -------------------------------------------------------------------------------------
 #define TODOException() throw leanstore::ex::TODO(std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));

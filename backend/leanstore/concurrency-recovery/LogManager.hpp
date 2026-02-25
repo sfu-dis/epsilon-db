@@ -26,6 +26,7 @@ struct meta_block {
    u64 number_logs;
    LID min_durable_gsn;
    LID min_all_logs_gsn;
+   LID min_all_workers_gsn;
    LID global_sync_to_this_gsn;
    TXID min_all_workers_hardened_commit_ts;
    struct per_worker_log_segment log_segments[0];

@@ -36,7 +36,7 @@ void CRManager::groupCommiter()
    // -------------------------------------------------------------------------------------
    LID min_durable_gsn;
    LID prev_min_all_workers_gsn = 0;
-   LID min_all_workers_gsn; 
+   LID min_all_workers_gsn;
    LID min_all_active_logs_gsn;
    LID min_all_straggler_logs_gsn;
    LID min_all_logs_gsn;
@@ -49,21 +49,22 @@ void CRManager::groupCommiter()
    wt_to_lw_copy.resize(log_manager->log_count);
    per_worker_hardened_precommit_ts.resize(workers_count);
    std::vector<LID> per_log_last_seen_gsn(log_manager->log_count, 0);
+   std::vector<LID> per_worker_last_seen_gsn(workers_count, 0);
    if (FLAGS_recover) {
       for (u32 log_i = 0; log_i < log_manager->log_count; ++log_i) {
          per_log_last_seen_gsn[log_i] = log_manager->meta->log_segments[log_i].hardened_gsn;
       }
    }
    // -------------------------------------------------------------------------------------
-   while (keep_running) {
-      // TODO(mfd) : remove restting from here to log_manager->submit
+   // To properly drain the log buffers, we make sure the group commiter threads exits after all worker.
+   while (keep_running || running_threads > 1) {
       log_manager->io_slot = 0;
-      round_i++;
       CRCounters::myCounters().gct_rounds++;
       COUNTERS_BLOCK(gct_phases) { phase_1_begin = std::chrono::high_resolution_clock::now(); }
       // -------------------------------------------------------------------------------------
       min_all_workers_hardened_commit_ts = std::numeric_limits<TXID>::max();
       min_all_workers_gsn = std::numeric_limits<LID>::max();
+      u64 nb_straggler_workers = 0;
       for (WORKERID w_i = 0; w_i < workers_count; w_i++) {
          Worker& worker = *workers[w_i];
          per_worker_hardened_precommit_ts[w_i] = worker.last_precommitted_tx_commit_ts.load(std::memory_order_acquire);
@@ -74,10 +75,17 @@ void CRManager::groupCommiter()
          } else {
             ensure_equal(worker.precommitted_queue_rfa.size(), 0);
          }
-         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker.gct_visible_worker_gsn_clock.load(std::memory_order_acquire));
+         LID worker_gsn = worker.gct_visible_worker_gsn_clock.load(std::memory_order_acquire);
+         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker_gsn); 
+         if (worker_gsn  == per_worker_last_seen_gsn[w_i]) {
+            ++nb_straggler_workers;
+         } else {
+            per_worker_last_seen_gsn[w_i] = worker_gsn;
+         }
       }
       ensure_lt(min_all_workers_gsn, std::numeric_limits<LID>::max());
       ensure_lte(prev_min_all_workers_gsn, min_all_workers_gsn);
+      WARN_IF_SUSPECT_CONDITION_STUCK(prev_min_all_workers_gsn == min_all_workers_gsn);
       // -------------------------------------------------------------------------------------
       // The min durable gsn is the minimum gsn of all logs that have new entries and of that 
       //  of all workers. This is because any new log record that will appear in the future 
@@ -95,13 +103,16 @@ void CRManager::groupCommiter()
          auto& log2gct = wt_to_lw_copy[log_i] = logging.wt_to_lw.getSync();
          // -------------------------------------------------------------------------------------
          max_all_logs_gsn = std::max<LID>(max_all_logs_gsn, log2gct.last_gsn);
+         min_all_logs_gsn = std::min<LID>(min_all_logs_gsn, log2gct.last_gsn);
          if (log2gct.last_gsn == per_log_last_seen_gsn[log_i]) {
             straggler = true;
             min_all_straggler_logs_gsn = std::min<LID>(min_all_straggler_logs_gsn, log2gct.last_gsn);
             continue;
+         } else {
+            ensure_lt(per_log_last_seen_gsn[log_i], log2gct.last_gsn);
+            // per_log_last_seen_gsn[log_i] = log2gct.last_gsn;
+            min_all_active_logs_gsn = std::min<LID>(min_all_active_logs_gsn, log2gct.last_gsn);
          }
-         per_log_last_seen_gsn[log_i] = log2gct.last_gsn;
-         min_all_active_logs_gsn = std::min<LID>(min_all_active_logs_gsn, log2gct.last_gsn);
          if (log2gct.wal_written_offset > logging.wal_gct_cursor) {
             const u64 lower_offset = utils::downAlign(logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(log2gct.wal_written_offset, LOG_DEV_BLK_SIZE);
@@ -130,8 +141,9 @@ void CRManager::groupCommiter()
             }
          }
       }
-      min_all_logs_gsn = std::min<LID>(min_all_straggler_logs_gsn, min_all_active_logs_gsn);
+      ensure_equal(min_all_logs_gsn, std::min<LID>(min_all_straggler_logs_gsn, min_all_active_logs_gsn));
       if (min_all_active_logs_gsn == std::numeric_limits<LID>::max()) {
+         ensure_equal(log_manager->io_slot, 0);
          // no new log records in any log
          continue;
       }
@@ -154,9 +166,12 @@ void CRManager::groupCommiter()
       // -------------------------------------------------------------------------------------
       for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
          Logging& logging = log_manager->all_logs[log_i];
-         logging.wal_gct_cursor.store(wt_to_lw_copy[log_i].wal_written_offset, std::memory_order_release);
-         log_manager->meta->log_segments[log_i].hardened_gsn = wt_to_lw_copy[log_i].last_gsn;
-         logging.hardened_gsn.store(wt_to_lw_copy[log_i].last_gsn, std::memory_order_release);
+         if (wt_to_lw_copy[log_i].last_gsn != per_log_last_seen_gsn[log_i]) {
+            logging.wal_gct_cursor.store(wt_to_lw_copy[log_i].wal_written_offset, std::memory_order_release);
+            log_manager->meta->log_segments[log_i].hardened_gsn = wt_to_lw_copy[log_i].last_gsn;
+            logging.hardened_gsn.store(wt_to_lw_copy[log_i].last_gsn, std::memory_order_release);
+            per_log_last_seen_gsn[log_i] = wt_to_lw_copy[log_i].last_gsn;
+         }
       }
       if (straggler) {
          ensure(min_all_straggler_logs_gsn != std::numeric_limits<LID>::max());
@@ -220,6 +235,9 @@ void CRManager::groupCommiter()
       }
       // -------------------------------------------------------------------------------------
       ensure_lte(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+      if (!straggler) {
+         ensure_lt(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+      }
       ensure_lt(min_durable_gsn, std::numeric_limits<LID>::max());
       Logging::global_min_gsn_flushed.store(min_durable_gsn, std::memory_order_release);
       log_manager->meta->min_durable_gsn = min_durable_gsn;
@@ -228,11 +246,14 @@ void CRManager::groupCommiter()
       ensure(max_all_logs_gsn != 0);
       log_manager->meta->global_sync_to_this_gsn = max_all_logs_gsn;
       Logging::global_sync_to_this_gsn.store(max_all_logs_gsn, std::memory_order_release);
+      log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
       log_manager->persistMetaBlock();
       // -------------------------------------------------------------------------------------
       prev_min_all_workers_gsn = min_all_workers_gsn;
+      round_i++;
    }
    running_threads--;
+   ensure_equal(running_threads.load(), 0);
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr
