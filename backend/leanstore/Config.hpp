@@ -125,7 +125,7 @@ DECLARE_string(io_trace_file);
 DECLARE_bool(use_fdp_rumaw);
 DECLARE_bool(enable_discarding);
 DECLARE_bool(fake_log_reapply);
-DECLARE_uint64(ru_gc_threads);
+DECLARE_int32(ru_gc_threads);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------

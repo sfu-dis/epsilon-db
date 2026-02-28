@@ -244,7 +244,7 @@ void BufferManager::startBackgroundThreads()
       };
       std::vector<std::thread> garbage_collectors;
       if (FLAGS_enable_discarding) {
-         for (u32 gc_id = 0; gc_id < FLAGS_ru_gc_threads; ++gc_id) {
+         for (s32 gc_id = 0; gc_id < FLAGS_ru_gc_threads; ++gc_id) {
             garbage_collectors.emplace_back(garbage_collector_routine, gc_id);
          }
          for (auto& t : garbage_collectors) {
