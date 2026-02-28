@@ -56,6 +56,7 @@ struct WALDTEntry : WALEntry {
    LID gsn;
    DTID dt_id;
    PID pid;
+   s64 ru_epoch; // TODO(mfd) : just for debugging, remove later
    u8 payload[];
 };
 // -------------------------------------------------------------------------------------

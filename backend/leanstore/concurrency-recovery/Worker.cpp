@@ -45,11 +45,24 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       cc.local_snapshot_cache_ts = make_unique<u64[]>(workers_count);
       cc.local_workers_start_ts = make_unique<u64[]>(workers_count + 1);
       global_workers_current_snapshot[worker_id] = 0;
+      // -------------------------------------------------------------------------------------
+      int rc = io_uring_queue_init(2, &this->ring, 0);
+      ensure_equal(rc , 0);
+      // The buffer should be twice the log record because the log record may cross page boundary
+      log_record_buf = static_cast<u8*>(aligned_alloc(4096, 2 * 4096));
+      ensure(log_record_buf != nullptr);
+      std::memset(log_record_buf, 0, 2 * 4096);
    }
    cc.wt_pg.local_workers_tx_id = std::make_unique<std::atomic<TXID>[]>(workers_count);
+   worker_gsn_clock = Logging::global_sync_to_this_gsn.load();
+   gct_visible_worker_gsn_clock.store(worker_gsn_clock);
 }
+// -------------------------------------------------------------------------------------
 Worker::~Worker()
 {
+   if (!is_page_provider) {
+      io_uring_queue_exit(&this->ring);
+   }
    delete[] cc.commit_tree.array;
 }
 // -------------------------------------------------------------------------------------

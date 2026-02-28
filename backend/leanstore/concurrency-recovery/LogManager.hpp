@@ -59,8 +59,12 @@ struct LogManager {
    FILE* fp;
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
+   ~LogManager();
 
    static Logging& getLog(storage::BufferFrame *bf);
+   static s32 getLogID(s64 ru_epoch);
+   static Logging& getLog(s64 ru_epoch, PID page_id);
+   u32 LSN2LogID(LID lsn);
 
    void resetLogSegment(s64 ru_epoch);
 

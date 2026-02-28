@@ -160,20 +160,54 @@ class HybridPageGuard
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;
       // TODO: verify
+      s64 failure_counter = 0;
+retry:
+      s64 reclaiming_ru_epoch_snapshot = storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
       auto& logging = cr::LogManager::getLog(bf);
       logging.mutex.lock();
+      if (reclaiming_ru_epoch_snapshot < bf->page.ru_epoch) {
+         s64 reclaiming_ru_epoch_snapshot2 = storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
+         if ((reclaiming_ru_epoch_snapshot2 != reclaiming_ru_epoch_snapshot)
+           && (reclaiming_ru_epoch_snapshot2 >= bf->page.ru_epoch)) {
+            logging.mutex.unlock();
+            if ((++failure_counter % 4096) == 0) {
+               printf("[WARN] I think I am stuck retrying in reserveWALEntry!!\n");
+            }
+            goto retry;
+         }
+      }
+      if (bf->header.logging != nullptr) {
+         if (bf->header.logging != &logging) {
+            if (logging.log_id != 0) {
+               cerr << "Previous Log ID " << bf->header.logging->log_id << endl;
+               cerr << "New Log ID " << logging.log_id << endl;
+               bf->page.dump();
+               raise(SIGTRAP);
+            }
+            bf->header.flush_sink_log = true;
+         }
+      }
+      bf->header.logging = &logging;
       if (!cr::LogManager::global->isPartitionedByWorker()) {
          logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
       }
       ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
-      LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN());
+      // XXX(mfd) : We need +1 so that we do not violate uniqueness of GSNs withing the log ?
+      LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN() + 1);
       logging.setCurrentGSN(logGSN);
+      // THINK(mfd) : IS this line ok ?
+      cr::Worker::my().syncGSN(logGSN);
       auto handler = logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
+      logging.active_dt_entry->ru_epoch = bf->page.ru_epoch;
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
       bf->page.last_written_lsn = handler.lsn;
       return handler;
    }
-   inline void submitWALEntry(u64 total_size) { cr::LogManager::getLog(bf).submitDTEntry(total_size); }
+   inline void submitWALEntry(u64 total_size)
+   {
+      ensure(bf->header.logging != nullptr);
+      bf->header.logging->submitDTEntry(total_size);
+   }
    // -------------------------------------------------------------------------------------
    inline bool hasFacedContention() { return guard.faced_contention; }
    inline void unlock() { guard.unlock(); }

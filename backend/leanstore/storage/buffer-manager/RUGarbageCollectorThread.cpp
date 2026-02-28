@@ -1,5 +1,6 @@
 #include "BufferManager.hpp"
 // -------------------------------------------------------------------------------------
+#include "leanstore/concurrency-recovery/Logging.hpp"
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 // -------------------------------------------------------------------------------------
 #include <liburing.h>
@@ -13,7 +14,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 {
    std::string gc_thread_name = "ru_gc_" + std::to_string(gc_id);
    pthread_setname_np(pthread_self(), gc_thread_name.c_str());
-   const u32 batch_size = 64;
+   const u32 batch_size = 16;
    void* buf;
    s64 current_gc_epoch = -1;
 
@@ -25,6 +26,11 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    }
 
    BufferFrame::Page* buf_pages = reinterpret_cast<BufferFrame::Page*>(buf);
+
+   u8 *log_records = static_cast<u8*>(mmap(nullptr, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+   ensure(log_records != MAP_FAILED);
+
+   std::memset(log_records, 0, 2 * PAGE_SIZE);
 
    struct io_uring r_ring;
    struct io_uring w_ring;
@@ -38,22 +44,41 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    std::unique_ptr<struct io_uring_cqe*[]> cqes;
    cqes = std::make_unique<struct io_uring_cqe*[]>(2 * batch_size);
 
-   auto fix_page_cb = [this, &w_ring, buf_pages, &current_gc_epoch] (struct io_uring_cqe* cqe) {
-      // FIXME(mfd) : What if the read fails?
-      ensure(cqe->res == PAGE_SIZE);
-      // Get where it was written
+   std::vector<std::pair<PID, LID>> to_fix_pids;
+   to_fix_pids.reserve(batch_size);
+
+   auto fix_page_cb = [&] (struct io_uring_cqe* cqe) {
+      ensure_equal(cqe->res, PAGE_SIZE);
       u64 data = io_uring_cqe_get_data64(cqe);
       u64 fixed_pid = data & 0x0000FFFFFFFFFFFF;
       u64 idx = data >> 48;
-      assert(idx < batch_size);
+      assert(idx < to_fix_pids.size());
+      ensure_equal(to_fix_pids[idx].first, fixed_pid);
+      LID lsn = to_fix_pids[idx].second;
       BufferFrame::Page* page = &buf_pages[idx];
       ensure_equal(page->magic_debugging_number, fixed_pid);
       ensure_equal(page->ru_epoch, current_gc_epoch);
-      // TODO(mfd) : Apply the log here
+      page->PLSN++;
+      page->last_written_lsn = lsn;
+      if (false && !FLAGS_fake_log_reapply) {
+         ensure(lsn != INVALID_LSN);
+         u64 off = lsn % PAGE_SIZE;
+         s64 br = pread(log_fd, log_records, 2 * PAGE_SIZE, lsn - off);
+         ensure_equal(br, (2 * PAGE_SIZE));
+         auto* entry = (cr::WALEntry*)&log_records[off];
+         auto* dte  =  (cr::WALDTEntry*)entry;
+
+         bool ok = logRecordSanityCheck(entry, *page, lsn);
+         ensure(ok);
+ 
+         page->GSN = dte->gsn;
+
+         DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload);
+      }
+      page->prev_ru_epoch = page->ru_epoch;
       page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-      page->PLSN = page->PLSN + 1;
       page->nbfixed++;  // Just for debugging
-      // Write back the page.
+
       struct io_uring_sqe* sqe = io_uring_get_sqe(&w_ring);
       ensure(sqe != nullptr);
       io_uring_prep_write(sqe, ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE);
@@ -113,17 +138,22 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          break;
       // ensure(!to_gc_epochs_snapshot.empty());
       fprintf(fp, "[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
-      for (u64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
+      for (s64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
          current_gc_epoch = gc_ru_epoch;
+         s64 prev_gc_ru_epoch = current_gc_epoch - 1;
          auto& set = ru_discard_set[gc_ru_epoch];
+         set.m.lock();
          if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
-            fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, set.size());
+            bool ok = reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, current_gc_epoch);
+            u64 to_gc_pages = set.pids.size();
+            set.m.unlock();
+            ensure(ok);
+            fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu pages to fix\n", gc_ru_epoch, to_gc_pages);
+         } else {
+            set.m.unlock();
          }
          auto start = std::chrono::system_clock::now();
          while (set.size() > 0) {
-            std::vector<LID> fixed_pids;
-            fixed_pids.reserve(batch_size);
-
             // -------------------------------------------------------------------------------------
             set.m.lock();
             auto it = set.pids.begin();
@@ -145,26 +175,29 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   continue;
                }
                
-               set.pids.erase(pid);
+               u64 erased = set.pids.erase(pid);
+               ensure_equal(erased, 1);
 
                IOFrame& io_frame = partition.io_ht.insert(pid);
                io_frame.readers_counter = 1;
                io_frame.state = IOFrame::STATE::READING;
-               io_frame.mutex.lock();
-               // g_guard.unlock();
+               bool ok = io_frame.mutex.try_lock();
+               ensure(ok);
                partition.ht_mutex.unlock();
               
-               fixed_pids.push_back(pid);
+               to_fix_pids.emplace_back(pid, lsn);
            }
            set.m.unlock();
            // -------------------------------------------------------------------------------------
 
            u64 pages_to_fix = 0;
-           for (const auto& pid : fixed_pids) {
+           for (const auto& [pid, lsn] : to_fix_pids) {
                // issue the async read.
                struct io_uring_sqe* sqe = io_uring_get_sqe(&r_ring);
                ensure(sqe != nullptr);
                io_uring_prep_read(sqe, ssd_fd, &buf_pages[pages_to_fix], PAGE_SIZE, pid * PAGE_SIZE);
+               // TODO(mfd) : store just the index into the array.
+               //  we can keep the pid here just for debugging.
                ensure((pid & 0xFFFF000000000000) == 0);
                u64 data = (pages_to_fix << 48) | pid;
                io_uring_sqe_set_data64(sqe, data);
@@ -174,6 +207,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                int s = io_uring_submit(&r_ring);
                ensure(s == 1);
             }
+            ensure_equal(pages_to_fix, to_fix_pids.size());
             if (pages_to_fix > 0) {
                u32 ready = io_uring_peek_batch_cqe(&r_ring, cqes.get(), pages_to_fix);
                for (u32 i = 0; i < ready; ++i) {
@@ -227,24 +261,27 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   io_uring_cq_advance(&w_ring, remaining);
                }
                tot_gc_writes.fetch_add(pages_to_fix, std::memory_order_acq_rel);
+               to_fix_pids.clear();
             }
          }
          auto end = std::chrono::system_clock::now();
          auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
-         // Tell everyone that I am done.
          if (set.done_gc.fetch_sub(1) == 1) {
-            // I am the last one to finish
-            // I should free up the log space
-            // And reset the RU discard set.
-            s64 re = reclaimed_ru_epoch.fetch_add(1);
-            re += 1;
-            ensure_equal(re, current_gc_epoch);
+            s64 old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
+            s64 new_re = old_re + 1;
+            ensure_equal(new_re, current_gc_epoch);
+            u32 log_id = (current_gc_epoch % (cr::LogManager::global->log_count - 1)) + 1;
+            auto& logging = cr::LogManager::global->all_logs[log_id];
+            set.m.lock();
             set.reset();
+            logging.reset();
+            set.m.unlock();
             if (FLAGS_wal && FLAGS_wal_pwrite) {
-               cr::LogManager::global->resetLogSegment(re);
+               cr::LogManager::global->resetLogSegment(current_gc_epoch);
             }
             fprintf(fp, "GC epoch %lu, time taken %lu seconds\n", gc_ru_epoch, duration.count());
-         }
+         } 
+         while (set.done_gc.load() != FLAGS_ru_gc_threads) {}
       }
       tls_min_uncollected_ru_epoch = tls_max_collected_ru_epoch;
    }

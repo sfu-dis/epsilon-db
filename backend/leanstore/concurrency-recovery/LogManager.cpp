@@ -66,12 +66,16 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       } else {
          ensure_equal(seg->start_off, log_start_offset + log_i * log_segment_size);
          ensure_equal(seg->end_off, seg->start_off + log_segment_size);
-         ensure_equal(seg->offset, 0);
+         // FIXME(mfd) : This is not strictly necessary for experimenting
+         // This is mainly for supporting crash recovery or normal recovery with discarding
+         // enabled, which we do not support both for now.
+         // ensure_equal(seg->offset, 0);
       }
       // -------------------------------------------------------------------------------------
       auto& logging = all_logs[log_i];
+      logging.log_id = log_i;
       logging.log_segment_start = seg->start_off;
-      logging.wal_lsn_counter = FLAGS_recover ? (seg->offset) : 0;
+      logging.wal_lsn_counter = FLAGS_recover ? seg->offset : 0;
       logging.log_gsn_clock = FLAGS_recover ? (seg->hardened_gsn) : 0;
       logging.wt_to_lw.current_value.last_gsn = logging.hardened_gsn = logging.log_gsn_clock;
       logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
@@ -95,6 +99,39 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
+   fflush(fp);
+}
+
+u32 LogManager::LSN2LogID(LID lsn)
+{
+   LID aligned_lsn = utils::downAlign(lsn, LOG_DEV_BLK_SIZE);
+   u32 log_id = (aligned_lsn - meta_size) / log_segment_size;
+   {
+      ensure_lt(log_id, global->log_count);
+      ensure_equal(global->all_logs[log_id].log_id, log_id);
+   }
+   return log_id;
+}
+
+s32 LogManager::getLogID(s64 ru_epoch)
+{
+   ensure(global->isPartitionedByRUepoch());
+   s32 log_id = -1;
+   if ((ru_epoch == -1)
+      || (ru_epoch <= storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire))) {
+      log_id = 0;
+   } else {
+      // for now one to one mapping
+      log_id = (ru_epoch % (global->log_count-1)) + 1;
+   }
+   return log_id;
+}
+
+Logging& LogManager::getLog(s64 ru_epoch, [[maybe_unused]] PID page_id)
+{
+   s32 log_id = getLogID(ru_epoch);
+   ensure(log_id != -1);
+   return global->all_logs[log_id];
 }
 
 Logging& LogManager::getLog(storage::BufferFrame *bf)
@@ -103,16 +140,7 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
    if (global->isPartitionedByWorker()) {
       log_id = Worker::my().worker_id;
    } else if (global->isPartitionedByRUepoch()) {
-      auto ru_epoch = bf->page.ru_epoch;
-      if ((ru_epoch == -1)
-          || (u64(ru_epoch) < storage::BMC::global_bf->oldest_uncollected_ru_epoch.load(std::memory_order_acquire))) {
-         // map to default log. FIXME : decay to centralized log during loading.
-         // log_id = global->log_count - 1;
-         log_id = bf->header.pid % global->log_count;
-      } else {
-         // for now one to one mapping
-         log_id = ru_epoch % (global->log_count);
-      }
+      return getLog(bf->page.ru_epoch, bf->header.pid);
    } else {
       log_id = bf->header.pid % global->log_count;
    }
@@ -120,15 +148,14 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
    return global->all_logs[log_id];
 }
 
-
 void LogManager::resetLogSegment(s64 ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
    ensure(ru_epoch >= 0); 
-   u32 log_id = ru_epoch % (global->log_count);
+   u32 log_id = (ru_epoch % (global->log_count - 1)) + 1;
    auto& lseg = global->meta->log_segments[log_id];
    fprintf(fp, "[INFO] Reclaiming log of RU epoch %ld mapped to %u\n", ru_epoch, log_id);
-   fprintf(fp, "[INFO] Log space consumption was %.1f when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
+   fprintf(fp, "[INFO] Log space consumption was %.1f%% when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
    lseg.offset = 0;
 }
 
@@ -148,13 +175,16 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    iocbs_ptr[io_slot] = &iocbs[io_slot];
    io_slot++;
    lseg.offset += size;
-   if (!block_full) {
-      lseg.offset -= LOG_DEV_BLK_SIZE;
-   }
    lseg.last_start_offset = buffer_offset;
-   if (lseg.offset >= log_segment_size) {
+   if (lseg.offset + FLAGS_wal_pwrite >= log_segment_size) {
+      // FIXME(mfd) : Either proper checkpointing of the sink log or obviate it.
+      // For now, no writes go to the sink log.
+      ensure(log_i != 0);
       cerr << "Log space is not enough!!!" << endl;
       raise(SIGTRAP);
+   }
+   if (!block_full) {
+      lseg.offset -= LOG_DEV_BLK_SIZE;
    }
    COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
 }
@@ -198,6 +228,13 @@ void LogManager::persistMetaBlock()
    if (FLAGS_wal_fsync) {
       fdatasync(log_dev_fd);
    }
+}
+
+LogManager::~LogManager()
+{
+    // ensure background threads are stopped ?
+    persistMetaBlock();
+    fclose(fp);
 }
 
 }  // namespace cr

@@ -113,6 +113,15 @@ void CRManager::groupCommiter()
             // per_log_last_seen_gsn[log_i] = log2gct.last_gsn;
             min_all_active_logs_gsn = std::min<LID>(min_all_active_logs_gsn, log2gct.last_gsn);
          }
+         // FIXME(mfd) : Fow now we just do not issue writes for the sink log
+         // Pages who's log records are in the sink log won't get discarded
+         // and therefore we don't need to keep their logs.
+         // The only problematic pages are pages that are fixed on demand by the worker
+         // and are in the buffer pool, we need to keep their log records for crash recovery
+         // or force those pages to be persisted on disk.
+         // For the sink log either it will be a circular log (need proper checkpointing in GSN order)
+         // OR we need some tricks to obviate its use.
+         if (log_i == 0) continue;
          if (log2gct.wal_written_offset > logging.wal_gct_cursor) {
             const u64 lower_offset = utils::downAlign(logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(log2gct.wal_written_offset, LOG_DEV_BLK_SIZE);

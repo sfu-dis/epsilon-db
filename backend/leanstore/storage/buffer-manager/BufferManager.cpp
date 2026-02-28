@@ -4,6 +4,7 @@
 #include "BufferFrame.hpp"
 #include "Exceptions.hpp"
 #include "leanstore/Config.hpp"
+#include "leanstore/storage/btree/core/BTreeGeneric.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -30,14 +31,12 @@ namespace storage
 {
 // -------------------------------------------------------------------------------------
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
-thread_local u8* log_record_buf = static_cast<u8*>(
-  mmap(nullptr, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
-);
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) : 
-  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs), ru_discard_set(max_open_ru_epochs),
-  persistant_ru_state_offset(utils::upAlign(FLAGS_ssd_gib * 1073741824, 4096))
+  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs), 
+  persistant_ru_state_offset(utils::upAlign(FLAGS_ssd_gib * 1073741824, 4096)),
+  ru_discard_set(max_open_ru_epochs)
 {
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
@@ -98,8 +97,9 @@ BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) :
          fprintf(fp, "[INFO] Recovering, written in RU is %u\n", last_total);
          for (s64 e = oldest_uncollected_ru_epoch; e <= prev_ru_epoch; ++e) {
             ru_discard_set[e].total.store(persistant_ru_state->totals[e - oldest_uncollected_ru_epoch]);
-            // FIXME(mfd)
+            // FIXME(mfd) : recover real invalid counter
             ru_discard_set[e].invalid.store(0);
+            // TODO(mfd) : add an atomic flag to mark active RU epochs set, use for debugging.
          }
       } else {
          persistant_ru_state->ru_epoch = 0;
@@ -473,6 +473,47 @@ void BufferManager::reclaimPage(BufferFrame& bf)
    }
 }
 // -------------------------------------------------------------------------------------
+bool BufferManager::logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page& page, LID lsn)
+{
+   auto* dte = (cr::WALDTEntry*)entry;
+   auto* btree_entry = (btree::WALEntry*) dte->payload;
+
+   if (entry->type != cr::WALEntry::TYPE::DT_SPECIFIC
+      || entry->lsn != lsn) {
+      goto fail;
+   }
+   ensure_equal(entry->type, cr::WALEntry::TYPE::DT_SPECIFIC);
+   ensure_equal(entry->lsn, lsn);
+   if (dte->pid != page.magic_debugging_number || dte->gsn < page.GSN) {
+      goto fail;
+   }
+   ensure_equal(dte->pid, page.magic_debugging_number);
+   ensure(dte->gsn >= page.GSN);
+   return true;
+
+fail:
+   cout << "LSN = " << lsn << endl;
+   entry->dump();
+   auto& log = cr::LogManager::getLog(page.ru_epoch, page.magic_debugging_number);
+   cout << "Page ID : " << page.magic_debugging_number << endl;
+   cout << "Page ID on Log record : " << dte->pid << endl;
+   cout << "GSN on Log record : " << dte->gsn << endl;
+   cout << "RU epoch on Log record : " << dte->ru_epoch << endl;
+   cout << "Hardened GSN : " <<  log.hardened_gsn << endl;
+   cout << "Page GSN : " << page.GSN << endl;
+   cout << "Last written LSN to page : " << page.last_written_lsn << endl;
+   cout << "wal lsn counter : " << log.wal_lsn_counter << endl;
+   cout << "log_gsn_clock : " << log.log_gsn_clock << endl;
+   cout << "log_segment_start : " << log.log_segment_start << endl;
+   cout << "RU epoch : " << page.ru_epoch << endl;
+   cout << "Fixed ? " << page.nbfixed << endl;
+   cout << "TYPE = "  << (int)btree_entry->type << endl;
+   cout << "Log ID = " << cr::LogManager::global->LSN2LogID(lsn) << endl;
+   leanstore::print_backtrace();
+   // raise(SIGTRAP);
+   return false;
+}
+// -------------------------------------------------------------------------------------
 // Returns a non-latched BufferFrame, called by worker threads
 BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& swip_value)
 {
@@ -499,6 +540,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    const PID pid = swip_value.asPageID();
    const s64 ru_epoch = swip_value.ru_epoch();
    const bool page_need_fixing = swip_value.isDIRTY();
+   bool gc_fixed = false;
    Partition& partition = getPartition(pid);
    JMUW<std::unique_lock<instrumented_mutex>> g_guard(partition.ht_mutex);
    swip_guard.recheck();
@@ -523,24 +565,24 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       }
       ensure(lsn != INVALID_LSN);
       u64 off = lsn % PAGE_SIZE;
-      // TODO(mfd) : remove the pread from the critical section
-      s64 br = pread(log_fd, log_record_buf, 2 * PAGE_SIZE, lsn - off);
-      ensure_equal(br, (2 * PAGE_SIZE));
-      auto* entry = (cr::WALEntry*)&log_record_buf[off];
-
-      if (entry->type != cr::WALEntry::TYPE::DT_SPECIFIC) {
-         cout << "LSN = " << lsn << endl;
-         entry->dump();
-         raise(SIGTRAP);
-      }
-      ensure_equal(entry->type, cr::WALEntry::TYPE::DT_SPECIFIC);
-      ensure_equal(entry->lsn, lsn);
+      auto* entry = (cr::WALEntry*)&cr::Worker::my().log_record_buf[off];
       auto* dte = (cr::WALDTEntry*)entry;
-      ensure_equal(dte->pid, bf.page.magic_debugging_number);
-      ensure(dte->gsn >= bf.page.GSN);
+      
+      bool ok = logRecordSanityCheck(entry, bf.page, lsn);
+
+      if (!ok) {
+         cout << "Page need fixing ? " << page_need_fixing  << endl;
+         cout << "RU epoch in swizzled pointer " << ru_epoch << endl;
+         cout << "GC Fixed ? " << gc_fixed << endl;
+         raise(SIGTRAP); 
+      }
+
       bf.page.GSN = dte->gsn;
       bf.page.PLSN++;
+      bf.page.last_written_lsn = lsn;
+      
       DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload);
+      return;
    };
    // -------------------------------------------------------------------------------------
    auto frame_handler = partition.io_ht.lookup(pid);
@@ -553,22 +595,46 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_frame.readers_counter = 1;
       io_frame.mutex.lock();
       // -------------------------------------------------------------------------------------
-      LID lsn;
-      bool gc_fixed = false;
+      LID lsn = INVALID_LSN;
+      gc_fixed = false;
       if (page_need_fixing) {
-         if (ru_epoch <= reclaimed_ru_epoch) {
+         if (ru_epoch <= reclaimed_ru_epoch.load(std::memory_order_acquire)) {
+            // Optimistic path
             gc_fixed = true;
          } else {
-            lsn = ru_discard_set[ru_epoch].erase(pid);
-            if (lsn == INEXISTANT_LSN) {
-               // the garbage collector thread has already fixed the page.
+            auto *set = ru_discard_set.getSetLockedCanFail(ru_epoch, false);
+            if (set == nullptr) {
+               // This can only happen if the ru_epoch was reclaimed concurrently
+               ensure_lte(ru_epoch, reclaimed_ru_epoch.load(std::memory_order_acquire));
                gc_fixed = true;
+            } else {
+               // This case means that either the ru_epoch is not being reclaimed now
+               //  or that it is currently being reclaimed.
+               // The one who successfully erases from the set is the one responsible
+               //  for fixing the page.
+               lsn = set->erase(pid);
+               set->m.unlock();
+               if (lsn == INEXISTANT_LSN) {
+                  // the garbage collector thread has already fixed the page.
+                  ensure_lte(s64(ru_epoch), s64(reclaiming_ru_epoch));
+                  gc_fixed = true;
+               }
             }
          }
       }
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
+      if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
+         // issue the asynchronus log record read.
+         struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring); 
+         ensure(sqe != nullptr);
+         u64 off = lsn % PAGE_SIZE;
+         io_uring_prep_read(sqe, log_fd, cr::Worker::my().log_record_buf, 2 * PAGE_SIZE, lsn - off);
+         io_uring_sqe_set_data64(sqe, lsn);
+         int s = io_uring_submit(&cr::Worker::my().ring);
+         ensure_equal(s, 1);
+      }
       readPageSync(pid, bf.page);
       if (page_need_fixing && !gc_fixed) {
          ensure_equal(bf.page.ru_epoch, ru_epoch);
@@ -595,7 +661,31 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       }
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
+         // THINK of this: Is the last written lsn of a dirty page represents it's ru_epoch ?
+         u32 log_id = cr::LogManager::global->LSN2LogID(lsn);
+         if (log_id != 1 + (bf.page.ru_epoch % max_open_ru_epochs)) {
+            cerr << "RU epoch is swizzled pointer " << ru_epoch << endl;
+            bf.page.dump();
+         }
+         ensure_equal(log_id, 1 + (bf.page.ru_epoch % max_open_ru_epochs));
+         if (log_id == 0) {
+            cerr << "[ERROR] " << bf.page.prev_ru_epoch << endl;
+            cerr << "[ERROR] " << bf.page.ru_epoch << endl;
+         }
+         ensure(log_id != 0);
+         bf.header.logging = &cr::LogManager::global->all_logs[log_id];
+         if (!FLAGS_fake_log_reapply) {
+            struct io_uring_cqe *cqe;
+            // TODO(mfd) : monitor how often we find the IO ready.
+            int rc = io_uring_wait_cqe_nr(&cr::Worker::my().ring, &cqe, 1);
+            ensure_equal(rc, 0);
+            ensure_equal(io_uring_cqe_get_data64(cqe), lsn);
+            // TODO(mfd) : Inspect the return value.
+            io_uring_cqe_seen(&cr::Worker::my().ring, cqe);
+         }
          fix_dirty_page(bf, lsn);
+      } else {
+         ensure(bf.header.logging == nullptr);
       }
       // -------------------------------------------------------------------------------------
       jumpmuTry()
@@ -754,6 +844,7 @@ BufferManager::~BufferManager()
    // -------------------------------------------------------------------------------------
    const u64 dram_total_size = sizeof(BufferFrame) * (dram_pool_size + safety_pages);
    munmap(bfs, dram_total_size);
+   fclose(fp);
 }
 // -------------------------------------------------------------------------------------
 BufferManager* BMC::global_bf(nullptr);

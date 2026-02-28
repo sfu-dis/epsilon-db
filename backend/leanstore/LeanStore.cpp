@@ -110,7 +110,7 @@ LeanStore::LeanStore()
    BMC::global_bf = buffer_manager.get();
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "ru_epoch") {
-      FLAGS_wal_partitions_count = max_open_ru_epochs;
+      FLAGS_wal_partitions_count = max_open_ru_epochs + 1;
       cout << "[INFO] number of Log partitions : " << FLAGS_wal_partitions_count << endl;
    }
    // -------------------------------------------------------------------------------------

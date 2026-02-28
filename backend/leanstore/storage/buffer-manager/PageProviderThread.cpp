@@ -72,8 +72,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                BMOptimisticGuard r_guard(r_buffer->header.latch);
                repickIf(r_buffer->header.keep_in_memory || r_buffer->header.is_being_written_back || r_buffer->header.latch.isExclusivelyLatched());
-               if (FLAGS_wal && FLAGS_wal_pwrite) {
-                  repickIf(r_buffer->page.GSN > cr::LogManager::getLog(r_buffer).hardened_gsn.load(std::memory_order_acquire));
+               if (FLAGS_wal && FLAGS_wal_pwrite && (r_buffer->header.logging != nullptr)) {
+                  // FIXME(mfd) : Account for the page that has changed from an active RU epoch to the collected RU epoch.
+                  // TODO(mfd) : Monitor failures because of this.
+                  repickIf(r_buffer->page.GSN > r_buffer->header.logging->hardened_gsn.load(std::memory_order_acquire));
                }
                // FIXME(mfd) : Temporarly avoiding evicting inner nodes.
                auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
@@ -187,6 +189,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          // -------------------------------------------------------------------------------------
          paranoid(parent_handler.parent_guard.state == GUARD_STATE::OPTIMISTIC);
          BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler.parent_guard);
+         // The page must remain exclusively latched if the function return through
+         // normal path and must release the latch if it jumps().
+         // TODO(mfd) : Define a Guard with this behaviour if necessaray.
+         // For now, make sure to manually release the latch before each non-local jump.
          c_guard.guard.toExclusive();
          ensure(&parent_handler.swip.asBufferFrameMasked() == &bf);
          // -------------------------------------------------------------------------------------
@@ -195,23 +201,36 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          }
          // -------------------------------------------------------------------------------------
          ensure(!bf.isDirty() || discard);
-         paranoid(!bf.header.is_being_written_back);
-         paranoid(bf.header.state == BufferFrame::STATE::COOL);
-         paranoid(parent_handler.swip.isCOOL());
+         ensure(!bf.header.is_being_written_back);
+         ensure(bf.header.state == BufferFrame::STATE::COOL);
+         ensure(parent_handler.swip.isCOOL());
          ensure(bf.page.ru_epoch >= 0);
          // -------------------------------------------------------------------------------------
          const PID evicted_pid = bf.header.pid;
          if (discard) {
             LID last_write_lsn = bf.page.last_written_lsn;
+            u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
+            if (log_id != (1 + (bf.page.ru_epoch % max_open_ru_epochs))) {
+               bf.page.dump();
+               raise(SIGTRAP);
+            }
             if (!FLAGS_fake_log_reapply) {
                ensure(last_write_lsn != INVALID_LSN);
             }
-            if (bf.page.ru_epoch <= reclaimed_ru_epoch.load(std::memory_order_acquire)
-               || ru_discard_set[bf.page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
+            if (bf.page.ru_epoch <= reclaiming_ru_epoch.load(std::memory_order_acquire)) {
+               c_guard.guard.unlock();
                jumpmu::jump();
             }
-            bool success = ru_discard_set[bf.page.ru_epoch].insert(evicted_pid, last_write_lsn);
+            // FIXME(mfd) : better that the PP thread does not block ?
+            auto *set = ru_discard_set.getSetLockedCanFail(bf.page.ru_epoch, false);
+            if (set == nullptr) {
+               c_guard.guard.unlock();
+               jumpmu::jump();
+            }
+            bool success = set->insert(evicted_pid, last_write_lsn);
+            set->m.unlock();
             if (!success) {
+               c_guard.guard.unlock();
                jumpmu::jump();
             }
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
@@ -269,17 +288,17 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             currently being reclaimed.
             */
             if (cooled_bf->isDirty()) {
-               if ( FLAGS_enable_discarding
+               if (FLAGS_enable_discarding
                   && cooled_bf->canDiscard() 
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf
-                  && cooled_bf->page.ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)
-                  && !ru_discard_set[cooled_bf->page.ru_epoch].is_garbage_collected.load(std::memory_order_acquire)) {
+                  && cooled_bf->page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()) {
                   {
                      BMExclusiveGuard ex_guard(o_guard);
                      paranoid(!cooled_bf->header.is_being_written_back);
                      cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
+                     cooled_bf->header.logging = nullptr;
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }
@@ -325,9 +344,13 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                    // When the written back page is being exclusively locked, we should rather waste the write and move on to another page
                    // Instead of waiting on its latch because of the likelihood that a data structure implementation keeps holding a parent latch
                    // while trying to acquire a new page
+                   // XXX(mfd) : Don't waste the write for now,.because we're updating the RU epoch directly on the page.
+                   // Also for us, because we're discarding PP threads rarely block on IO and there is plenty of free pages.
                    {
                       BMOptimisticGuard o_guard(written_bf.header.latch);
-                      BMExclusiveGuard ex_guard(o_guard);
+                      // BMExclusiveGuard ex_guard(o_guard);
+                      o_guard.guard.toExclusive(); 
+
                       ensure(written_bf.header.is_being_written_back);
                       ensure(written_bf.header.last_written_plsn < written_lsn);
                       // -------------------------------------------------------------------------------------
@@ -337,13 +360,14 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
-                      s64 previous_ru_epoch = written_bf.page.ru_epoch;
+                      written_bf.header.logging = nullptr;
+                      written_bf.header.flush_sink_log = false;
+                      s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
                       if (previous_ru_epoch != -1 && previous_ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)) {
                          s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
-                         ensure(invalid <= ru_discard_set[previous_ru_epoch].total.load(std::memory_order_acquire));
                       }
                       ru_discard_set[written_ru_epoch].total.fetch_add(1);
-                      written_bf.page.ru_epoch = written_ru_epoch;
+                      o_guard.guard.unlock();
                    }
                 }
                 jumpmuCatch()

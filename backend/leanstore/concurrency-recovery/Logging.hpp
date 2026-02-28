@@ -22,7 +22,7 @@ struct Logging {
                                                 // skewing and undermining RFA
    static atomic<u64> global_min_commit_ts_flushed;
    // -------------------------------------------------------------------------------------
-   s64 WORKER_WAL_SIZE = 0;
+   u32 log_id;
    instrumented_mutex mutex{"log_buf"};
    WALMetaEntry* active_mt_entry;
    WALDTEntry* active_dt_entry;
@@ -46,6 +46,19 @@ struct Logging {
    LID wal_lsn_counter = 0;
    LID log_gsn_clock;
    u64 log_segment_start = -1;
+   // Should be called only by the group committer thread.
+   void reset()
+   {
+      std::lock_guard _l(mutex);
+      if (wal_log_cursor != wal_gct_cursor.load()) {
+         cerr << "Trying to reset a log while there are some log entries in the buffer" << endl;
+         raise(SIGTRAP);
+      }
+      wal_lsn_counter = 0;
+      wal_log_cursor = 0;
+      publishOffset();
+      wal_gct_cursor.store(0);
+   }
    // -------------------------------------------------------------------------------------
    // -------------------------------------------------------------------------------------
    template <typename T>

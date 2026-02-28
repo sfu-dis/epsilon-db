@@ -80,12 +80,18 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    } else {
       ensure(bf.page.magic_debugging_number == pid);
    }
+   // TODO(mfd) : remove the update frequency
    auto node = reinterpret_cast<btree::BTreeNode*>(bf.page.dt);
    node->update_freq++;
+   // XXX(mfd) : Tentitavely update the RU epoch without waiting for the
+   // write to return. This is to allow correct mapping to logs when the
+   // page is being written back. Consider storing the tentative ru_epoch
+   // in the page frame.
+   bf.page.prev_ru_epoch = bf.page.ru_epoch;
+   bf.page.ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
    std::memcpy(&write_buffer[slot], bf.page, page_size);
-   write_buffer[slot].ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
    void* write_buffer_slot_ptr = &write_buffer[slot];
-   u16 plid = bf.page.fdp_plid;
+   // u16 plid = bf.page.fdp_plid;
    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
    fdp_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, 0);

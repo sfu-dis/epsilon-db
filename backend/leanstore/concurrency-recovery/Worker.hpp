@@ -17,6 +17,7 @@
 #include <queue>
 #include <shared_mutex>
 #include <vector>
+#include <liburing.h>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -78,6 +79,9 @@ struct Worker {
    std::vector<Transaction> precommitted_queue_rfa;
    std::atomic<TXID>  last_precommitted_tx_commit_ts = 0;
    std::atomic<TXID> hardened_commit_ts = 0, signaled_commit_ts = 0;  // W: LW, R: WT
+   // -------------------------------------------------------------------------------------
+   struct io_uring ring; // for reading the log records
+   u8 *log_record_buf;
    // -------------------------------------------------------------------------------------
    // Concurrency Control
    // LWM: start timestamp of the transaction that has its effect visible by all in its class

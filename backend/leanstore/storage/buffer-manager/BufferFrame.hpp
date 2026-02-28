@@ -10,6 +10,10 @@
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
+namespace cr
+{
+struct Logging; // Forward Declaration
+}
 namespace storage
 {
 // -------------------------------------------------------------------------------------
@@ -28,6 +32,8 @@ struct BufferFrame {
       // -------------------------------------------------------------------------------------
       BufferFrame* next_free_bf = nullptr;
       // -------------------------------------------------------------------------------------
+      cr::Logging *logging = nullptr;
+      bool flush_sink_log = false;
       // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
@@ -70,15 +76,37 @@ struct BufferFrame {
       LID GSN = 0;
       DTID dt_id = 9999;                                                                               // INIT: datastructure id
       u64 magic_debugging_number;                                                                      // ATTENTION
-      u32 fdp_plid = -1;
-      u32 nbfixed = 0;
+      u32 fdp_plid = -1; // TODO(mfd) : Obsolete, remove
+      u32 nbfixed = 0; // TODO(mfd) : Used just for debugging, remove later
+      s64 prev_ru_epoch = -1; // TODO(mfd) : Used just for debugging, remove later
       s64 ru_epoch = -1;
       LID last_written_lsn = INVALID_LSN;
       u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
-             - sizeof(fdp_plid) - sizeof(nbfixed) - sizeof(ru_epoch) - sizeof(last_written_lsn)];  // Datastruture BE CAREFUL HERE !!!!!
+             - sizeof(fdp_plid) - sizeof(nbfixed) - 2 * sizeof(ru_epoch) - sizeof(last_written_lsn)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
+      void reset()
+      {
+          PLSN = 0;
+          GSN = 0;
+          ru_epoch = s64(-1);
+          prev_ru_epoch = s64(-1);
+          last_written_lsn = INVALID_LSN;
+      }
+      void dump()
+      {
+         cout << "Page @ " << this << "\n"
+              << "  PLSN: " << PLSN << "\n"
+              << "  GSN: " << GSN << "\n"
+              << "  dt_id: " << dt_id << "\n"
+              << "  magic_debugging_number: " << magic_debugging_number << "\n"
+              << "  fdp_plid: " << fdp_plid << "\n"
+              << "  nbfixed: " << nbfixed << "\n"
+              << "  prev_ru_epoch: " << prev_ru_epoch << "\n"
+              << "  ru_epoch: " << ru_epoch << "\n"
+              << "  last_written_lsn: " << last_written_lsn << "\n";
+      }
    };
    // -------------------------------------------------------------------------------------
    struct Header header;
@@ -107,6 +135,8 @@ struct BufferFrame {
       header.is_being_written_back.store(false, std::memory_order_release);
       header.pid = 9999;
       header.next_free_bf = nullptr;
+      header.logging = nullptr;
+      header.flush_sink_log = false;
       header.contention_tracker.reset();
       header.keep_in_memory = false;
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);

@@ -28,6 +28,11 @@ namespace profiling
 {
 class BMTable;  // Forward declaration
 }
+namespace cr 
+{
+struct WALEntry; // 
+struct WALDTEntry;
+}
 namespace storage
 {
 // -------------------------------------------------------------------------------------
@@ -111,11 +116,13 @@ public:
    atomic<u64> ru_epoch = 0; // persistant
    atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
+   atomic<s64> reclaiming_ru_epoch = -1; // persistant
    static u64 RU_SIZE;
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
    u32 max_open_ru_epochs;
    struct RUEpochDiscardSet {
+      u32 id;
       instrumented_mutex m{"ru_discard_set"};
       std::unordered_map<PID, LID> pids;
       alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
@@ -124,7 +131,9 @@ public:
       alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
+      // -------------------------------------------------------------------------------------
       s64 cur_ru_epoch = -1;
+      atomic<bool> active{false};
 
       void reset();
       // Fails only when the RU epoch is being garbage collected
@@ -152,12 +161,12 @@ public:
       void writetoPersistantStorage(); 
    };
    PersistantRUState *persistant_ru_state; 
-   struct ru_discard_set {
+   struct RUEpochsState {
     private:
       u32 size;
       std::unique_ptr<RUEpochDiscardSet[]> data;
     public:
-      ru_discard_set(u64 size)
+      RUEpochsState(u64 size)
         : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size))
       {
          // XXX(mfd): Is is enough for proper recovery ?
@@ -165,6 +174,7 @@ public:
          u64 cur_open = 0;
          for (u64 e = 0; e < size; e++) {
             data[e].cur_ru_epoch = cur_open + e;
+            data[e].id = e;
          }
       }
       RUEpochDiscardSet& operator[](size_t index) {
@@ -175,7 +185,15 @@ public:
          ensure_equal(data[index % size].cur_ru_epoch, s64(index));
          return data[index % size];
       }
-   } ru_discard_set;
+      /**
+      This is used to avoid the case where the set being reclaimed while we are
+      accessing it. If this is the case, we return nullptr so that method that rely
+      on optimistically assuming the ru_epoch is active need to retry.
+      If this is not the case, then use the overloaded bracket operator above.
+      */
+      RUEpochDiscardSet *getSetLockedCanFail(s64 ru_epoch, bool try_lock_or_fail);
+   };
+   RUEpochsState ru_discard_set;
    // -------------------------------------------------------------------------------------
    std::mutex gc_m;
    std::condition_variable gc_cv;
@@ -235,6 +253,8 @@ public:
    DTRegistry& getDTRegistry() { return DTRegistry::global_dt_registry; }
    u64 consumedPages();
    BufferFrame& getContainingBufferFrame(const u8*);  // get the buffer frame containing the given ptr address
+   // -------------------------------------------------------------------------------------
+   bool logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page& page, LID lsn);
 };
 // -------------------------------------------------------------------------------------
 class BMC
