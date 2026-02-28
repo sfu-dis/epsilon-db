@@ -1226,7 +1226,7 @@ class TPCCWorkload
             bool orderWdcFound = false;
             order_wdc.scan( // this is not needed, but prevents anomalisies
                {w_id, d_id, o_c_id, o_id},
-               [&](const order_wdc_t::Key& key, const order_wdc_t& rec) -> bool {
+               [&](const order_wdc_t::Key& key, [[maybe_unused]] const order_wdc_t& rec) -> bool {
                   if (key.o_w_id == w_id && key.o_d_id == d_id && key.o_c_id == o_c_id && key.o_id == o_id) {
                      orderWdcFound = true;
                   }
@@ -1239,7 +1239,7 @@ class TPCCWorkload
             vector<typename orderline_t::Key> orderlineKeys;
             orderline.scan(
                {w_id, d_id, o_id, minInteger},
-               [&](const orderline_t::Key& key, const orderline_t& rec) -> bool {
+               [&](const orderline_t::Key& key, [[maybe_unused]] const orderline_t& rec) -> bool {
                   if (key.ol_w_id == w_id && key.ol_d_id == d_id && key.ol_o_id == o_id) {
                      orderlineKeys.push_back(key);
                      return true;
@@ -1266,7 +1266,7 @@ class TPCCWorkload
       // get the current highest history h_id for this thread (which is like an auto increment)
       history.scanDesc(
             {t_id, std::numeric_limits<Integer>::max()},
-            [&](const history_t::Key &key, const history_t &rec) -> bool {
+            [&](const history_t::Key &key, [[maybe_unused]] const history_t &rec) -> bool {
                max_h_pk = key.h_pk;
                return false;
             },
@@ -1276,7 +1276,7 @@ class TPCCWorkload
       vector<typename history_t::Key> historyKeys;
       history.scan(
          {t_id, 0}, // search oldest h for this thread
-         [&](const history_t::Key &key, const history_t &rec) -> bool {
+         [&](const history_t::Key &key, [[maybe_unused]] const history_t &rec) -> bool {
             if (key.h_pk <= cutoff_h_pk) {
                if (key.thread_id == t_id) { // only delete h's belonging to this thread
                   historyKeys.push_back(key);
