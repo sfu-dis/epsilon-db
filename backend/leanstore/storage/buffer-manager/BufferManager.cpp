@@ -489,6 +489,8 @@ bool BufferManager::logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page&
    }
    ensure_equal(dte->pid, page.magic_debugging_number);
    ensure(dte->gsn >= page.GSN);
+   // Make sure that log does not cross device block boundary
+   ensure_equal(utils::downAlign(lsn, 4096), utils::downAlign(lsn + entry->size, 4096));
    return true;
 
 fail:
@@ -564,7 +566,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          return;
       }
       ensure(lsn != INVALID_LSN);
-      u64 off = lsn % PAGE_SIZE;
+      u64 off = lsn % 4096;
       auto* entry = (cr::WALEntry*)&cr::Worker::my().log_record_buf[off];
       auto* dte = (cr::WALDTEntry*)entry;
       
@@ -629,8 +631,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // issue the asynchronus log record read.
          struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring); 
          ensure(sqe != nullptr);
-         u64 off = lsn % PAGE_SIZE;
-         io_uring_prep_read(sqe, log_fd, cr::Worker::my().log_record_buf, 2 * PAGE_SIZE, lsn - off);
+         u64 off = utils::downAlign(lsn, 4096);
+         io_uring_prep_read(sqe, log_fd, cr::Worker::my().log_record_buf, 4096, off);
          io_uring_sqe_set_data64(sqe, lsn);
          int s = io_uring_submit(&cr::Worker::my().ring);
          ensure_equal(s, 1);
@@ -680,7 +682,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             int rc = io_uring_wait_cqe_nr(&cr::Worker::my().ring, &cqe, 1);
             ensure_equal(rc, 0);
             ensure_equal(io_uring_cqe_get_data64(cqe), lsn);
-            // TODO(mfd) : Inspect the return value.
+            ensure_equal(cqe->res, 4096);
             io_uring_cqe_seen(&cr::Worker::my().ring, cqe);
          }
          fix_dirty_page(bf, lsn);

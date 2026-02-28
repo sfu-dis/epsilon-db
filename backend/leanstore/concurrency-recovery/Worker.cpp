@@ -49,9 +49,9 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       int rc = io_uring_queue_init(2, &this->ring, 0);
       ensure_equal(rc , 0);
       // The buffer should be twice the log record because the log record may cross page boundary
-      log_record_buf = static_cast<u8*>(aligned_alloc(4096, 2 * 4096));
+      log_record_buf = static_cast<u8*>(aligned_alloc(4096, 4096));
       ensure(log_record_buf != nullptr);
-      std::memset(log_record_buf, 0, 2 * 4096);
+      std::memset(log_record_buf, 0, 4096);
    }
    cc.wt_pg.local_workers_tx_id = std::make_unique<std::atomic<TXID>[]>(workers_count);
    worker_gsn_clock = Logging::global_sync_to_this_gsn.load();

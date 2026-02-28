@@ -64,6 +64,13 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          publishOffset();
          wal_next_to_clean = 0;
          wal_buffer_round++;  // Carriage Return
+      } else if (utils::downAlign(wal_log_cursor, 4096) != utils::downAlign(wal_log_cursor + requested_size, 4096)) {
+         // This log record crosses the boundary of a 4KiB page
+         WALEntry& skip_entry = *reinterpret_cast<WALEntry*>(wal_buffer + wal_log_cursor);
+         skip_entry.type = WALEntry::TYPE::SKIP;
+         wal_log_cursor = utils::upAlign(wal_log_cursor, 4096);
+         wal_lsn_counter = utils::upAlign(wal_lsn_counter, 4096);
+         // No need to make it visible straight away to the GCT thread
       }
       ensure(walContiguousFreeSpace() >= requested_size);
       ensure(wal_log_cursor + requested_size + CR_ENTRY_SIZE <= FLAGS_wal_buffer_size);

@@ -27,10 +27,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
    BufferFrame::Page* buf_pages = reinterpret_cast<BufferFrame::Page*>(buf);
 
-   u8 *log_records = static_cast<u8*>(mmap(nullptr, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+   u8 *log_records = static_cast<u8*>(mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
    ensure(log_records != MAP_FAILED);
 
-   std::memset(log_records, 0, 2 * PAGE_SIZE);
+   std::memset(log_records, 0, 4096);
 
    struct io_uring r_ring;
    struct io_uring w_ring;
@@ -63,8 +63,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       if (false && !FLAGS_fake_log_reapply) {
          ensure(lsn != INVALID_LSN);
          u64 off = lsn % PAGE_SIZE;
-         s64 br = pread(log_fd, log_records, 2 * PAGE_SIZE, lsn - off);
-         ensure_equal(br, (2 * PAGE_SIZE));
+         s64 br = pread(log_fd, log_records, 4096, lsn - off);
+         ensure_equal(br, 4096);
          auto* entry = (cr::WALEntry*)&log_records[off];
          auto* dte  =  (cr::WALDTEntry*)entry;
 
