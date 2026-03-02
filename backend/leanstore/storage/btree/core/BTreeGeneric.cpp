@@ -572,14 +572,11 @@ void BTreeGeneric::deserialize(BTreeGeneric& btree, std::unordered_map<std::stri
    btree.dt_id = std::stol(map["dt_id"]);
    btree.height = std::stol(map["height"]);
    btree.meta_node_bf.evict(std::stol(map["meta_pid"]));
-   HybridLatch dummy_latch;
-   Guard dummy_guard(&dummy_latch);
-   dummy_guard.toOptimisticSpin();
    u16 failcounter = 0;
    while (true) {
       jumpmuTry()
       {
-         btree.meta_node_bf = &BMC::global_bf->resolveSwip(dummy_guard, btree.meta_node_bf);
+         btree.meta_node_bf = &BMC::global_bf->resolveMetaSwip(btree.meta_node_bf);
          jumpmu_break;
       }
       jumpmuCatch()

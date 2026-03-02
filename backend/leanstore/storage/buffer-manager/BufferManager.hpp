@@ -226,6 +226,7 @@ public:
          return resolveSwip(swip_guard, swip_value);
       }
    }
+   BufferFrame& resolveMetaSwip(Swip<BufferFrame>& meta_swip);
    BufferFrame& resolveSwip(Guard& swip_guard, Swip<BufferFrame>& swip_value);
    void evictLastPage();
    void reclaimPage(BufferFrame& bf);

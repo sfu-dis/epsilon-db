@@ -473,6 +473,23 @@ void BufferManager::reclaimPage(BufferFrame& bf)
    }
 }
 // -------------------------------------------------------------------------------------
+// Used for recovery. Only resolve meta node swip
+BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
+{
+   ensure(FLAGS_recover);
+   ensure(meta_swip.isEVICTED());
+   ensure(!meta_swip.isDIRTY());
+   PID meta_pid = meta_swip.asPageID();
+   // printf("[INFO] Meta node in ru_epoch %d\n", ru_epoch);
+   BufferFrame& bf = randomPartition().dram_free_list.tryPop();
+   readPageSync(meta_pid, bf.page);
+   bf.header.last_written_plsn = bf.page.PLSN;
+   bf.header.pid = meta_pid;
+   meta_swip.warm(&bf);
+   bf.header.state = BufferFrame::STATE::HOT;
+   jumpmu_return bf;
+}
+// -------------------------------------------------------------------------------------
 bool BufferManager::logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page& page, LID lsn)
 {
    auto* dte = (cr::WALDTEntry*)entry;
@@ -627,6 +644,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
+      u32 wait_for_io = 1;
       if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
          // issue the asynchronus log record read.
          struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring); 
@@ -634,14 +652,44 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          u64 off = utils::downAlign(lsn, 4096);
          io_uring_prep_read(sqe, log_fd, cr::Worker::my().log_record_buf, 4096, off);
          io_uring_sqe_set_data64(sqe, lsn);
-         int s = io_uring_submit(&cr::Worker::my().ring);
-         ensure_equal(s, 1);
+         wait_for_io++;
       }
-      readPageSync(pid, bf.page);
+      // readPageSync(pid, bf.page);
+      struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring);
+      ensure(sqe != nullptr);
+      io_uring_prep_read(sqe, ssd_fd, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
+      io_uring_sqe_set_data64(sqe, pid | (1UL << 63));
+      s32 s = io_uring_submit_and_wait(&cr::Worker::my().ring, wait_for_io);
+      ensure_equal(s, wait_for_io);
+      // TODO(mfd) : Add the io Read Latency Histogram
+      COUNTERS_BLOCK(read_operations_counter)
+      {
+         WorkerCounters::myCounters().read_operations_counter++;
+      }
+      // -------------------------------------------------------------------------------------
+      struct io_uring_cqe* cqes[2];
+      u32 ready = io_uring_peek_batch_cqe(&cr::Worker::my().ring, cqes, wait_for_io);
+      ensure_equal(ready, wait_for_io);
+      bool seen_page = false;
+      for (int i = 0; i < wait_for_io; ++i) {
+         auto *cqe = cqes[i];
+         u64 data = io_uring_cqe_get_data64(cqe);
+         if (data & (1ul << 63)) {
+            ensure(!seen_page);
+            ensure_equal(data & ~(1ul << 63) , pid);
+            seen_page = true;
+            ensure_equal(cqe->res, PAGE_SIZE);
+         } else {
+            // TODO: check the lsn lists.
+            ensure_equal(data, lsn);
+            ensure_equal(cqe->res, 4096);
+         }
+      }
+      io_uring_cq_advance(&cr::Worker::my().ring, wait_for_io);
+      // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
-      // -------------------------------------------------------------------------------------
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
       COUNTERS_BLOCK()
       {
@@ -676,15 +724,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          }
          ensure(log_id != 0);
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
-         if (!FLAGS_fake_log_reapply) {
-            struct io_uring_cqe *cqe;
-            // TODO(mfd) : monitor how often we find the IO ready.
-            int rc = io_uring_wait_cqe_nr(&cr::Worker::my().ring, &cqe, 1);
-            ensure_equal(rc, 0);
-            ensure_equal(io_uring_cqe_get_data64(cqe), lsn);
-            ensure_equal(cqe->res, 4096);
-            io_uring_cqe_seen(&cr::Worker::my().ring, cqe);
-         }
          fix_dirty_page(bf, lsn);
       } else {
          ensure(bf.header.logging == nullptr);

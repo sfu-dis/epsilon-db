@@ -46,9 +46,12 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       cc.local_workers_start_ts = make_unique<u64[]>(workers_count + 1);
       global_workers_current_snapshot[worker_id] = 0;
       // -------------------------------------------------------------------------------------
-      int rc = io_uring_queue_init(2, &this->ring, 0);
+      u32 flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
+      // TODO(mfd) : the depth of the queue is 1 + the number of log records that can be discarded
+      int rc = io_uring_queue_init(2, &this->ring, flags);
       ensure_equal(rc , 0);
-      // The buffer should be twice the log record because the log record may cross page boundary
+      // TODO(mfd) : Consider registering this buffer with the io_uring queue.
+      // TODO(mfd) : Considering registering the log_fd and ssd_fd for all rings.
       log_record_buf = static_cast<u8*>(aligned_alloc(4096, 4096));
       ensure(log_record_buf != nullptr);
       std::memset(log_record_buf, 0, 4096);
