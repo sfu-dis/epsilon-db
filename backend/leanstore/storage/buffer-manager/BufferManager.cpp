@@ -650,14 +650,16 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring); 
          ensure(sqe != nullptr);
          u64 off = utils::downAlign(lsn, 4096);
-         io_uring_prep_read(sqe, log_fd, cr::Worker::my().log_record_buf, 4096, off);
+         io_uring_prep_read(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf, 4096, off);
+         io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
          io_uring_sqe_set_data64(sqe, lsn);
          wait_for_io++;
       }
       // readPageSync(pid, bf.page);
       struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring);
       ensure(sqe != nullptr);
-      io_uring_prep_read(sqe, ssd_fd, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
+      io_uring_prep_read(sqe, 0 /*ssd_fd*/, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
+      io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
       io_uring_sqe_set_data64(sqe, pid | (1UL << 63));
       s32 s = io_uring_submit_and_wait(&cr::Worker::my().ring, wait_for_io);
       ensure_equal(s, wait_for_io);

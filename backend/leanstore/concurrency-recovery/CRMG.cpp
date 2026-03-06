@@ -46,7 +46,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
          WorkerCounters::myCounters().worker_id = t_i;
          CRCounters::myCounters().worker_id = t_i;
          // -------------------------------------------------------------------------------------
-         workers[t_i] = new Worker(t_i, workers, workers_count, versions_space, ssd_fd, false);
+         workers[t_i] = new Worker(t_i, workers, workers_count, versions_space, ssd_fd, log_dev_fd, false);
          Worker::tls_ptr = workers[t_i];
          // -------------------------------------------------------------------------------------
          running_threads++;
@@ -99,7 +99,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
 // -------------------------------------------------------------------------------------
 void CRManager::registerMeAsSpecialWorker()
 {
-   cr::Worker::tls_ptr = new Worker(std::numeric_limits<WORKERID>::max(), workers, workers_count, versions_space, ssd_fd, true);
+   cr::Worker::tls_ptr = new Worker(std::numeric_limits<WORKERID>::max(), workers, workers_count, versions_space, ssd_fd, -1, true);
 }
 // -------------------------------------------------------------------------------------
 void CRManager::scheduleJobSync(u64 t_i, std::function<void()> job)

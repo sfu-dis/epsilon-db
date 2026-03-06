@@ -89,6 +89,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    }
    // -------------------------------------------------------------------------------------
    // initialize aio context
+   // TODO(mfd) : use io_uring here instead and register the log file descriptor and all log buffers.
    iocbs = make_unique<struct iocb[]>(batch_max_size);
    iocbs_ptr = make_unique<struct iocb*[]>(batch_max_size);
    events = make_unique<struct io_event[]>(batch_max_size);

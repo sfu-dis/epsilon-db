@@ -35,13 +35,15 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
 
    events = make_unique<struct io_uring_cqe*[]>(batch_max_size);
    unsigned flags = 0;
-   flags |= IORING_SETUP_SQE128;
-   flags |= IORING_SETUP_CQE32;
+   flags |= (IORING_SETUP_SQE128 | IORING_SETUP_CQE32);
+   flags |= (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
    int rc = io_uring_queue_init(2 * FLAGS_replacement_chunk_size, &ring, flags);
    if (rc != 0) {
       throw ex::GenericException("io_uring_queue_init failed, ret code = " + std::to_string(rc));
    }
-
+   rc = io_uring_register_files(&ring, &fd, 1);
+   ensure_equal(rc, 0);
+   // TODO(mfd) : consider registering the write buffer arrray.
 }
 // -------------------------------------------------------------------------------------
 bool AsyncWriteBuffer::full()

@@ -173,7 +173,7 @@ struct Worker {
    const s32 ssd_fd;
    const bool is_page_provider = false;
    // -------------------------------------------------------------------------------------
-   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 fd, const bool is_page_provider);
+   Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_fd, const bool is_page_provider);
    static inline Worker& my() { return *Worker::tls_ptr; }
    ~Worker();
    // -------------------------------------------------------------------------------------

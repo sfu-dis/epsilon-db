@@ -30,12 +30,12 @@ atomic<u64> Worker::global_all_lwm = 0;
 atomic<u64> Worker::global_oltp_lwm = 0;
 atomic<u64> Worker::global_newest_olap_start_ts = 0;
 // -------------------------------------------------------------------------------------
-Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& history_tree, s32 fd, const bool is_page_provider)
+Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTreeInterface& history_tree, s32 ssd_fd, s32 log_fd, const bool is_page_provider)
     : cc(history_tree, workers_count),
       worker_id(worker_id),
       all_workers(all_workers),
       workers_count(workers_count),
-      ssd_fd(fd),
+      ssd_fd(ssd_fd),
       is_page_provider(is_page_provider)
 {
    Worker::tls_ptr = this;
@@ -50,7 +50,9 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       // TODO(mfd) : the depth of the queue is 1 + the number of log records that can be discarded
       int rc = io_uring_queue_init(2, &this->ring, flags);
       ensure_equal(rc , 0);
-      // TODO(mfd) : Consider registering this buffer with the io_uring queue.
+      int devices[2] = {ssd_fd, log_fd};
+      rc = io_uring_register_files(&this->ring, devices, 2);
+      ensure_equal(rc, 0);
       // TODO(mfd) : Considering registering the log_fd and ssd_fd for all rings.
       log_record_buf = static_cast<u8*>(aligned_alloc(4096, 4096));
       ensure(log_record_buf != nullptr);
