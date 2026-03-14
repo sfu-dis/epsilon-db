@@ -207,36 +207,49 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          ensure(bf.page.ru_epoch >= 0);
          // -------------------------------------------------------------------------------------
          const PID evicted_pid = bf.header.pid;
+         const LID last_write_lsn = bf.page.last_written_lsn;
          if (discard) {
-            LID last_write_lsn = bf.page.last_written_lsn;
-            u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
-            if (log_id != (1 + (bf.page.ru_epoch % max_open_ru_epochs))) {
-               bf.page.dump();
-               raise(SIGTRAP);
+            // TODO(mfd) : PARANOID_BLOCK()
+            if (FLAGS_wal & FLAGS_wal_pwrite) {
+               u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
+               if (log_id != (1 + (bf.page.ru_epoch % max_open_ru_epochs))) {
+                  bf.page.dump();
+                  raise(SIGTRAP);
+               }
             }
             if (!FLAGS_fake_log_reapply) {
                ensure(last_write_lsn != INVALID_LSN);
             }
             if (bf.page.ru_epoch <= reclaiming_ru_epoch.load(std::memory_order_acquire)) {
+               // This means the page is clean. Should I just evict it ?
                c_guard.guard.unlock();
                jumpmu::jump();
             }
-            // FIXME(mfd) : better that the PP thread does not block ?
-            auto *set = ru_discard_set.getSetLockedCanFail(bf.page.ru_epoch, false);
-            if (set == nullptr) {
-               c_guard.guard.unlock();
-               jumpmu::jump();
-            }
-            bool success = set->insert(evicted_pid, last_write_lsn);
-            set->m.unlock();
+            // tryDiscard will fail only in those two cases.
+            //  1. The GC thread is currently fixing the page (entry locked).
+            //  2. The GC thread has already fixed the page (marked gc_fixed).
+            // I think in both cases it is fine to just evict the page. Especially
+            // In the second case since the page should be mapped now to a new RU epoch.
+            // Be aware of deadlock between page latch and page state latch
+            bool success = discard_state[evicted_pid].tryDiscard(last_write_lsn);
+            ensure(success);
             if (!success) {
                c_guard.guard.unlock();
                jumpmu::jump();
             }
+            // The RU discard set identity may change meanwhile.
+            // I think I should simply allow this, this is a very rare event, and these are 
+            //  stats to approximate thresolhold of GC in RU epoch.
+            ru_discard_set.data[bf.page.ru_epoch % max_open_ru_epochs].inserted.fetch_add(1);
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
             parent_handler.swip.evict(evicted_pid);
+            if (FLAGS_enable_discarding) {
+               discard_state[evicted_pid].getLocked();
+               ensure(discard_state[evicted_pid].isHot());
+               discard_state[evicted_pid].unlockClean(last_write_lsn);
+            }
          }
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame

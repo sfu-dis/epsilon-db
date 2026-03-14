@@ -4,6 +4,7 @@
 #include "DTRegistry.hpp"
 #include "FreeList.hpp"
 #include "Partition.hpp"
+#include "PageState.hpp"
 #include "Swip.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
@@ -118,6 +119,7 @@ public:
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
    atomic<s64> reclaiming_ru_epoch = -1; // persistant
    static u64 RU_SIZE;
+   PageState *discard_state;
    // XXX(mfd) : this depends on how many RUs are in the device
    //  good number is : (device_size/ru_size)
    u32 max_open_ru_epochs;
@@ -125,6 +127,8 @@ public:
       u32 id;
       instrumented_mutex m{"ru_discard_set"};
       std::unordered_map<PID, LID> pids;
+      void* mmaped_log = nullptr;
+      u64 log_segment_start = -1;
       alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> deleted{0};
       alignas(CACHE_LINE_SIZE) atomic<bool> is_garbage_collected{false};
@@ -162,10 +166,9 @@ public:
    };
    PersistantRUState *persistant_ru_state; 
    struct RUEpochsState {
-    private:
       u32 size;
       std::unique_ptr<RUEpochDiscardSet[]> data;
-    public:
+
       RUEpochsState(u64 size)
         : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size))
       {
@@ -212,7 +215,7 @@ public:
    FILE *fp;
   public:
    // -------------------------------------------------------------------------------------
-   BufferManager(s32 ssd_fd, u32 max_open_ru_epoch);
+   BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd);
    ~BufferManager();
    // -------------------------------------------------------------------------------------
    BufferFrame& allocatePage();

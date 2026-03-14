@@ -33,8 +33,8 @@ namespace storage
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
-BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) : 
-  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs), 
+BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd) :
+  ssd_fd(ssd_fd), max_open_ru_epochs(total_blocks_in_ssd / RU_SIZE),
   persistant_ru_state_offset(utils::upAlign(FLAGS_ssd_gib * 1073741824, 4096)),
   ru_discard_set(max_open_ru_epochs)
 {
@@ -54,6 +54,28 @@ BufferManager::BufferManager(s32 ssd_fd, u32 max_open_ru_epochs) :
       madvise(bfs, dram_total_size, MADV_HUGEPAGE);
       madvise(bfs, dram_total_size,
               MADV_DONTFORK);  // O_DIRECT does not work with forking.
+      // -------------------------------------------------------------------------------------
+      if (FLAGS_enable_discarding) {
+         void *entries_p = mmap(nullptr, total_blocks_in_ssd * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         if (entries_p == MAP_FAILED) {
+            perror("Failed to allocated memory for the Discard Set\n");
+            SetupFailed("Do you have enough memory ?");
+         }
+         discard_state = static_cast<PageState*>(entries_p);
+         madvise(entries_p, total_blocks_in_ssd * sizeof(PageState), MADV_HUGEPAGE);
+         int rc = mlock(entries_p, total_blocks_in_ssd * sizeof(PageState));
+         if (rc == -1) {
+            perror("mlock");
+            raise(SIGTRAP);
+         }
+         // madvise(entries, RU_SIZE * sizeof(discard_entry), MAP_POPULATE);
+         if (FLAGS_recover) {
+            // TODO(mfd) : Get all workers to reconstruct the discard state.
+            // For now we just assume we recover from a clean state.
+         }
+      } else {
+         discard_state = nullptr;
+      }
       // -------------------------------------------------------------------------------------
       // Initialize partitions
       partitions_count = (1 << FLAGS_partition_bits);
@@ -369,6 +391,7 @@ BufferFrame& BufferManager::allocatePage()
    Partition& partition = randomPartition();
    BufferFrame& free_bf = partition.dram_free_list.tryPop();
    PID free_pid = partition.nextPID();
+   if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
    assert(free_bf.header.state == BufferFrame::STATE::FREE);
    // -------------------------------------------------------------------------------------
    // Initialize Buffer Frame
@@ -483,6 +506,7 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    // printf("[INFO] Meta node in ru_epoch %d\n", ru_epoch);
    BufferFrame& bf = randomPartition().dram_free_list.tryPop();
    readPageSync(meta_pid, bf.page);
+   if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);
    bf.header.last_written_plsn = bf.page.PLSN;
    bf.header.pid = meta_pid;
    meta_swip.warm(&bf);
@@ -616,31 +640,13 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       LID lsn = INVALID_LSN;
       gc_fixed = false;
+      // -------------------------------------------------------------------------------------
+      auto& page_state = discard_state[pid];
+      u64 state = page_state.getLocked();
       if (page_need_fixing) {
-         if (ru_epoch <= reclaimed_ru_epoch.load(std::memory_order_acquire)) {
-            // Optimistic path
-            gc_fixed = true;
-         } else {
-            auto *set = ru_discard_set.getSetLockedCanFail(ru_epoch, false);
-            if (set == nullptr) {
-               // This can only happen if the ru_epoch was reclaimed concurrently
-               ensure_lte(ru_epoch, reclaimed_ru_epoch.load(std::memory_order_acquire));
-               gc_fixed = true;
-            } else {
-               // This case means that either the ru_epoch is not being reclaimed now
-               //  or that it is currently being reclaimed.
-               // The one who successfully erases from the set is the one responsible
-               //  for fixing the page.
-               lsn = set->erase(pid);
-               set->m.unlock();
-               if (lsn == INEXISTANT_LSN) {
-                  // the garbage collector thread has already fixed the page.
-                  ensure_lte(s64(ru_epoch), s64(reclaiming_ru_epoch));
-                  gc_fixed = true;
-               }
-            }
-         }
+         gc_fixed = page_state.isClean();
       }
+      lsn = state;
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
@@ -730,6 +736,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       } else {
          ensure(bf.header.logging == nullptr);
       }
+      page_state.unlockBF(&bf);
       // -------------------------------------------------------------------------------------
       jumpmuTry()
       {
