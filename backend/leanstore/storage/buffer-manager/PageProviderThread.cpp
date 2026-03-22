@@ -231,8 +231,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // I think in both cases it is fine to just evict the page. Especially
             // In the second case since the page should be mapped now to a new RU epoch.
             // Be aware of deadlock between page latch and page state latch
-            bool success = discard_state[evicted_pid].tryDiscard(last_write_lsn);
-            ensure(success);
+            ensure(bf.header.pending_lsn.size() > 0);
+            ensure(bf.header.pending_lsn.size() <= FLAGS_max_log_records_to_discard);
+            ensure_equal(bf.header.pending_lsn.back(), last_write_lsn);
+            ensure_equal(bf.header.pending_lsn.size(), bf.page.PLSN - bf.header.last_written_plsn);
+            bool success = discard_state[evicted_pid].tryDiscard(bf.header.pending_lsn);
+            ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
                c_guard.guard.unlock();
                jumpmu::jump();
@@ -312,6 +316,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      paranoid(!cooled_bf->header.is_being_written_back);
                      cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
                      cooled_bf->header.logging = nullptr;
+                     cooled_bf->header.pending_lsn.clear();
+                     cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }
@@ -365,7 +371,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       o_guard.guard.toExclusive(); 
 
                       ensure(written_bf.header.is_being_written_back);
-                      ensure(written_bf.header.last_written_plsn < written_lsn);
+                      // ensure(written_bf.header.last_written_plsn < written_lsn);
                       // -------------------------------------------------------------------------------------
                       if (FLAGS_out_of_place) {  // For recovery, so much has to be done here...
                          getPartition(getPartitionID(written_bf.header.pid)).freePage(written_bf.header.pid);
@@ -373,8 +379,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       }
                       written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
-                      written_bf.header.logging = nullptr;
-                      written_bf.header.flush_sink_log = false;
+                      // written_bf.header.logging = nullptr;
+                      // written_bf.header.flush_sink_log = false;
                       s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
                       if (previous_ru_epoch != -1 && previous_ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)) {
                          s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);

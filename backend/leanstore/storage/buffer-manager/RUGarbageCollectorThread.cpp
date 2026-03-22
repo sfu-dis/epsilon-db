@@ -14,7 +14,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 {
    std::string gc_thread_name = "ru_gc_" + std::to_string(gc_id);
    pthread_setname_np(pthread_self(), gc_thread_name.c_str());
-   const u32 batch_size = 16;
+   // FIXME(mfd): Temporely set it large enough
+   const u32 batch_size = 256;
    void* buf;
    s64 current_gc_epoch = -1;
 
@@ -42,10 +43,37 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    std::unique_ptr<struct io_uring_cqe*[]> cqes;
    cqes = std::make_unique<struct io_uring_cqe*[]>(2 * batch_size);
 
-   std::vector<std::pair<PID, LID>> to_fix_pids;
+   struct page_info {
+      PID pid;
+      LID* lsn_list;
+      LID first_lsn;
+      LID last_lsn;
+      u8 nb_log_records;
+
+      void dump() const
+      {
+         std::cout << "page_info {\n";
+         std::cout << "   pid            = " << pid << "\n";
+         std::cout << "   first_lsn      = " << first_lsn << "\n";
+         std::cout << "   last_lsn       = " << last_lsn << "\n";
+         std::cout << "   nb_log_records = " << +nb_log_records << "\n";
+
+         std::cout << "   lsn_list       = [";
+         for (u8 i = 0; i < nb_log_records; i++) {
+            std::cout << lsn_list[i];
+            if (i + 1 < nb_log_records)
+               std::cout << ", ";
+         }
+         std::cout << "]\n";
+         std::cout << "}\n";
+      }
+   };
+
+   std::vector<page_info> to_fix_pids;
    to_fix_pids.reserve(batch_size);
 
    u64 actually_fixed = 0;
+   u64 total_fixed = 0;
 
    auto fix_page_cb = [&](struct io_uring_cqe* cqe) {
       ensure_equal(cqe->res, PAGE_SIZE);
@@ -53,8 +81,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       u64 fixed_pid = data & 0x0000FFFFFFFFFFFF;
       u64 idx = data >> 48;
       assert(idx < to_fix_pids.size());
-      ensure_equal(to_fix_pids[idx].first, fixed_pid);
-      LID lsn = to_fix_pids[idx].second;
+      ensure_equal(to_fix_pids[idx].pid, fixed_pid);
+      const LID last_lsn = to_fix_pids[idx].last_lsn;
       BufferFrame::Page* page = &buf_pages[idx];
       ensure_equal(page->magic_debugging_number, fixed_pid);
       if (page->ru_epoch != current_gc_epoch) {
@@ -85,29 +113,84 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          }
          return;
       }
-      ++actually_fixed;
-      page->PLSN++;
-      page->last_written_lsn = lsn;
+
+      LID lsn = last_lsn;
+      u64 to_apply_log_records = 0;
+      std::vector<cr::WALEntry*> to_apply_log_records_stack;
       if (!FLAGS_fake_log_reapply) {
          ensure(lsn != INVALID_LSN);
 
-         ensure_lte(cur_log_segment_start, lsn);
-         u64 off = lsn - cur_log_segment_start;
+         // Could it be the case, that the page is indeed clean?
+         while (lsn != INVALID_LSN) {
+            ensure_lte(cur_log_segment_start, lsn);
+            u64 off = lsn - cur_log_segment_start;
+            auto* entry = reinterpret_cast<cr::WALEntry*>(&log_records[off]);
+            auto* dte = reinterpret_cast<cr::WALDTEntry*>(entry);
 
-         auto* entry = reinterpret_cast<cr::WALEntry*>(&log_records[off]);
-         auto* dte = reinterpret_cast<cr::WALDTEntry*>(entry);
+            bool ok = logRecordSanityCheck(entry, *page, lsn);
+            ensure(ok);
 
-         bool ok = logRecordSanityCheck(entry, *page, lsn);
-         ensure(ok);
+            to_apply_log_records_stack.push_back(entry);
+            // if (entry->prev_lsn == INVALID_LSN) break;
 
-         page->GSN = dte->gsn;
+            if (to_apply_log_records_stack.size() > FLAGS_max_log_records_to_discard) {
+               printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
+               printf("[ERR] curr lsn = %lu, prev lsn = %lu, lseg start lsn %lu\n", lsn, entry->prev_lsn, cur_log_segment_start);
+               for (const auto& e : to_apply_log_records_stack) {
+                  reinterpret_cast<cr::WALDTEntry*>(e)->dump();
+               }
+               page->dump();
+               discard_state[fixed_pid].dump();
+               printf("[ERR] Total Fixed %lu \n", total_fixed);
+            }
 
-         DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload);
+            ensure(to_apply_log_records_stack.size() <= FLAGS_max_log_records_to_discard);
+            lsn = entry->prev_lsn;
+         }
+
+         to_apply_log_records = to_apply_log_records_stack.size();
+
+         ensure(to_apply_log_records != 0);  // Not sure
+         // Sanity checks.
+         ensure_equal_goto_fail(to_apply_log_records, to_fix_pids[idx].nb_log_records);
+         for (u64 i = 0; i < to_apply_log_records; ++i) {
+            // if (to_apply_log_records_stack[i]->lsn != to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]) goto fail;
+            ensure_equal_goto_fail(to_apply_log_records_stack[i]->lsn, to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]);
+         }
+         // TODO(mfd) : Make sure the last log record we see going backward is the first LSN.
+
+         if (to_apply_log_records > 0) {
+            for (u64 i = to_apply_log_records - 1; i != 0; --i) {
+               auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i]);
+               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload);
+            }
+         }
       }
+
+      ++actually_fixed;
+      page->PLSN += to_apply_log_records;
+      page->last_written_lsn = last_lsn;
+      page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[0])->gsn;
       page->prev_ru_epoch = page->ru_epoch;
       page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
       page->nbfixed++;  // Just for debugging
+      total_fixed++;    // Just for debugging
 
+      goto success;
+
+   fail:
+      printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
+      // printf("[ERR] curr lsn = %lu, prev lsn = %lu, lseg start lsn %lu\n", lsn, entry->prev_lsn, cur_log_segment_start);
+      for (const auto& e : to_apply_log_records_stack) {
+         reinterpret_cast<cr::WALDTEntry*>(e)->dump();
+      }
+      page->dump();
+      discard_state[fixed_pid].dump();
+      printf("[ERR] Total Fixed %lu \n", total_fixed);
+      to_fix_pids[idx].dump();
+      __asm__ volatile("int3");
+
+   success:
       struct io_uring_sqe* sqe = io_uring_get_sqe(&w_ring);
       ensure(sqe != nullptr);
       io_uring_prep_write(sqe, ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE);
@@ -129,7 +212,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       BufferFrame::Page* page = &buf_pages[idx];
       ensure_equal(page->magic_debugging_number, pid);
 
-      discard_state[pid].unlockClean(to_fix_pids[idx].second);
+      discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn);
 
       /// TODO(mfd) : Probably consider, considering the batch as happening always in
       /// the same ru epoch to reduce the number of atomic fetch add.
@@ -168,7 +251,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       }
       if (!bg_threads_keep_running)
          break;
-      // ensure(!to_gc_epochs_snapshot.empty());
       fprintf(fp, "[INFO] Will GC those epochs [%lu, %lu)\n", tls_min_uncollected_ru_epoch, tls_max_collected_ru_epoch);
       for (s64 gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
          current_gc_epoch = gc_ru_epoch;
@@ -181,6 +263,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             logging.mutex.lock();
             // makes sure not log records will appear in this log in the future.
             bool ok = reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, current_gc_epoch);
+            ensure(ok);
             u64 to_gc_pages = set.pids.size();
             ensure_equal(set.pids.size(), 0);
 
@@ -192,24 +275,25 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             set.log_segment_start = logging.log_segment_start;
             logging.mutex.unlock();
 
+            ensure_equal(set.offset_batch.load(), 0);
             set.m.unlock();
-            ensure(ok);
-            fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu logs to fix\n", gc_ru_epoch, logging.wal_lsn_counter);
+            fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu log size to apply\n", gc_ru_epoch, logging.wal_lsn_counter);
          } else {
             set.m.unlock();
          }
          auto start = std::chrono::system_clock::now();
-         // grab a batch of log records using a fetch sub: We're going to traverse the log records
-         // from bottom up.
 
-         u64 offset = 0;
+         u64 offset = 0;  // local offset
          log_records = static_cast<u8*>(set.mmaped_log);
          cur_log_segment_start = set.log_segment_start;
+
          while (offset < logging.wal_lsn_counter) {
             u64 pages_to_fix = 0;
             u64 submitted = 0;
             actually_fixed = 0;
-            while (offset < logging.wal_lsn_counter && pages_to_fix < batch_size) {
+            offset = set.offset_batch.fetch_add(4096);
+            u64 fix_up_to = std::min<u64>(offset + 4096, logging.wal_lsn_counter);
+            while (offset < fix_up_to) {
                cr::WALEntry& entry = *reinterpret_cast<cr::WALEntry*>(&log_records[offset]);
 
                if (entry.type == cr::WALDTEntry::TYPE::SKIP) {
@@ -225,6 +309,11 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
                ensure_equal(entry.type, cr::WALDTEntry::TYPE::DT_SPECIFIC);
                auto& dte = *reinterpret_cast<cr::WALDTEntry*>(&entry);
+
+               if (entry.prev_lsn != INVALID_LSN) {
+                  // This is not the first entry in the chain, skip.
+                  continue;
+               }
 
                PID pid = dte.pid;
                auto& page_state = discard_state[pid];
@@ -246,8 +335,11 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                // If I am not sure about the page state, assume pessimistically it is discarded.
                // Make sure the page is not free
                // This is not handled for now. We only support deterministic state.
-               LID lsn = INVALID_LSN;
                ensure(!page_state.isFree());
+
+               LID* lsn_list = nullptr;
+               LID last_lsn = INVALID_LSN;
+               u8 nb_log_records = 0;
                {
                   Partition& partition = getPartition(pid);
                   std::lock_guard<instrumented_mutex> _m(partition.ht_mutex);
@@ -268,7 +360,20 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   bool ok = io_frame.mutex.try_lock();
                   ensure(ok);
 
-                  lsn = discard_state[pid].getLocked();
+                  auto p = discard_state[pid].getLocked();
+                  ensure(discard_state[pid].isDiscarded());
+                  nb_log_records = p.second;
+                  lsn_list = reinterpret_cast<LID*>(p.first);
+                  if (nb_log_records == 1) {
+                     last_lsn = p.first;
+                  } else {
+                     last_lsn = lsn_list[nb_log_records - 1];
+                  }
+                  ensure_equal(to_fix_pids.size(), pages_to_fix);
+                  to_fix_pids.emplace_back(pid, lsn_list, entry.lsn, last_lsn, nb_log_records);
+                  if (nb_log_records == 1) {
+                     to_fix_pids.back().lsn_list = &to_fix_pids.back().last_lsn;
+                  }
                }
 
                struct io_uring_sqe* sqe = io_uring_get_sqe(&r_ring);
@@ -280,8 +385,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                ensure((pid & 0xFFFF000000000000) == 0);
                u64 data = (pages_to_fix << 48) | pid;
                io_uring_sqe_set_data64(sqe, data);
-               ensure(lsn != INVALID_LSN);
-               to_fix_pids.emplace_back(pid, lsn);
+               ensure(last_lsn != INVALID_LSN);
                ++pages_to_fix;
                if (pages_to_fix == batch_size / 2) {
                   int s = io_uring_submit(&r_ring);
@@ -345,8 +449,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   io_uring_cq_advance(&w_ring, remaining);
                }
                tot_gc_writes.fetch_add(actually_fixed, std::memory_order_acq_rel);
-               to_fix_pids.clear();
             }
+            to_fix_pids.clear();
+            pages_to_fix = 0;
          }
          // -------------------------------------------------------------------------------------
          auto end = std::chrono::system_clock::now();
@@ -360,6 +465,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             auto& logging = cr::LogManager::global->all_logs[log_id];
             set.m.lock();
             int rc = munmap(set.mmaped_log, logging.wal_lsn_counter);
+            ensure_equal(rc, 0);
             set.mmaped_log = nullptr;
             set.reset();
             logging.reset();
@@ -367,7 +473,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             if (FLAGS_wal && FLAGS_wal_pwrite) {
                cr::LogManager::global->resetLogSegment(current_gc_epoch);
             }
-            fprintf(fp, "GC epoch %lu, time taken %lu seconds\n", gc_ru_epoch, duration.count());
+            fprintf(fp, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu\n", gc_ru_epoch, duration.count(), total_fixed);
+            total_fixed = 0;
          }
          while (set.done_gc.load() != FLAGS_ru_gc_threads) {
          }

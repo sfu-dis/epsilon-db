@@ -218,7 +218,9 @@ void BufferManager::startBackgroundThreads()
                u64 new_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
                // TODO(mfd) : handle with care.
                if (FLAGS_enable_discarding) {
-                  ensure((new_epoch - reclaimed_ru_epoch) <= max_open_ru_epochs);
+                  if ((new_epoch - reclaimed_ru_epoch) >= (max_open_ru_epochs - FLAGS_overprovisioning_ru_epochs)) {
+                     ru_discard_set[oldest_uncollected_ru_epoch].force_gc = true;
+                  }
                }
                ru_epoch.store(new_epoch, std::memory_order_release);
                fprintf(fp, "[INFO] Opened up a new RU Epoch %lu!!!\n", new_epoch);
@@ -593,38 +595,42 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       WorkerCounters::myCounters().swizzled++;
    }
    // -------------------------------------------------------------------------------------
-   // TODO(mfd) : Refactor this as a method of the buffer pool
-   //  it will be used by the gc thread also.
-   auto fix_dirty_page = [&](BufferFrame& bf, LID lsn) {
+   auto fix_dirty_page = [&](BufferFrame& bf, LID* lsn_list, u8 nb_log_records) {
       ensure(bf.page.ru_epoch >= 0);
-      ensure(lsn != INEXISTANT_LSN);
       COUNTERS_BLOCK(dirty_read_operations_counter)
       {
          WorkerCounters::myCounters().dirty_read_operations_counter++;
       }
       if (FLAGS_fake_log_reapply) {
-         bf.page.PLSN++;
+         bf.page.PLSN += nb_log_records;
          return;
       }
-      ensure(lsn != INVALID_LSN);
-      u64 off = lsn % 4096;
-      auto* entry = (cr::WALEntry*)&cr::Worker::my().log_record_buf[off];
-      auto* dte = (cr::WALDTEntry*)entry;
-      
-      bool ok = logRecordSanityCheck(entry, bf.page, lsn);
+      cr::WALEntry* entry = nullptr;
+      cr::WALDTEntry* dte = nullptr;
+      LID lsn = INVALID_LSN;
+      // TODO(mfd) : Sanity check that prev lsn field in the log recods agrees with the list.
+      for (u8 i = 0; i < nb_log_records; ++i) {
+         lsn = lsn_list[i];
+         ensure(lsn != INVALID_LSN);
+         u64 off = (lsn % 4096) + 4096 * i;
+         entry = reinterpret_cast<cr::WALEntry*>(&cr::Worker::my().log_record_buf[off]);
+         dte = reinterpret_cast<cr::WALDTEntry*>(entry);
 
-      if (!ok) {
-         cout << "Page need fixing ? " << page_need_fixing  << endl;
-         cout << "RU epoch in swizzled pointer " << ru_epoch << endl;
-         cout << "GC Fixed ? " << gc_fixed << endl;
-         raise(SIGTRAP); 
+         bool ok = logRecordSanityCheck(entry, bf.page, lsn);
+
+         if (!ok) {
+            cout << "Page need fixing ? " << page_need_fixing << endl;
+            cout << "RU epoch in swizzled pointer " << ru_epoch << endl;
+            cout << "GC Fixed ? " << gc_fixed << endl;
+            raise(SIGTRAP);
+         }
+
+         DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload);
       }
-
       bf.page.GSN = dte->gsn;
-      bf.page.PLSN++;
+      bf.page.PLSN += nb_log_records;
       bf.page.last_written_lsn = lsn;
-      
-      DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload);
+
       return;
    };
    // -------------------------------------------------------------------------------------
@@ -638,31 +644,42 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_frame.readers_counter = 1;
       io_frame.mutex.lock();
       // -------------------------------------------------------------------------------------
-      LID lsn = INVALID_LSN;
       gc_fixed = false;
       // -------------------------------------------------------------------------------------
       auto& page_state = discard_state[pid];
-      u64 state = page_state.getLocked();
+      auto [lsn, nb_log_records] = page_state.getLocked();
+      LID* lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
       if (page_need_fixing) {
          gc_fixed = page_state.isClean();
       }
-      lsn = state;
+      if (page_need_fixing && !gc_fixed) {
+         ensure_lt(0, nb_log_records);
+         lsn = lsn_list[nb_log_records - 1];
+      } else {
+         // ensure it is clean ?
+      }
+      // lsn = state;
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
       u32 wait_for_io = 1;
       if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
          // issue the asynchronus log record read.
-         struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring); 
-         ensure(sqe != nullptr);
-         u64 off = utils::downAlign(lsn, 4096);
-         io_uring_prep_read(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf, 4096, off);
-         io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
-         io_uring_sqe_set_data64(sqe, lsn);
-         wait_for_io++;
+         ensure(page_state.isDiscarded());
+         for (u8 i = 0; i < nb_log_records; ++i) {
+            struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
+            ensure(sqe != nullptr);
+            u64 off = utils::downAlign(lsn_list[i], 4096);
+            // io_uring_prep_read(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf, 4096, off);
+            io_uring_prep_read_fixed(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf + 4096 * i, 4096, off, 0 /*buf_idx*/);
+            // io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+            sqe->flags |= IOSQE_FIXED_FILE;
+            io_uring_sqe_set_data64(sqe, lsn_list[i]);
+            wait_for_io++;
+         }
       }
       // readPageSync(pid, bf.page);
-      struct io_uring_sqe *sqe = io_uring_get_sqe(&cr::Worker::my().ring);
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
       ensure(sqe != nullptr);
       io_uring_prep_read(sqe, 0 /*ssd_fd*/, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
       io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
@@ -675,27 +692,28 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          WorkerCounters::myCounters().read_operations_counter++;
       }
       // -------------------------------------------------------------------------------------
-      struct io_uring_cqe* cqes[2];
+      struct io_uring_cqe* cqes[1 + FLAGS_max_log_records_to_discard];
       u32 ready = io_uring_peek_batch_cqe(&cr::Worker::my().ring, cqes, wait_for_io);
       ensure_equal(ready, wait_for_io);
       bool seen_page = false;
       for (int i = 0; i < wait_for_io; ++i) {
-         auto *cqe = cqes[i];
+         auto* cqe = cqes[i];
          u64 data = io_uring_cqe_get_data64(cqe);
          if (data & (1ul << 63)) {
             ensure(!seen_page);
-            ensure_equal(data & ~(1ul << 63) , pid);
+            ensure_equal(data & ~(1ul << 63), pid);
             seen_page = true;
             ensure_equal(cqe->res, PAGE_SIZE);
          } else {
             // TODO: check the lsn lists.
-            ensure_equal(data, lsn);
+            // ensure_equal(data, lsn);
             ensure_equal(cqe->res, 4096);
          }
       }
       io_uring_cq_advance(&cr::Worker::my().ring, wait_for_io);
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
+         ru_discard_set.data[bf.page.ru_epoch % max_open_ru_epochs].deleted.fetch_add(1);
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
@@ -711,28 +729,30 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       // ATTENTION: Fill the BF
       paranoid(!bf.header.is_being_written_back);
-      bf.header.last_written_plsn = bf.page.PLSN;
       bf.header.state = BufferFrame::STATE::LOADED;
       bf.header.pid = pid;
+      bf.header.last_written_plsn = bf.page.PLSN;
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
          // THINK of this: Is the last written lsn of a dirty page represents it's ru_epoch ?
+         // TODO(mfd) : Do this sanity check for all log records.
          u32 log_id = cr::LogManager::global->LSN2LogID(lsn);
          if (log_id != 1 + (bf.page.ru_epoch % max_open_ru_epochs)) {
             cerr << "RU epoch is swizzled pointer " << ru_epoch << endl;
             bf.page.dump();
          }
          ensure_equal(log_id, 1 + (bf.page.ru_epoch % max_open_ru_epochs));
-         if (log_id == 0) {
-            cerr << "[ERROR] " << bf.page.prev_ru_epoch << endl;
-            cerr << "[ERROR] " << bf.page.ru_epoch << endl;
-         }
          ensure(log_id != 0);
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
-         fix_dirty_page(bf, lsn);
+         ensure_lte(nb_log_records, FLAGS_max_log_records_to_discard);
+         fix_dirty_page(bf, lsn_list, nb_log_records);
+         ensure(bf.header.pending_lsn.empty());
+         for (u8 i = 0; i < nb_log_records; ++i) {
+            bf.header.pending_lsn.push_back(lsn_list[i]);
+         }
       } else {
          ensure(bf.header.logging == nullptr);
       }

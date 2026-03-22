@@ -34,6 +34,7 @@ struct BufferFrame {
       // -------------------------------------------------------------------------------------
       cr::Logging *logging = nullptr;
       bool flush_sink_log = false;
+      std::vector<LID> pending_lsn;
       // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
@@ -81,8 +82,10 @@ struct BufferFrame {
       s64 prev_ru_epoch = -1; // TODO(mfd) : Used just for debugging, remove later
       s64 ru_epoch = -1;
       LID last_written_lsn = INVALID_LSN;
+      s32 prev_log_id = -1; // TODO(mfd) : Used just for debugging, remove later
+      s32 log_id = -1; // TODO(mfd) : Used just for debugging, remove later
       u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
-             - sizeof(fdp_plid) - sizeof(nbfixed) - 2 * sizeof(ru_epoch) - sizeof(last_written_lsn)];  // Datastruture BE CAREFUL HERE !!!!!
+             - sizeof(fdp_plid) - sizeof(nbfixed) - 2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - 2*sizeof(log_id)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
@@ -94,19 +97,7 @@ struct BufferFrame {
           prev_ru_epoch = s64(-1);
           last_written_lsn = INVALID_LSN;
       }
-      void dump()
-      {
-         cout << "Page @ " << this << "\n"
-              << "  PLSN: " << PLSN << "\n"
-              << "  GSN: " << GSN << "\n"
-              << "  dt_id: " << dt_id << "\n"
-              << "  magic_debugging_number: " << magic_debugging_number << "\n"
-              << "  fdp_plid: " << fdp_plid << "\n"
-              << "  nbfixed: " << nbfixed << "\n"
-              << "  prev_ru_epoch: " << prev_ru_epoch << "\n"
-              << "  ru_epoch: " << ru_epoch << "\n"
-              << "  last_written_lsn: " << last_written_lsn << "\n";
-      }
+      void dump();
    };
    // -------------------------------------------------------------------------------------
    struct Header header;
@@ -119,7 +110,7 @@ struct BufferFrame {
    inline bool isFree() const { return header.state == STATE::FREE; }
    inline bool canDiscard() const {
       return page.ru_epoch != s64(-1)
-             && ((page.PLSN - header.last_written_plsn) == 1);
+             && ((page.PLSN - header.last_written_plsn) <= FLAGS_max_log_records_to_discard);
    }
    // -------------------------------------------------------------------------------------
    // Pre: bf is exclusively locked
@@ -139,6 +130,7 @@ struct BufferFrame {
       header.flush_sink_log = false;
       header.contention_tracker.reset();
       header.keep_in_memory = false;
+      header.pending_lsn.clear();
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
    // -------------------------------------------------------------------------------------

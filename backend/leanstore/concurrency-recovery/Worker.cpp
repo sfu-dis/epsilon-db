@@ -23,6 +23,8 @@ namespace cr
 thread_local Worker* Worker::tls_ptr = nullptr;
 std::shared_mutex Worker::global_mutex;  // Unused
 // -------------------------------------------------------------------------------------
+static constexpr u64 LOG_DEV_BLK_SIZE = 4096UL;
+// -------------------------------------------------------------------------------------
 std::unique_ptr<atomic<u64>[]> Worker::global_workers_current_snapshot;  // All transactions < are committed
 atomic<u64> Worker::global_oldest_all_start_ts = 0;
 atomic<u64> Worker::global_oldest_oltp_start_ts = 0;
@@ -47,16 +49,21 @@ Worker::Worker(u64 worker_id, Worker** all_workers, u64 workers_count, HistoryTr
       global_workers_current_snapshot[worker_id] = 0;
       // -------------------------------------------------------------------------------------
       u32 flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
-      // TODO(mfd) : the depth of the queue is 1 + the number of log records that can be discarded
-      int rc = io_uring_queue_init(2, &this->ring, flags);
+      int rc = io_uring_queue_init(1 + FLAGS_max_log_records_to_discard, &this->ring, flags);
       ensure_equal(rc , 0);
       int devices[2] = {ssd_fd, log_fd};
-      rc = io_uring_register_files(&this->ring, devices, 2);
+      u32 nreg = FLAGS_wal ? 2 : 1;
+      rc = io_uring_register_files(&this->ring, devices, nreg);
       ensure_equal(rc, 0);
       // TODO(mfd) : Considering registering the log_fd and ssd_fd for all rings.
-      log_record_buf = static_cast<u8*>(aligned_alloc(4096, 4096));
+      log_record_buf = static_cast<u8*>(aligned_alloc(4096, FLAGS_max_log_records_to_discard * LOG_DEV_BLK_SIZE));
       ensure(log_record_buf != nullptr);
-      std::memset(log_record_buf, 0, 4096);
+      std::memset(log_record_buf, 0, FLAGS_max_log_records_to_discard * LOG_DEV_BLK_SIZE);
+      struct iovec iov;
+      iov.iov_base = log_record_buf;
+      iov.iov_len = 4096 * FLAGS_max_log_records_to_discard;
+      rc = io_uring_register_buffers(&this->ring, &iov, 1);
+      ensure_equal(rc, 0);
    }
    cc.wt_pg.local_workers_tx_id = std::make_unique<std::atomic<TXID>[]>(workers_count);
    worker_gsn_clock = Logging::global_sync_to_this_gsn.load();

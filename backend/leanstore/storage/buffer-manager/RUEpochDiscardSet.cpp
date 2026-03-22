@@ -13,6 +13,8 @@ void BufferManager::RUEpochDiscardSet::reset()
    ensure_equal(pids.size(), 0);
    ensure(is_garbage_collected == true);
    ensure_equal(done_gc, 0);
+   ensure(force_gc == false);
+   offset_batch = 0;
    inserted = 0;
    deleted = 0;
    is_garbage_collected = false;
@@ -58,7 +60,14 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
    s32 i = invalid.load(std::memory_order_acquire);
    s32 tot = total.load(std::memory_order_acquire);
    double per = (i+d) * 1.0f / tot;
-   bool ok = per > 0.7;
+   bool ok = false;
+   if (force_gc) {
+      printf("[WARN] Forcing GC \n");
+      force_gc = false;
+      ok =  true;
+   } else {
+      ok = per > FLAGS_ru_gc_threshold;
+   }
    if (ok || (++cnt % 1024) == 0) {
       printf("\n ru_epoch = %ld tot = %d, invalid = %d, to_gc = %d => per %f %%\n", cur_ru_epoch, tot, i, d, per * 100);
    }

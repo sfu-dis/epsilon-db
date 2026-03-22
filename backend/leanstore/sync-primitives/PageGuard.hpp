@@ -176,6 +176,7 @@ retry:
             goto retry;
          }
       }
+      bool first_entry_in_log = false;
       if (bf->header.logging != nullptr) {
          if (bf->header.logging != &logging) {
             if (logging.log_id != 0) {
@@ -184,8 +185,11 @@ retry:
                bf->page.dump();
                raise(SIGTRAP);
             }
+            first_entry_in_log = true;
             bf->header.flush_sink_log = true;
          }
+      } else {
+         first_entry_in_log = true;
       }
       bf->header.logging = &logging;
       if (!cr::LogManager::global->isPartitionedByWorker()) {
@@ -200,7 +204,28 @@ retry:
       auto handler = logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
       logging.active_dt_entry->ru_epoch = bf->page.ru_epoch;
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
-      bf->page.last_written_lsn = handler.lsn;
+      logging.active_dt_entry->prev_lsn = first_entry_in_log ? INVALID_LSN : bf->page.last_written_lsn;
+      if (FLAGS_wal_pwrite) {
+         bf->page.last_written_lsn = handler.lsn;
+         bf->page.log_id = logging.log_id;
+      }
+      auto& pending_lsn = bf->header.pending_lsn;
+      if (FLAGS_enable_discarding && !FLAGS_fake_log_reapply) {
+         if (logging.log_id != 0) {
+            // ensure(!first_entry_in_log || (pending_lsn.size() == 0));
+            if (first_entry_in_log) ensure_equal(pending_lsn.size(), 0);
+            if (pending_lsn.size() < FLAGS_max_log_records_to_discard) {
+               pending_lsn.push_back(handler.lsn);
+               if (pending_lsn.size() != (bf->page.PLSN - bf->header.last_written_plsn)) {
+                  bf->page.dump();
+                  raise(SIGTRAP);
+               }
+               ensure_equal(pending_lsn.size(), bf->page.PLSN - bf->header.last_written_plsn);
+            }
+         } else {
+            // ensure(bf->header.pending_lsn.empty());
+         }
+      }
       return handler;
    }
    inline void submitWALEntry(u64 total_size)

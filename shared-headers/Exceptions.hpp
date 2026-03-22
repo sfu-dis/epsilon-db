@@ -64,6 +64,15 @@ Generic_Exception(TODO);
         } \
     } while (0)
 
+#define ensure_equal_goto_fail(a, b) \
+    do { \
+        if ((a) != (b)) { \
+            fprintf(stderr, "Equality check failed: %s != %s (values: %lld vs %lld) at %s:%d\n", \
+                    #a, #b, (long long)(a), (long long)(b), __FILE__, __LINE__); \
+            goto fail; \
+        } \
+    } while (0)
+
 #define ensure_lt(a, b) \
     do { \
         if ((a) >= (b)) { \

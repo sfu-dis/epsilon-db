@@ -20,6 +20,7 @@ struct WALEntry {
    u16 size;
    u64 magic_debugging_number = 99;
    std::atomic<LID> lsn;
+   LID prev_lsn;
    void computeCRC() { magic_debugging_number = utils::CRC(reinterpret_cast<u8*>(this) + sizeof(u64), size - sizeof(u64)); }
    void checkCRC() const
    {
@@ -34,6 +35,7 @@ struct WALEntry {
       std::cout << "  size = " << size << std::endl;
       std::cout << "  magic_debugging_number = " << magic_debugging_number << std::endl;
       std::cout << "  lsn = " << lsn.load() << std::endl;
+      std::cout << "  prev lsn = " << prev_lsn << std::endl;
    }
 
 private:
@@ -44,7 +46,7 @@ private:
          case TYPE::TX_ABORT:        return "TX_ABORT";
          case TYPE::DT_SPECIFIC:     return "DT_SPECIFIC";
          case TYPE::CARRIAGE_RETURN: return "CARRIAGE_RETURN";
-         case TYPE::SKIP: return "SKIP";
+         case TYPE::SKIP:            return "SKIP";
          default:                    return "UNKNOWN";
       }
    }
@@ -61,6 +63,16 @@ struct WALDTEntry : WALEntry {
    PID pid;
    s64 ru_epoch; // TODO(mfd) : just for debugging, remove later
    u8 payload[];
+   
+   void dump()
+   {
+       std::cout << "WALDTEntry dump:\n";
+       WALEntry::dump();
+       std::cout << "  gsn       = " << gsn << "\n";
+       std::cout << "  dt_id     = " << dt_id << "\n";
+       std::cout << "  pid       = " << pid << "\n";
+       std::cout << "  ru_epoch  = " << ru_epoch << "\n";
+   }
 };
 // -------------------------------------------------------------------------------------
 }  // namespace cr

@@ -126,6 +126,9 @@ DECLARE_bool(use_fdp_rumaw);
 DECLARE_bool(enable_discarding);
 DECLARE_bool(fake_log_reapply);
 DECLARE_int32(ru_gc_threads);
+DECLARE_uint32(max_log_records_to_discard);
+DECLARE_double(ru_gc_threshold);
+DECLARE_uint32(overprovisioning_ru_epochs);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------

@@ -129,6 +129,9 @@ public:
       std::unordered_map<PID, LID> pids;
       void* mmaped_log = nullptr;
       u64 log_segment_start = -1;
+      bool force_gc = false;
+      alignas(CACHE_LINE_SIZE) atomic<u64> offset_batch{0};
+      // -------------------------------------------------------------------------------------
       alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> deleted{0};
       alignas(CACHE_LINE_SIZE) atomic<bool> is_garbage_collected{false};
