@@ -91,7 +91,7 @@ struct PageState {
       u8 nb_log_records = (v1 & nb_log_records_mask) >> nb_log_records_shift;
       return {lsn, nb_log_records};
    }
-   bool tryDiscard(const std::vector<LID>& pending_lsn)
+   bool tryDiscard(LID* pending_lsn, u64 pending_lsn_count)
    {
       u64 v1 = raw.load(std::memory_order_acquire);
       if ((v1 & latch_bit) || ((v1 & state_hot_mask) != state_hot_mask)) {
@@ -101,19 +101,15 @@ struct PageState {
          return false;
       }
       ensure(isHot());
-      // For now, just store the length for debugging
-      u64 pending_lsns = pending_lsn.size();
       u64 new_value = 0;
-      if (pending_lsns == 1) {
-         new_value = pending_lsn.back() | state_discarded_mask | (pending_lsns << nb_log_records_shift);
+      if (pending_lsn_count == 1) {
+         new_value = pending_lsn[0] | state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
       } else {
-         auto* lsn_list = new LID[pending_lsns];
+         auto* lsn_list = new LID[pending_lsn_count];
          ensure(lsn_list != nullptr);
-         memcpy(lsn_list, pending_lsn.data(), pending_lsns * sizeof(LID));
-         new_value = reinterpret_cast<u64>(lsn_list) | state_discarded_mask | (pending_lsns << nb_log_records_shift);
-         // __asm__ volatile("int3");
+         memcpy(lsn_list, pending_lsn, pending_lsn_count * sizeof(LID));
+         new_value = reinterpret_cast<u64>(lsn_list) | state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
       }
-      // return raw.compare_exchange_strong(v1, new_value);
       raw.store(new_value, std::memory_order_release);
       return true;
    }

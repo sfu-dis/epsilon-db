@@ -16,6 +16,7 @@ struct Logging; // Forward Declaration
 }
 namespace storage
 {
+static constexpr u64 MAX_PENDING_LSN_COUNT = 8;
 // -------------------------------------------------------------------------------------
 const u64 PAGE_SIZE = 4 * 1024;
 // -------------------------------------------------------------------------------------
@@ -34,7 +35,8 @@ struct BufferFrame {
       // -------------------------------------------------------------------------------------
       cr::Logging *logging = nullptr;
       bool flush_sink_log = false;
-      std::vector<LID> pending_lsn;
+      u8 pending_lsn_count = 0;
+      LID pending_lsn[MAX_PENDING_LSN_COUNT];
       // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
@@ -130,7 +132,7 @@ struct BufferFrame {
       header.flush_sink_log = false;
       header.contention_tracker.reset();
       header.keep_in_memory = false;
-      header.pending_lsn.clear();
+      header.pending_lsn_count = 0;
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
    // -------------------------------------------------------------------------------------

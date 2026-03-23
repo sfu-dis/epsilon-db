@@ -749,10 +749,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
          ensure_lte(nb_log_records, FLAGS_max_log_records_to_discard);
          fix_dirty_page(bf, lsn_list, nb_log_records);
-         ensure(bf.header.pending_lsn.empty());
-         for (u8 i = 0; i < nb_log_records; ++i) {
-            bf.header.pending_lsn.push_back(lsn_list[i]);
-         }
+         ensure_equal(bf.header.pending_lsn_count, 0);
+         std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
+         bf.header.pending_lsn_count = nb_log_records;
       } else {
          ensure(bf.header.logging == nullptr);
       }

@@ -231,11 +231,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // I think in both cases it is fine to just evict the page. Especially
             // In the second case since the page should be mapped now to a new RU epoch.
             // Be aware of deadlock between page latch and page state latch
-            ensure(bf.header.pending_lsn.size() > 0);
-            ensure(bf.header.pending_lsn.size() <= FLAGS_max_log_records_to_discard);
-            ensure_equal(bf.header.pending_lsn.back(), last_write_lsn);
-            ensure_equal(bf.header.pending_lsn.size(), bf.page.PLSN - bf.header.last_written_plsn);
-            bool success = discard_state[evicted_pid].tryDiscard(bf.header.pending_lsn);
+            ensure(bf.header.pending_lsn_count > 0);
+            ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
+            ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
+            ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
+            bool success = discard_state[evicted_pid].tryDiscard(bf.header.pending_lsn, bf.header.pending_lsn_count);
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
                c_guard.guard.unlock();
@@ -316,7 +316,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      paranoid(!cooled_bf->header.is_being_written_back);
                      cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
                      cooled_bf->header.logging = nullptr;
-                     cooled_bf->header.pending_lsn.clear();
+                     cooled_bf->header.pending_lsn_count = 0;
                      cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);

@@ -209,21 +209,19 @@ retry:
          bf->page.last_written_lsn = handler.lsn;
          bf->page.log_id = logging.log_id;
       }
-      auto& pending_lsn = bf->header.pending_lsn;
+      LID *pending_lsn = bf->header.pending_lsn;
       if (FLAGS_enable_discarding && !FLAGS_fake_log_reapply) {
          if (logging.log_id != 0) {
             // ensure(!first_entry_in_log || (pending_lsn.size() == 0));
-            if (first_entry_in_log) ensure_equal(pending_lsn.size(), 0);
-            if (pending_lsn.size() < FLAGS_max_log_records_to_discard) {
-               pending_lsn.push_back(handler.lsn);
-               if (pending_lsn.size() != (bf->page.PLSN - bf->header.last_written_plsn)) {
+            if (first_entry_in_log) ensure_equal(bf->header.pending_lsn_count, 0);
+            if (bf->header.pending_lsn_count < FLAGS_max_log_records_to_discard) {
+               pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
+               if (bf->header.pending_lsn_count != (bf->page.PLSN - bf->header.last_written_plsn)) {
                   bf->page.dump();
                   raise(SIGTRAP);
                }
-               ensure_equal(pending_lsn.size(), bf->page.PLSN - bf->header.last_written_plsn);
+               ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
             }
-         } else {
-            // ensure(bf->header.pending_lsn.empty());
          }
       }
       return handler;
