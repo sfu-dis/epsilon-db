@@ -389,11 +389,13 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       written_bf.header.is_being_written_back = false;
                       // written_bf.header.logging = nullptr;
                       // written_bf.header.flush_sink_log = false;
-                      s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
-                      if (previous_ru_epoch != -1 && previous_ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)) {
-                         s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
+                      if (FLAGS_enable_discarding) {
+                         s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
+                         if (previous_ru_epoch != -1 && previous_ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)) {
+                            s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
+                         }
+                         ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       }
-                      ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       o_guard.guard.unlock();
                    }
                 }

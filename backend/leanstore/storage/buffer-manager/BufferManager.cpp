@@ -653,11 +653,15 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       gc_fixed = false;
       // -------------------------------------------------------------------------------------
-      auto& page_state = discard_state[pid];
-      auto [lsn, nb_log_records] = page_state.getLocked();
-      LID* lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
+      LID lsn = INVALID_LSN;
+      u8 nb_log_records = 0;
+      LID* lsn_list = nullptr;
+      if (FLAGS_enable_discarding) {
+         std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
+         lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
+      }
       if (page_need_fixing) {
-         gc_fixed = page_state.isClean();
+         gc_fixed = discard_state[pid].isClean();
       }
       if (page_need_fixing && !gc_fixed) {
          ensure_lt(0, nb_log_records);
@@ -672,7 +676,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       u32 wait_for_io = 1;
       if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
          // issue the asynchronus log record read.
-         ensure(page_state.isDiscarded());
+         ensure(discard_state[pid].isDiscarded());
          for (u8 i = 0; i < nb_log_records; ++i) {
             struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
             ensure(sqe != nullptr);
@@ -763,7 +767,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       } else {
          ensure(bf.header.logging == nullptr);
       }
-      page_state.unlockBF(&bf);
+      if (FLAGS_enable_discarding) {
+         discard_state[pid].unlockBF(&bf);
+      }
       // -------------------------------------------------------------------------------------
       jumpmuTry()
       {
