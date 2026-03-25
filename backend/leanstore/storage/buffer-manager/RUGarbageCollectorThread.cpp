@@ -131,7 +131,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             ensure(ok);
 
             to_apply_log_records_stack.push_back(entry);
-            // if (entry->prev_lsn == INVALID_LSN) break;
 
             if (to_apply_log_records_stack.size() > FLAGS_max_log_records_to_discard) {
                printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
@@ -150,14 +149,15 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
          to_apply_log_records = to_apply_log_records_stack.size();
 
-         ensure(to_apply_log_records != 0);  // Not sure
+         ensure(to_apply_log_records != 0);
          // Sanity checks.
          ensure_equal_goto_fail(to_apply_log_records, to_fix_pids[idx].nb_log_records);
          for (u64 i = 0; i < to_apply_log_records; ++i) {
             // if (to_apply_log_records_stack[i]->lsn != to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]) goto fail;
             ensure_equal_goto_fail(to_apply_log_records_stack[i]->lsn, to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]);
          }
-         // TODO(mfd) : Make sure the last log record we see going backward is the first LSN.
+
+         if (to_apply_log_records > 1) randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
 
          if (to_apply_log_records > 0) {
             for (u64 i = to_apply_log_records - 1; i != 0; --i) {

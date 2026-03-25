@@ -68,7 +68,9 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd) :
             perror("mlock");
             raise(SIGTRAP);
          }
-         // madvise(entries, RU_SIZE * sizeof(discard_entry), MAP_POPULATE);
+         if (FLAGS_max_log_records_to_discard > 1) {
+            per_pp_allocator = std::make_unique<CustomSlabAllocator<LID>[]>(FLAGS_pp_threads);
+         }
          if (FLAGS_recover) {
             // TODO(mfd) : Get all workers to reconstruct the discard state.
             // For now we just assume we recover from a clean state.
@@ -384,6 +386,11 @@ BufferFrame& BufferManager::randomBufferFrame()
 {
    auto rand_buffer_i = utils::RandomGenerator::getRand<u64>(0, dram_pool_size);
    return bfs[rand_buffer_i];
+}
+CustomSlabAllocator<LID>& BufferManager::randomAllocator()
+{
+   auto allocator_idx = utils::RandomGenerator::getRand<u64>(0, FLAGS_pp_threads);
+   return per_pp_allocator[allocator_idx];
 }
 // -------------------------------------------------------------------------------------
 // returns a *write locked* new buffer frame
@@ -752,6 +759,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure_equal(bf.header.pending_lsn_count, 0);
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
+         if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);
       }

@@ -235,7 +235,15 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
             ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
             ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
-            bool success = discard_state[evicted_pid].tryDiscard(bf.header.pending_lsn, bf.header.pending_lsn_count);
+            LID *pending_lsn = nullptr;
+            if (bf.header.pending_lsn_count == 1) {
+               pending_lsn = bf.header.pending_lsn;
+            } else {
+               pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
+               ensure(pending_lsn != nullptr);
+               std::memcpy(pending_lsn, bf.header.pending_lsn, bf.header.pending_lsn_count * sizeof(LID));
+            }
+            bool success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count);
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
                c_guard.guard.unlock();

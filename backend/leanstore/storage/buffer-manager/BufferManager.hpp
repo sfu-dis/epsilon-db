@@ -1,6 +1,7 @@
 #pragma once
 #include "BMPlainGuard.hpp"
 #include "BufferFrame.hpp"
+#include "CustomSlabAllocator.hpp"
 #include "DTRegistry.hpp"
 #include "FreeList.hpp"
 #include "Partition.hpp"
@@ -105,6 +106,7 @@ class BufferManager
      u64 pad[7];
    };
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
+   std::unique_ptr<CustomSlabAllocator<LID>[]> per_pp_allocator;
    std::atomic<u64> tot_gc_writes = 0;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    void ruGarbageCollectorThread(u32 gc_id);
@@ -211,6 +213,7 @@ public:
    BufferFrame& randomBufferFrame();
    Partition& getPartition(PID);
    u64 getPartitionID(PID);
+   CustomSlabAllocator<LID>& randomAllocator();
    // -------------------------------------------------------------------------------------
    // Temporary hack: let workers evict the last page they used
    static thread_local BufferFrame* last_read_bf;

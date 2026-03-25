@@ -101,14 +101,11 @@ struct PageState {
          return false;
       }
       ensure(isHot());
-      u64 new_value = 0;
+      u64 new_value = state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
       if (pending_lsn_count == 1) {
-         new_value = pending_lsn[0] | state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
+         new_value |= pending_lsn[0];
       } else {
-         auto* lsn_list = new LID[pending_lsn_count];
-         ensure(lsn_list != nullptr);
-         memcpy(lsn_list, pending_lsn, pending_lsn_count * sizeof(LID));
-         new_value = reinterpret_cast<u64>(lsn_list) | state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
+         new_value |= reinterpret_cast<u64>(pending_lsn);
       }
       raw.store(new_value, std::memory_order_release);
       return true;
