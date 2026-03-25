@@ -3,6 +3,8 @@
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/concurrency-recovery/Logging.hpp"
 // -------------------------------------------------------------------------------------
+#include "leanstore/profiling/counters/GCCounters.hpp"
+// -------------------------------------------------------------------------------------
 #include <liburing.h>
 // -------------------------------------------------------------------------------------
 namespace leanstore
@@ -111,6 +113,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          } else {
             frame.state = IOFrame::STATE::TO_DELETE;
          }
+         COUNTERS_BLOCK(gc)
+         {
+            GCCounters::myCounters().dirty_in_other_ru_epoch++;
+         }
          return;
       }
 
@@ -157,7 +163,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             ensure_equal_goto_fail(to_apply_log_records_stack[i]->lsn, to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]);
          }
 
-         if (to_apply_log_records > 1) randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
+         if (to_apply_log_records > 1)
+            randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
 
          if (to_apply_log_records > 0) {
             for (u64 i = to_apply_log_records - 1; i != 0; --i) {
@@ -234,6 +241,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          partition.io_ht.remove(pid);
       } else {
          frame.state = IOFrame::STATE::TO_DELETE;
+      }
+      COUNTERS_BLOCK(gc)
+      {
+         GCCounters::myCounters().total_fixed++;
       }
    };
 
@@ -319,6 +330,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                auto& page_state = discard_state[pid];
 
                if (page_state.isClean()) {
+                  COUNTERS_BLOCK(gc)
+                  {
+                     GCCounters::myCounters().clean++;
+                  }
                   continue;
                }
                // if state is a buffer frame, Issue the write to that page.
@@ -330,6 +345,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                if (page_state.isHot()) {
                   // Page is in buffer frame
                   // For now just continue, I'll handle that later
+                  COUNTERS_BLOCK(gc)
+                  {
+                     GCCounters::myCounters().hot_fixed++;
+                  }
                   continue;
                }
                // If I am not sure about the page state, assume pessimistically it is discarded.

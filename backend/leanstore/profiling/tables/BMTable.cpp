@@ -3,6 +3,7 @@
 
 #include "leanstore/Config.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
+#include "leanstore/profiling/counters/GCCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/utils/ThreadLocalAggregator.hpp"
 // -------------------------------------------------------------------------------------
@@ -141,6 +142,20 @@ void BMTable::open()
    columns.emplace("tximax", [&](Column& col) { col << (txIncWaitHist.getMax()); });
    columns.emplace("failed_try_pop", [&](Column& col) {
          col << (sum(WorkerCounters::worker_counters, &WorkerCounters::failed_try_pop) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_try_pop));
+   });
+   // -------------------------------------------------------------------------------------
+   // GARBAGE COLLECTION STATS
+   columns.emplace("gc_fixed_mib", [&](Column& col) {
+      col << (sum(GCCounters::gc_counters, &GCCounters::total_fixed) * PAGE_SIZE / 1024.0 / 1024.0);
+   });
+   columns.emplace("fasle_dirty", [&](Column& col) {
+      col << sum(GCCounters::gc_counters, &GCCounters::dirty_in_other_ru_epoch);
+   });
+   columns.emplace("gc_clean", [&](Column& col) {
+      col << sum(GCCounters::gc_counters, &GCCounters::clean);
+   });
+   columns.emplace("gc_hot", [&](Column& col) {
+      col << sum(GCCounters::gc_counters, &GCCounters::hot_fixed);
    });
 }
 // -------------------------------------------------------------------------------------
