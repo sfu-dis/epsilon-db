@@ -1,4 +1,5 @@
 #include "BufferManager.hpp"
+#include "CustomSlabAllocator.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/concurrency-recovery/Logging.hpp"

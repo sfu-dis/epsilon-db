@@ -157,6 +157,10 @@ void BMTable::open()
    columns.emplace("gc_hot", [&](Column& col) {
       col << sum(GCCounters::gc_counters, &GCCounters::hot_fixed);
    });
+   // -------------------------------------------------------------------------------------
+   columns.emplace("discard_state_peak_mem_usage", [&](Column& col) {
+      col << BMC::global_bf->bm_stats.discard_state_peak_mem_usage.load(std::memory_order_acquire) / 1073741824.0;
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

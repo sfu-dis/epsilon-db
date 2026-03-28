@@ -1,7 +1,6 @@
 #pragma once
 #include "BMPlainGuard.hpp"
 #include "BufferFrame.hpp"
-#include "CustomSlabAllocator.hpp"
 #include "DTRegistry.hpp"
 #include "FreeList.hpp"
 #include "Partition.hpp"
@@ -37,6 +36,7 @@ struct WALDTEntry;
 }
 namespace storage
 {
+template <typename T> class CustomSlabAllocator;  // Forward declaration
 // -------------------------------------------------------------------------------------
 struct FreedBfsBatch {
    BufferFrame *freed_bfs_batch_head = nullptr, *freed_bfs_batch_tail = nullptr;
@@ -120,6 +120,7 @@ public:
    atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<s64> reclaimed_ru_epoch = -1; // persistant
    atomic<s64> reclaiming_ru_epoch = -1; // persistant
+   u64 pad[7];
    static u64 RU_SIZE;
    PageState *discard_state;
    // XXX(mfd) : this depends on how many RUs are in the device
@@ -265,6 +266,11 @@ public:
    BufferFrame& getContainingBufferFrame(const u8*);  // get the buffer frame containing the given ptr address
    // -------------------------------------------------------------------------------------
    bool logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page& page, LID lsn);
+   // -------------------------------------------------------------------------------------
+   // STATS
+   struct Stats {
+      atomic<u64> discard_state_peak_mem_usage = 0;
+   } bm_stats;
 };
 // -------------------------------------------------------------------------------------
 class BMC

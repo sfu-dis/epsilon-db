@@ -1,6 +1,7 @@
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
 #include "BufferManager.hpp"
+#include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
 #include "Tracing.hpp"
 #include "leanstore/Config.hpp"

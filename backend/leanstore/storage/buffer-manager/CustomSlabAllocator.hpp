@@ -1,5 +1,6 @@
 #pragma once
 #include "Units.hpp"
+#include "BufferManager.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -27,7 +28,8 @@ class CustomSlabAllocator
 
       void allocate_new_chunk()
       {
-         T* base = static_cast<T*>(std::malloc(CHUNK_OBJS * n * sizeof(T)));
+         const u64 chunk_bytes = CHUNK_OBJS * n * sizeof(T);
+         T* base = static_cast<T*>(std::malloc(chunk_bytes));
          ensure(base != nullptr);
          chunks.emplace_back(base);
 
@@ -35,6 +37,11 @@ class CustomSlabAllocator
             T* addr = base + i * n;
             *reinterpret_cast<T**>(addr) = next_free;
             next_free = addr;
+         }
+
+         COUNTERS_BLOCK(discard_state_peak_mem_usage)
+         {
+            BMC::global_bf->bm_stats.discard_state_peak_mem_usage.fetch_add(chunk_bytes);
          }
       }
 

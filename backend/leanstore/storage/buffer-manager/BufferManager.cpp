@@ -2,6 +2,7 @@
 
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
+#include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/storage/btree/core/BTreeGeneric.hpp"
@@ -67,6 +68,10 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd) :
          if (rc == -1) {
             perror("mlock");
             raise(SIGTRAP);
+         }
+         COUNTERS_BLOCK(discard_state_peak_mem_usage)
+         {
+            bm_stats.discard_state_peak_mem_usage.store(total_blocks_in_ssd * sizeof(PageState));
          }
          if (FLAGS_max_log_records_to_discard > 1) {
             per_pp_allocator = std::make_unique<CustomSlabAllocator<LID>[]>(FLAGS_pp_threads);
