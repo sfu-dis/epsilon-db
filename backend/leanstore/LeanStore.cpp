@@ -159,6 +159,16 @@ LeanStore::LeanStore()
    buffer_manager->startBackgroundThreads();
 }
 // -------------------------------------------------------------------------------------
+std::string to_hhmmss(uint64_t total_seconds) {
+    uint64_t hours   = total_seconds / 3600;
+    uint64_t minutes = (total_seconds % 3600) / 60;
+    uint64_t seconds = total_seconds % 60;
+
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%02lu:%02lu:%02lu",
+                  hours, minutes, seconds);
+    return std::string(buffer);
+}
 void LeanStore::startProfilingThread()
 {
    std::thread profiling_thread([&]() {
@@ -173,17 +183,13 @@ void LeanStore::startProfilingThread()
       profiling::CRTable cr_table;
       profiling::LatencyTable latency_table;
       std::vector<profiling::ProfilingTable*> tables = {&configs_table, &bm_table, &dt_table, &cpu_table, &cr_table};
+      // std::vector<profiling::ProfilingTable*> tables = {&bm_table, &cr_table};
       if (FLAGS_profile_latency) {
          tables.push_back(&latency_table);
       }
       // -------------------------------------------------------------------------------------
       std::vector<std::ofstream> csvs;
-      std::ofstream::openmode open_flags;
-      if (FLAGS_csv_truncate) {
-         open_flags = ios::trunc;
-      } else {
-         open_flags = ios::app;
-      }
+      std::ofstream::openmode open_flags = FLAGS_csv_truncate ? ios::trunc : ios::app;
       for (u64 t_i = 0; t_i < tables.size(); t_i++) {
          tables[t_i]->open();
          // -------------------------------------------------------------------------------------
@@ -202,12 +208,9 @@ void LeanStore::startProfilingThread()
       }
       // -------------------------------------------------------------------------------------
       config_hash = configs_table.hash();
+      // config_hash = 0;
       // -------------------------------------------------------------------------------------
       u64 seconds = 0;
-      u64 inital_max_pid = 0;
-      double inital_gib = 0;
-      LID prev_min_dur_gsn = 0;
-      LID prev_max_seen_gsn = 0;
       while (bg_threads_keep_running) {
          for (u64 t_i = 0; t_i < tables.size(); t_i++) {
             tables[t_i]->next();
@@ -217,7 +220,7 @@ void LeanStore::startProfilingThread()
             // CSV
             auto& csv = csvs[t_i];
             for (u64 r_i = 0; r_i < tables[t_i]->size(); r_i++) {
-               csv << seconds << "," << config_hash;
+               csv << to_hhmmss(seconds) << "," << config_hash;
                for (auto& c : tables[t_i]->getColumns()) {
                   csv << "," << c.second.values[r_i];
                }
@@ -227,98 +230,40 @@ void LeanStore::startProfilingThread()
             // TODO: Websocket, CLI
          }
          // -------------------------------------------------------------------------------------
-         const u64 tx = std::stoi(cr_table.get("0", "tx"));
-         const u64 olap_tx = std::stoi(cr_table.get("0", "olap_tx"));
-         const double tx_abort = std::stoi(cr_table.get("0", "tx_abort"));
-         const double tx_abort_pct = tx_abort * 100.0 / (tx_abort + tx);
-         const double rfa_pct = std::stod(cr_table.get("0", "rfa_committed_tx")) * 100.0 / tx;
-         const double remote_flushes_pct = 100.0 - rfa_pct;
-         // const double committed_gct_pct = std::stoi(cr_table.get("0", "gct_committed_tx")) * 100.0 / committed_tx;
          // Global Stats
-         global_stats.accumulated_tx_counter += tx;
+         global_stats.accumulated_tx_counter += std::stoi(cr_table.get("0", "tx"));
          // -------------------------------------------------------------------------------------
          // Console
          // -------------------------------------------------------------------------------------
-#if 0
-         const double instr_per_tx = cpu_table.workers_agg_events["instr"] / tx;
-         const double cycles_per_tx = cpu_table.workers_agg_events["cycle"] / tx;
-         const double l1_per_tx = cpu_table.workers_agg_events["L1-miss"] / tx;
-         const double llc_per_tx = cpu_table.workers_agg_events["LLC-miss"] / tx;
-#endif
-         // -------------------------------------------------------------------------------------
-         const u64 min_hardened_gsn = cr::Logging::global_min_gsn_flushed.load(std::memory_order_acquire);
-         const u64 max_hardened_gsn = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
-         ensure(min_hardened_gsn >= prev_min_dur_gsn);
-         ensure(max_hardened_gsn >= prev_max_seen_gsn);
-         const u64 min_dur_gsn_increment = min_hardened_gsn - prev_min_dur_gsn;
-         const u64 max_dur_gsn_increment = max_hardened_gsn - prev_max_seen_gsn;
-         prev_min_dur_gsn = min_hardened_gsn;
-         prev_max_seen_gsn = max_hardened_gsn;
-         const double dirty_read_pct = std::stod(bm_table.get("0", "dirty_pct"));
-         // using RowType = std::vector<variant<std::string, const char*, Table>>;
          if (FLAGS_print_tx_console) {
             tabulate::Table table;
-            // database used pages
-#if 0
-            double gib = (buffer_manager->consumedPages() * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0 / 1024.0);
-            uint64_t maxPid = std::accumulate(buffer_manager->partitions.begin(), buffer_manager->partitions.end(), 0, [](u64 acc, auto& partition) {
-               return std::max(acc, partition->next_pid);
-            });
-            uint64_t totalFree = std::accumulate(buffer_manager->partitions.begin(), buffer_manager->partitions.end(), 0, [](u64 acc, auto& partition) {
-               return acc + partition->freed_pids.size();
-            });
-            if (inital_max_pid == 0) {
-               inital_max_pid = maxPid;
-            }
-            if (inital_gib == 0) {
-               inital_gib = gib;
-            }
-#endif
-            // -------------------------------------------------------------------------------------
-            // to string rounded
-            // lambda function to convert double to string with 2 decimal places
-            auto to_string_rounded = [](double value, int precision = 2) {
-               std::ostringstream oss;
-               oss << std::fixed << std::setprecision(precision) << value;
-               return oss.str();
-            };
-            std::stringstream ss;
-            ss << std::setprecision(2) << std::fixed;
-            ss << std::setfill('0') << std::setw(2) << seconds / 3600 << ":";
-            std::string time_str = ss.str();
 
-            table.add_row({"t", "OLTP TX", "RF %", "Abort%", 
-                          "W MiB", "R MiB", /*"Instrs/TX", "Cycles/TX", "CPUs", "L1/TX", "LLC/TX", "GHz",
-                           "WAL GiB/s", "GCT GiB/s","Space G", "GCT Rounds", */ 
-                           "Discard MiB", "Dirty Read %" , "DurGSNIncr", "MaxGSNIncr", "GSN skew", "WAL GiB/s", "WALmtx %", 
-                           "gct_p1%", "gct_p2%", "gct_w%", "RUset mtx%", "pq mtx%", "partition mtx%"});
-            table.add_row({std::to_string(seconds), std::to_string(tx), 
-                        to_string_rounded(remote_flushes_pct), to_string_rounded(tx_abort_pct),
-                           /*std::to_string(olap_tx),*/ 
-                           bm_table.get("0", "w_mib"), bm_table.get("0", "r_mib"), /*std::to_string(instr_per_tx),
-                           std::to_string(cycles_per_tx), std::to_string(cpu_table.workers_agg_events["CPU"]), std::to_string(l1_per_tx),
-                           std::to_string(llc_per_tx), std::to_string(cpu_table.workers_agg_events["GHz"]), cr_table.get("0", "wal_write_gib"),
-                            bm_table.get("0", "space_usage_gib"), cr_table.get("0", "gct_rounds"), */
+            table.add_row({"t", "pre TX", "dur TX", "W MiB", "R MiB", "Discard MiB", "Dirty Read %" , "WAL GiB/s", "WALmtx %", 
+                           "gct_p1%", "gct_p2%", "gct_w%", "failed trypop", "GC Fix Mib/s", "False dirty", "GC Clean", "GC hot", "GSPeak GiB"});
+            table.add_row({to_hhmmss(seconds),
+                            cr_table.get("0", "tx"), 
+                            cr_table.get("0", "gct_committed_tx"),
+                            bm_table.get("0", "w_mib"),
+                            bm_table.get("0", "r_mib"),
                             bm_table.get("0", "discarded_mib"),
-                            to_string_rounded(dirty_read_pct),
-                            std::to_string(min_dur_gsn_increment),
-                            std::to_string(max_dur_gsn_increment),
-                            std::to_string(max_hardened_gsn - min_hardened_gsn),
+                            bm_table.get("0", "dirty_pct"),
                             cr_table.get("0", "gct_write_gib"),
-                            /* to_string_rounded(walbuf_contention), */
                             cr_table.get("0", "log_buf"),
                             cr_table.get("0", "gct_phase_1_pct"),
                             cr_table.get("0", "gct_phase_2_pct"),
                             cr_table.get("0", "gct_write_pct"),
-                            cr_table.get("0", "ru_discard_set"),
-                            cr_table.get("0", "precommitted_queue"),
-                            cr_table.get("0", "partition_ht"),
+                            bm_table.get("0", "failed_try_pop"),
+                            bm_table.get("0", "gc_fixed_mib"),
+                            bm_table.get("0", "false_dirty"),
+                            bm_table.get("0", "gc_clean"),
+                            bm_table.get("0", "gc_hot"),
+                            bm_table.get("0", "discard_state_peak_mem_usage"),
                            });
             // -------------------------------------------------------------------------------------
-            table.format().width(10);
-            table.column(0).format().width(6);
-            table.column(1).format().width(12);
-            // table.column(12).format().width(18);
+            table.format().width(8);
+            table.column(0).format().width(10);
+            table.column(1).format().width(10);
+            table.column(2).format().width(10);
             // table.column(13).format().width(22);
             // -------------------------------------------------------------------------------------
             auto print_table = [](tabulate::Table& table, std::function<bool(u64)> predicate) {
@@ -335,16 +280,17 @@ void LeanStore::startProfilingThread()
                   }
                }
             };
-            if (seconds == 0) {
+            if ((seconds % 30 ) == 0) {
+               cout << endl;
                print_table(table, [](u64 line_n) { return (line_n < 3) || (line_n == 4); });
             } else {
                print_table(table, [](u64 line_n) { return line_n == 4; });
             }
-            // -------------------------------------------------------------------------------------
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            seconds += 1;
-            std::locale::global(std::locale::classic());
          }
+         // -------------------------------------------------------------------------------------
+         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+         seconds += 1;
+         std::locale::global(std::locale::classic());
       }
       bg_threads_counter--;
    });
