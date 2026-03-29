@@ -78,6 +78,9 @@ struct LogManager {
    bool isPartitionedByPage() { return partition_by == PARTITION_BY::PAGE; }
    bool isPartitionedByRUepoch() { return partition_by == PARTITION_BY::RU_EPOCH; }
    // -------------------------------------------------------------------------------------
+   struct Stats {
+      atomic<u64> bytes_used = 0;
+   } log_stats;
 };
 // -------------------------------------------------------------------------------------
 }  // namespace cr

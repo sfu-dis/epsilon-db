@@ -1,6 +1,7 @@
 #include "CRTable.hpp"
 
 #include "leanstore/Config.hpp"
+#include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -82,6 +83,8 @@ void CRTable::open()
          col << (sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, id));
       });
    }
+   // -------------------------------------------------------------------------------------
+   columns.emplace("log_space_usage", [&](Column& col) { col << cr::LogManager::global->log_stats.bytes_used / 1073741824.0; });
 }
 // -------------------------------------------------------------------------------------
 void CRTable::next()

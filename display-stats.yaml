@@ -84,3 +84,9 @@ columns:
     field: "GSPeak GiB"
     enabled: true
     source: bm
+  
+  log_space_usage:
+    field: "WAL GiB"
+    enabled: true
+    source: cr
+

@@ -158,6 +158,11 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    auto& lseg = global->meta->log_segments[log_id];
    fprintf(fp, "[INFO] Reclaiming log of RU epoch %ld mapped to %u\n", ru_epoch, log_id);
    fprintf(fp, "[INFO] Log space consumption was %.1f%% when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
+   fprintf(fp, "%.4f GiB Log space\n", lseg.offset/ 1073741824.0);
+   COUNTERS_BLOCK(log_space_usage)
+   {
+      log_stats.bytes_used.fetch_sub(lseg.offset);
+   }
    lseg.offset = 0;
 }
 
@@ -177,6 +182,16 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    iocbs_ptr[io_slot] = &iocbs[io_slot];
    io_slot++;
    lseg.offset += size;
+   COUNTERS_BLOCK(log_space_usage)
+   {
+      //FIXME(mfd) : Do not account for writes to the sink log for now
+      // until we implement recovery.
+      if (log_i != 0) {
+         u64 effective_size = size;
+         if (!block_full) effective_size -= LOG_DEV_BLK_SIZE;
+         log_stats.bytes_used.fetch_add(effective_size, std::memory_order_release);
+      }
+   }
    lseg.last_start_offset = buffer_offset;
    if (lseg.offset + FLAGS_wal_pwrite >= log_segment_size) {
       // FIXME(mfd) : Either proper checkpointing of the sink log or obviate it.
