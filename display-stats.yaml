@@ -1,0 +1,86 @@
+columns:
+
+  tx:
+    field: "pre TX"
+    enabled: true
+    source: cr
+
+  gct_committed_tx:
+    field: "dur TX"
+    enabled: true
+    source: cr
+
+  w_mib:
+    field: "W MiB"
+    enabled: true
+    source: bm
+
+  r_mib:
+    field: "R MiB"
+    enabled: true
+    source: bm
+
+  discarded_mib:
+    field: "Discard MiB"
+    enabled: true
+    source: bm
+
+  dirty_pct:
+    field: "Dirty Read %"
+    enabled: true
+    source: bm
+
+  gct_write_gib:
+    field: "WAL GiB/s"
+    enabled: true
+    source: cr
+
+  log_buf:
+    field: "WALmtx %"
+    enabled: true
+    source: cr
+
+  gct_phase_1_pct:
+    field: "gct_p1%"
+    enabled: true
+    source: cr
+
+  gct_phase_2_pct:
+    field: "gct_p2%"
+    enabled: true
+    source: cr
+
+  gct_write_pct:
+    field: "gct_w%"
+    enabled: true
+    source: cr
+
+  failed_try_pop:
+    field: "failed trypop"
+    enabled: true
+    source: bm
+
+  gc_fixed_mib:
+    field: "GC Fix Mib/s"
+    enabled: true
+    source: bm
+
+  false_dirty:
+    field: "False dirty"
+    enabled: false
+    source: bm
+
+  gc_clean:
+    field: "GC Clean"
+    enabled: true
+    source: bm
+
+  gc_hot:
+    field: "GC hot"
+    enabled: true
+    source: bm
+
+  discard_state_peak_mem_usage:
+    field: "GSPeak GiB"
+    enabled: true
+    source: bm

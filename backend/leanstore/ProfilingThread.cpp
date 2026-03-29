@@ -6,6 +6,7 @@
 #include "leanstore/profiling/tables/DTTable.hpp"
 #include "leanstore/profiling/tables/LatencyTable.hpp"
 // -------------------------------------------------------------------------------------
+#include <yaml-cpp/yaml.h>
 #include "tabulate/table.hpp"
 // -------------------------------------------------------------------------------------
 #include <sys/resource.h>
@@ -14,6 +15,26 @@ namespace leanstore
 {
 // -------------------------------------------------------------------------------------
 using RowType = std::vector<variant<std::string, const char*, tabulate::Table>>;
+// -------------------------------------------------------------------------------------
+RowType load_header_from_yaml(const YAML::Node& cols)
+{
+   RowType header;
+
+   header.reserve(cols.size() + 1);
+
+   header.push_back("Time");
+
+   for (auto it = cols.begin(); it != cols.end(); ++it) {
+      const YAML::Node& cfg = it->second;
+
+      if (!cfg["enabled"] || !cfg["enabled"].as<bool>())
+         continue;
+
+      header.push_back(cfg["field"].as<std::string>());
+   }
+
+   return header;
+}
 // -------------------------------------------------------------------------------------
 std::string to_hhmmss(uint64_t total_seconds)
 {
@@ -67,6 +88,11 @@ void LeanStore::profilingThread()
    // config_hash = 0;
    // -------------------------------------------------------------------------------------
    u64 seconds = 0;
+   YAML::Node config = YAML::LoadFile("display-stats.yaml");
+   auto columns = config["columns"];
+   RowType header = load_header_from_yaml(columns);
+   RowType stats_row;
+   stats_row.reserve(columns.size() + 1);
    while (bg_threads_keep_running) {
       for (u64 t_i = 0; t_i < tables.size(); t_i++) {
          tables[t_i]->next();
@@ -94,28 +120,29 @@ void LeanStore::profilingThread()
       if (FLAGS_print_tx_console) {
          tabulate::Table table;
 
-         table.add_row({"t", "pre TX", "dur TX", "W MiB", "R MiB", "Discard MiB", "Dirty Read %", "WAL GiB/s", "WALmtx %", "gct_p1%", "gct_p2%",
-                        "gct_w%", "failed trypop", "GC Fix Mib/s", "False dirty", "GC Clean", "GC hot", "GSPeak GiB"});
-         table.add_row({
-             to_hhmmss(seconds),
-             cr_table.get("0", "tx"),
-             cr_table.get("0", "gct_committed_tx"),
-             bm_table.get("0", "w_mib"),
-             bm_table.get("0", "r_mib"),
-             bm_table.get("0", "discarded_mib"),
-             bm_table.get("0", "dirty_pct"),
-             cr_table.get("0", "gct_write_gib"),
-             cr_table.get("0", "log_buf"),
-             cr_table.get("0", "gct_phase_1_pct"),
-             cr_table.get("0", "gct_phase_2_pct"),
-             cr_table.get("0", "gct_write_pct"),
-             bm_table.get("0", "failed_try_pop"),
-             bm_table.get("0", "gc_fixed_mib"),
-             bm_table.get("0", "false_dirty"),
-             bm_table.get("0", "gc_clean"),
-             bm_table.get("0", "gc_hot"),
-             bm_table.get("0", "discard_state_peak_mem_usage"),
-         });
+         table.add_row(header);
+         stats_row.push_back(to_hhmmss(seconds));
+         for (auto it = columns.begin(); it != columns.end(); ++it) {
+            const std::string key = it->first.as<std::string>();
+            const YAML::Node& col = it->second;
+
+            bool enabled = col["enabled"] ? col["enabled"].as<bool>() : true;
+            if (!enabled) {
+               continue;
+            }
+
+            std::string table = col["source"].as<std::string>();
+
+            if (table == "cr") {
+               stats_row.push_back(cr_table.get("0", key));
+            } else if (table == "bm") {
+               stats_row.push_back(bm_table.get("0", key));
+            } else {
+               stats_row.push_back("N/A");  // No need to fail
+            }
+         }
+         table.add_row(stats_row);
+
          // -------------------------------------------------------------------------------------
          table.format().width(8);
          table.column(0).format().width(10);
@@ -143,6 +170,7 @@ void LeanStore::profilingThread()
          } else {
             print_table(table, [](u64 line_n) { return line_n == 4; });
          }
+         stats_row.clear();
       }
       // -------------------------------------------------------------------------------------
       std::this_thread::sleep_for(std::chrono::milliseconds(1000));

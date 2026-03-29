@@ -17,7 +17,20 @@ add_custom_command(
    VERBATIM
 )
 add_custom_target(gen_header DEPENDS ${COUNTERS_HEADER})
+# ---------------------------------------------------------------------------
+set(DISPLAY_STATS_YAML_FILE "display-stats.yaml")
 
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/${DISPLAY_STATS_YAML_FILE}
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_SOURCE_DIR}/${DISPLAY_STATS_YAML_FILE}
+            ${CMAKE_BINARY_DIR}/${DISPLAY_STATS_YAML_FILE}
+    DEPENDS ${CMAKE_SOURCE_DIR}/${DISPLAY_STATS_YAML_FILE}
+)
+
+add_custom_target(stats_display_conf_symlink ALL
+    DEPENDS ${CMAKE_BINARY_DIR}/${DISPLAY_STATS_YAML_FILE}
+)
 # ---------------------------------------------------------------------------
 # Files
 # ---------------------------------------------------------------------------
@@ -38,7 +51,7 @@ IF(SANI)
 ENDIF(SANI)
 
 add_dependencies(leanstore gen_header)
-target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson fdp uring ${Boost_LIBRARIES}) #tbb
+target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson yaml-cpp fdp uring ${Boost_LIBRARIES}) #tbb
 
 # ---------------------------------------------------------------------------
 OPTION(PARANOID "Enable sanity checks in release mode" OFF)

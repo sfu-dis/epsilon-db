@@ -47,6 +47,7 @@ class LeanStore
    void deserializeFlags();
    void serializeState();
    void deserializeState();
+   void profilingThread();
 
   public:
    LeanStore();
