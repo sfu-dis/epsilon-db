@@ -161,6 +161,11 @@ void BMTable::open()
    columns.emplace("discard_state_peak_mem_usage", [&](Column& col) {
       col << BMC::global_bf->bm_stats.discard_state_peak_mem_usage.load(std::memory_order_acquire) / 1073741824.0;
    });
+   columns.emplace("total_in_use_ru", [&](Column& col) {
+      s64 newest_active_ru = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
+      s64 reclaimed_ru = BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire);
+      col << newest_active_ru - reclaimed_ru;
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

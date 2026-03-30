@@ -90,3 +90,8 @@ columns:
     enabled: true
     source: cr
 
+  total_in_use_ru:
+    field: "Used RUs"
+    enabled: true
+    source: bm
+
