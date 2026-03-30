@@ -180,10 +180,16 @@ void BufferManager::startBackgroundThreads()
       std::thread ru_epoch_mgr = std::thread([&]() {
          pthread_setname_np(pthread_self(), "ru_epoch_mgr");
          bg_threads_counter++;
-         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
          u64 last_seen_tot_gc_writes = 0;
          u64 tot_page_written = 0;
          u64 prev_rmb, rmb;
+         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         if (FLAGS_recover) {
+            for (u32 pp = 0; pp < FLAGS_pp_threads; ++pp) {
+               last_seen[pp] = per_pp_iostats[pp].io_counter.load();
+               tot_page_written += last_seen[pp];
+            }
+         } 
          if (FLAGS_use_fdp_rumaw) {
             prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
             rmb = prev_rmb;
@@ -517,7 +523,6 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    ensure(meta_swip.isEVICTED());
    ensure(!meta_swip.isDIRTY());
    PID meta_pid = meta_swip.asPageID();
-   // printf("[INFO] Meta node in ru_epoch %d\n", ru_epoch);
    BufferFrame& bf = randomPartition().dram_free_list.tryPop();
    readPageSync(meta_pid, bf.page);
    if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);

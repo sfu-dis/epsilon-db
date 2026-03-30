@@ -59,6 +59,9 @@ LeanStore::LeanStore()
    if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
       SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
    }
+   if (FLAGS_enable_discarding && FLAGS_ru_gc_threads == 0) {
+      SetupFailed("You have to create at least one RU GC thread to enable discarding");
+   }
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool
@@ -112,13 +115,6 @@ LeanStore::LeanStore()
    // -------------------------------------------------------------------------------------
    if (FLAGS_recover) {
       deserializeState();
-   }
-   // -------------------------------------------------------------------------------------
-   u64 end_of_block_device;
-   if (FLAGS_wal_offset_gib == 0) {
-      ioctl(ssd_fd, BLKGETSIZE64, &end_of_block_device);
-   } else {
-      end_of_block_device = FLAGS_wal_offset_gib * 1024 * 1024 * 1024;
    }
    // -------------------------------------------------------------------------------------
    history_tree = std::make_unique<cr::HistoryTree>();
