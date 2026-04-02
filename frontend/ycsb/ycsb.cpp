@@ -111,17 +111,27 @@ int main(int argc, char** argv)
          cout << "Warmup: Scanning..." << endl;
          {
             begin = chrono::high_resolution_clock::now();
-            utils::Parallelize::range(FLAGS_worker_threads, n, [&](u64 t_i, u64 begin, u64 end) {
-               crm.scheduleJobAsync(t_i, [&, begin, end]() {
-                  for (u64 i = begin; i < end; i++) {
-                     YCSBPayload result;
-                     // cr::Worker::my().startTX(tx_type, isolation_level);
-                     u64 t_id = utils::RandomGenerator::getRandU64(0, ycsb_tuple_count);
-                     tables[0].lookup1({static_cast<YCSBKey>(i)}, [&](const KVTable& record) { result = record.my_payload; });
-                     // cr::Worker::my().commitTX();
-                  }
+            if (FLAGS_ycsb_worker_per_table) {
+               for (u64 t_i = 0; t_i < FLAGS_worker_threads; ++t_i) {
+                  crm.scheduleJobAsync(t_i, [&, t_i]() {
+                     for (u64 i = 0; i < n; i++) {
+                        YCSBPayload result;
+                        tables[t_i].lookup1({static_cast<YCSBKey>(i)}, [&](const KVTable& record) { result = record.my_payload; });
+                        DO_NOT_OPTIMIZE(result);
+                     }
+                  });
+               }
+            } else {
+               utils::Parallelize::range(FLAGS_worker_threads, n, [&](u64 t_i, u64 begin, u64 end) {
+                  crm.scheduleJobAsync(t_i, [&, begin, end]() {
+                     for (u64 i = begin; i < end; i++) {
+                        YCSBPayload result;
+                        tables[t_i].lookup1({static_cast<YCSBKey>(i)}, [&](const KVTable& record) { result = record.my_payload; });
+                        DO_NOT_OPTIMIZE(result);
+                     }
+                  });
                });
-            });
+            }
             crm.joinAll();
             end = chrono::high_resolution_clock::now();
          }
@@ -141,9 +151,9 @@ int main(int argc, char** argv)
 					   YCSBPayload payload;
 					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
 					   YCSBKey key = i;
-					   // cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION);
+					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::READ_COMMITTED);
 					   tables[t_i].insert({key}, {payload});
-					   // cr::Worker::my().commitTX();
+					   cr::Worker::my().commitTX();
 					}
 				 });
 			  }
@@ -170,11 +180,14 @@ int main(int argc, char** argv)
       const u64 mib = written_pages * PAGE_SIZE / 1024 / 1024;
       cout << "Inserted volume: (pages, MiB) = (" << written_pages << ", " << mib << ")" << endl;
       cout << "-------------------------------------------------------------------------------------" << endl;
+      if (FLAGS_run_for_seconds == 0) {
+         return 0;
+      }
    }
    // -------------------------------------------------------------------------------------
    auto zipf_random = std::make_unique<utils::ScrambledZipfGenerator>(0, ycsb_tuple_count, FLAGS_zipf_factor);
    auto rjzipf = RejectionInversionZipfSampler(ycsb_tuple_count, FLAGS_zipf_factor);
-   std::vector<u64> updatePattern;
+   std::vector<u32> updatePattern;
    if (FLAGS_zipf_factor != 0) {
       updatePattern.resize(ycsb_tuple_count);
       for (uint64_t i = 0; i < updatePattern.size(); i++) {
@@ -194,12 +207,8 @@ int main(int argc, char** argv)
    std::atomic<u64> next_tx_start_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
    for (u64 t_i = 0; t_i < exec_threads - ((FLAGS_ycsb_sleepy_thread) ? 1 : 0); t_i++) {
       crm.scheduleJobAsync(t_i, [&, t_i]() {
-         LeanStoreAdapter<KVTable> *table;
-         if (FLAGS_ycsb_worker_per_table ) {
-            table = &tables[t_i];
-         } else {
-            table = &tables[0];
-         }
+         const u64 table_id = FLAGS_ycsb_worker_per_table ? t_i : 0;
+         LeanStoreAdapter<KVTable> *table = &tables[table_id];
          running_threads_counter++;
          std::random_device rd;
          std::mt19937_64 gen(rd());
@@ -214,8 +223,9 @@ int main(int argc, char** argv)
                if (FLAGS_zipf_factor == 0) {
                   key = utils::RandomGenerator::getRandU64(0, ycsb_tuple_count);
                } else {
-                  auto r = rjzipf.sample(gen);
+                  s64 r = rjzipf.sample(gen) - 1;
                   if (!(r >= 0 && r < updatePattern.size())) {
+                     cerr << "Value " << r << "Out of Bounds [0," << updatePattern.size() << ")" << endl;
                      raise(SIGINT);
                   }
                   key = updatePattern.at(r);
