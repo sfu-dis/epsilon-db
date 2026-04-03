@@ -95,3 +95,8 @@ columns:
     enabled: true
     source: bm
 
+  estimated_gc_writes:
+    field: "Extra GC GiB"
+    enabled: true
+    source: bm
+

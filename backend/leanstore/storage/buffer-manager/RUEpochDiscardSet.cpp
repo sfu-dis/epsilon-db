@@ -21,6 +21,7 @@ void BufferManager::RUEpochDiscardSet::reset()
    total = 0;
    invalid = 0;
    done_gc = FLAGS_ru_gc_threads;
+   total_fixed = 0;
    cur_ru_epoch += BMC::global_bf->max_open_ru_epochs;
    BMC::global_bf->reclaimed_ru_epoch.fetch_add(1);
 }
@@ -51,6 +52,17 @@ LID BufferManager::RUEpochDiscardSet::erase(PID pid)
    pids.erase(pid);
    deleted.fetch_add(1, std::memory_order_relaxed);
    return lsn;
+}
+// -------------------------------------------------------------------------------------
+u32 BufferManager::RUEpochDiscardSet::ReclaimUnitUsage()
+{
+   // This formula does not account for those pages that are in the buffer pool
+   s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
+   s32 i = invalid.load(std::memory_order_acquire);
+   s32 tot = total.load(std::memory_order_acquire);
+   // double per = (i+d) * 1.0f / tot;
+   // printf("\n tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
+   return i + d;
 }
 // -------------------------------------------------------------------------------------
 bool BufferManager::RUEpochDiscardSet::shouldGC()

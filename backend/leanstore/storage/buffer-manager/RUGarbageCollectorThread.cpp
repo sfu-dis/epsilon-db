@@ -269,7 +269,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          s64 prev_gc_ru_epoch = current_gc_epoch - 1;
          auto& set = ru_discard_set[gc_ru_epoch];
          auto& logging = cr::LogManager::global->all_logs[1 + (gc_ru_epoch % max_open_ru_epochs)];
-         // FIXME(mfd) : set lock is probably no longer needed ?
+         u32 ru_usage_before_gc;
          set.m.lock();
          if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
             logging.mutex.lock();
@@ -288,6 +288,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             logging.mutex.unlock();
 
             ensure_equal(set.offset_batch.load(), 0);
+            ru_usage_before_gc = set.ReclaimUnitUsage();
             set.m.unlock();
             fprintf(fp, "[INFO] Garbage collecting RU epoch %lu, ~%lu log size to apply\n", gc_ru_epoch, logging.wal_lsn_counter);
          } else {
@@ -476,6 +477,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          // -------------------------------------------------------------------------------------
          auto end = std::chrono::system_clock::now();
          auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
+         set.total_fixed.fetch_add(total_fixed);
          if (set.done_gc.fetch_sub(1) == 1) {
             s64 old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
             s64 new_re = old_re + 1;
@@ -483,6 +485,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             u32 log_id = (current_gc_epoch % (cr::LogManager::global->log_count - 1)) + 1;
             // FIXME(mfd) : This part is clumsy.
             auto& logging = cr::LogManager::global->all_logs[log_id];
+            u32 ru_usage = set.ReclaimUnitUsage();
+            bm_stats.estimated_gc_writes.fetch_add(set.total.load() - ru_usage);
+            u64 fixed_pages_in_ru = set.total_fixed.load();
             set.m.lock();
             int rc = munmap(set.mmaped_log, logging.wal_lsn_counter);
             ensure_equal(rc, 0);
@@ -493,9 +498,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             if (FLAGS_wal && FLAGS_wal_pwrite) {
                cr::LogManager::global->resetLogSegment(current_gc_epoch);
             }
-            fprintf(fp, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu\n", gc_ru_epoch, duration.count(), total_fixed);
-            total_fixed = 0;
+            fprintf(fp, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u -> %u\n", gc_ru_epoch, duration.count(), fixed_pages_in_ru, ru_usage_before_gc, ru_usage);
          }
+         total_fixed = 0;
          while (set.done_gc.load() != FLAGS_ru_gc_threads) {
          }
       }

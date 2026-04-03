@@ -166,6 +166,10 @@ void BMTable::open()
       s64 reclaimed_ru = BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire);
       col << newest_active_ru - reclaimed_ru;
    });
+   columns.emplace("estimated_gc_writes", [&](Column& col) {
+      // PAGE_SIZE = 4KiB
+      col << BMC::global_bf->bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

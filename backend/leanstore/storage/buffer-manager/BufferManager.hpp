@@ -141,6 +141,7 @@ public:
       alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
+      alignas(CACHE_LINE_SIZE) atomic<s32> total_fixed{0}; // used just as a stat
       // -------------------------------------------------------------------------------------
       s64 cur_ru_epoch = -1;
       atomic<bool> active{false};
@@ -149,6 +150,7 @@ public:
       // Fails only when the RU epoch is being garbage collected
       bool insert(PID pid, LID lsn);
       LID erase(PID pid);
+      u32 ReclaimUnitUsage();
       bool shouldGC();
       u64 size();
    };
@@ -158,6 +160,8 @@ public:
       s64 ru_epoch;
       s64 oldest_active_ru_epoch;
       s64 reclaimed_ru_epoch;
+      u64 total_host_writes;
+      u64 expected_extra_gc_writes;
       // XXX(mfd) : Persisting only totals is enough for now, we assume 
       //  invalid count is always 0. In other words, we assume we're 
       //   recovering from a load only workload.
@@ -270,6 +274,7 @@ public:
    // STATS
    struct Stats {
       atomic<u64> discard_state_peak_mem_usage = 0;
+      atomic<u64> estimated_gc_writes = 0;
    } bm_stats;
 };
 // -------------------------------------------------------------------------------------
