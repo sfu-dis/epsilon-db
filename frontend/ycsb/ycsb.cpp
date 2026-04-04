@@ -74,8 +74,9 @@ int main(int argc, char** argv)
    u64 ycsb_tuple_count = (FLAGS_ycsb_tuple_count)
                                     ? FLAGS_ycsb_tuple_count
                                     : FLAGS_target_gib * 1024 * 1024 * 1024 * 1.0 / 2.0 / (sizeof(YCSBKey) + sizeof(YCSBPayload));
-   // Insert values
-   if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = ycsb_tuple_count / FLAGS_worker_threads;
+   // XXX(mfd) : divide by 2 if we have a table per worker because inserting sequentially into the BTree results always
+   //  in half full nodes.
+   if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = (ycsb_tuple_count / 2) / FLAGS_worker_threads;
    const u64 n = ycsb_tuple_count;
    if (FLAGS_ycsb_profiler_thread) {
       db.startProfilingThread();
@@ -213,7 +214,7 @@ int main(int argc, char** argv)
          std::random_device rd;
          std::mt19937_64 gen(rd());
          std::exponential_distribution<> expDist(rate);
-         auto this_expected_start_time = next_tx_start_time.load();
+         u64 this_expected_start_time = next_tx_start_time.load();
          while (keep_running) {
             utils::Timer timer(CRCounters::myCounters().cc_ms_oltp_tx);
             auto start = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -224,7 +225,7 @@ int main(int argc, char** argv)
                   key = utils::RandomGenerator::getRandU64(0, ycsb_tuple_count);
                } else {
                   s64 r = rjzipf.sample(gen) - 1;
-                  if (!(r >= 0 && r < updatePattern.size())) {
+                  if (!(r >= 0 && r < static_cast<s64>(updatePattern.size()))) {
                      cerr << "Value " << r << "Out of Bounds [0," << updatePattern.size() << ")" << endl;
                      raise(SIGINT);
                   }
@@ -250,7 +251,7 @@ int main(int argc, char** argv)
                WorkerCounters::myCounters().tx++;
             }
             jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-            auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+            u64 now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             COUNTERS_BLOCK(txHist)
             {
                auto elapsed = now - start;
