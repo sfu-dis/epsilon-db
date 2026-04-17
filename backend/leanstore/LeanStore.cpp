@@ -135,15 +135,17 @@ LeanStore::LeanStore()
    }
    cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);
    cr::CRManager::global = cr_manager.get();
-   cr_manager->scheduleJobSync(0, [&]() {
-      history_tree->update_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);
-      history_tree->remove_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);
-      for (u64 w_i = 0; w_i < FLAGS_worker_threads; w_i++) {
-         std::string name = "_history_tree_" + std::to_string(w_i);
-         history_tree->update_btrees[w_i] = &registerBTreeLL(name + "_updates", {.enable_wal = false, .use_bulk_insert = true});
-         history_tree->remove_btrees[w_i] = &registerBTreeLL(name + "_removes", {.enable_wal = false, .use_bulk_insert = true});
-      }
-   });
+   if (FLAGS_vi) {
+      cr_manager->scheduleJobSync(0, [&]() {
+         history_tree->update_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);
+         history_tree->remove_btrees = std::make_unique<leanstore::storage::btree::BTreeLL*[]>(FLAGS_worker_threads);
+         for (u64 w_i = 0; w_i < FLAGS_worker_threads; w_i++) {
+            std::string name = "_history_tree_" + std::to_string(w_i);
+            history_tree->update_btrees[w_i] = &registerBTreeLL(name + "_updates", {.enable_wal = false, .use_bulk_insert = true});
+            history_tree->remove_btrees[w_i] = &registerBTreeLL(name + "_removes", {.enable_wal = false, .use_bulk_insert = true});
+         }
+      });
+   }
    // -------------------------------------------------------------------------------------
    buffer_manager->startBackgroundThreads();
 }
