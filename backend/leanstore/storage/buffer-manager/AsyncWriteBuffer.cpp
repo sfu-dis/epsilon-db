@@ -77,10 +77,10 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto slot = pending_requests++;
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
-   if (bf.page.ru_epoch == s64(-1)) {
+   if (bf.page.ru_epoch == UNMAPPED_RU_EPOCH) {
       bf.page.magic_debugging_number = pid;
    } else {
-      ensure(bf.page.magic_debugging_number == pid);
+      ensure_equal(bf.page.magic_debugging_number, pid);
    }
    // TODO(mfd) : remove the update frequency
    auto node = reinterpret_cast<btree::BTreeNode*>(bf.page.dt);
@@ -89,8 +89,6 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    // write to return. This is to allow correct mapping to logs when the
    // page is being written back. Consider storing the tentative ru_epoch
    // in the page frame.
-   bf.page.prev_ru_epoch = bf.page.ru_epoch;
-   bf.page.ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
    // u16 plid = bf.page.fdp_plid;
@@ -145,7 +143,7 @@ u64 AsyncWriteBuffer::pollEventsSync()
    return 0;
 }
 // -------------------------------------------------------------------------------------
-void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, u64, PID, u64)> callback, u64 n_events)
+void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events)
 {
 /*
    for (u64 i = 0; i < n_events; i++) {
@@ -164,9 +162,9 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, u64, PID, 
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;
       // -------------------------------------------------------------------------------------
       ensure(cqe->res == 0);
-      auto written_lsn = write_buffer[slot].PLSN;
+      auto written_plsn = write_buffer[slot].PLSN;
       u64 written_ru_epoch = write_buffer[slot].ru_epoch;
-      callback(*write_buffer_commands[slot].bf, written_lsn, write_buffer_commands[slot].pid, written_ru_epoch);
+      callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);
       ++i;
    }
    assert(i == n_events);

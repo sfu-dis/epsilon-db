@@ -71,20 +71,18 @@ DEFINE_bool(pid_tracing, false, "");
 DEFINE_string(tag, "", "Unique identifier for this, will be appended to each line csv");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(optimistic_parent_pointer, false, "");
-DEFINE_bool(out_of_place, false, "Out of place writes");
 DEFINE_uint64(replacement_chunk_size, 64, "Replacement strategy chunk size");
 DEFINE_bool(recycle_pages, true, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(wal, true, "");
 DEFINE_bool(wal_rfa, false, "Remote Flush Avoidance (RFA)");
 DEFINE_bool(wal_tuple_rfa, false, "tuple-wise tracking");
-DEFINE_uint64(wal_offset_gib, 10, "");
 DEFINE_bool(wal_pwrite, false, "Does not really write logs on SSD");
 DEFINE_bool(wal_fsync, false, "");
 DEFINE_int64(wal_variant, 0, "");
 DEFINE_uint64(wal_log_writers, 1, "");
 DEFINE_uint64(wal_buffer_size, 1024 * 1024 * 10, "");
-DEFINE_string(wal_partition_by, "worker", "options: worker, page");
+DEFINE_string(wal_partition_by, "worker", "options: worker, page, ru_epoch");
 DEFINE_uint64(wal_partitions_count, 32, "Valid only when we use page based partitioning");
 // -------------------------------------------------------------------------------------
 DEFINE_string(isolation_level, "si", "options: ru (READ_UNCOMMITTED), rc (READ_COMMITTED), si (SNAPSHOT_ISOLATION), ser (SERIALIZABLE)");

@@ -315,7 +315,6 @@ void BufferManager::deserialize(std::unordered_map<std::string, std::string> map
 void BufferManager::writeAllBufferFrames()
 {
    stopBackgroundThreads();
-   ensure(!FLAGS_out_of_place);
 
    std::atomic<u64> total_writes = ru_discard_set[ru_epoch.load()].total.load();
    ensure(total_writes < RU_SIZE);

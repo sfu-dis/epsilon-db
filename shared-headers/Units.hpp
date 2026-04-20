@@ -36,6 +36,9 @@ using LID = u64;   // Log ID
 using TTS = u64;   // Transaction Time Stamp
 using DTID = s64;  // Datastructure ID
 // -------------------------------------------------------------------------------------
+using ru_epoch_t = s64;
+constexpr ru_epoch_t UNMAPPED_RU_EPOCH = ru_epoch_t(-1);
+// -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);
 constexpr LID INEXISTANT_LSN = LID(-2);
 // -------------------------------------------------------------------------------------

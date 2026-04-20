@@ -324,19 +324,18 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      BMExclusiveGuard ex_guard(o_guard);
                      paranoid(!cooled_bf->header.is_being_written_back);
                      cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
+                     /// We directly update the header information because we need this information
+                     /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
                      cooled_bf->header.logging = nullptr;
                      cooled_bf->header.pending_lsn_count = 0;
                      cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
+                     cooled_bf->page.prev_ru_epoch = cooled_bf->page.ru_epoch;
+                     cooled_bf->page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }
                      // TODO: preEviction callback according to DTID
                      PID wb_pid = cooled_bf_pid;
-                     if (FLAGS_out_of_place) {
-                        wb_pid = getPartition(cooled_bf_pid).nextPID();
-                        paranoid(getPartitionID(cooled_bf->header.pid) == p_i);
-                        paranoid(getPartitionID(wb_pid) == p_i);
-                     }
                      async_write_buffer.add(*cooled_bf, wb_pid);
                   }
                } else {
@@ -366,7 +365,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          }
          
          async_write_buffer.getWrittenBfs(
-             [&](BufferFrame& written_bf, u64 written_lsn, PID out_of_place_pid, u64 written_ru_epoch) {
+             [&](BufferFrame& written_bf, u64 written_lsn, ru_epoch_t written_ru_epoch) {
                 jumpmuTry()
                 {
                    // When the written back page is being exclusively locked, we should rather waste the write and move on to another page
@@ -382,11 +381,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       ensure(written_bf.header.is_being_written_back);
                       // ensure(written_bf.header.last_written_plsn < written_lsn);
                       // -------------------------------------------------------------------------------------
-                      if (FLAGS_out_of_place) {  // For recovery, so much has to be done here...
-                         getPartition(getPartitionID(written_bf.header.pid)).freePage(written_bf.header.pid);
-                         written_bf.header.pid = out_of_place_pid;
-                      }
-                      written_bf.header.last_written_plsn = written_lsn;
                       written_bf.header.is_being_written_back = false;
                       // written_bf.header.logging = nullptr;
                       // written_bf.header.flush_sink_log = false;

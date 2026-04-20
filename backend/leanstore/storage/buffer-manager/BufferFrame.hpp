@@ -81,8 +81,8 @@ struct BufferFrame {
       u64 magic_debugging_number;                                                                      // ATTENTION
       u32 fdp_plid = -1; // TODO(mfd) : Obsolete, remove
       u32 nbfixed = 0; // TODO(mfd) : Used just for debugging, remove later
-      s64 prev_ru_epoch = -1; // TODO(mfd) : Used just for debugging, remove later
-      s64 ru_epoch = -1;
+      ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH; // TODO(mfd) : Used just for debugging, remove later
+      ru_epoch_t ru_epoch = UNMAPPED_RU_EPOCH;
       LID last_written_lsn = INVALID_LSN;
       s32 prev_log_id = -1; // TODO(mfd) : Used just for debugging, remove later
       s32 log_id = -1; // TODO(mfd) : Used just for debugging, remove later
@@ -95,8 +95,8 @@ struct BufferFrame {
       {
           PLSN = 0;
           GSN = 0;
-          ru_epoch = s64(-1);
-          prev_ru_epoch = s64(-1);
+          ru_epoch = UNMAPPED_RU_EPOCH;
+          prev_ru_epoch = UNMAPPED_RU_EPOCH;
           last_written_lsn = INVALID_LSN;
       }
       void dump();

@@ -62,7 +62,7 @@ class AsyncWriteBuffer
    void add(BufferFrame& bf, PID pid);
    u64 submit();
    u64 pollEventsSync();
-   void getWrittenBfs(std::function<void(BufferFrame&, u64, PID, u64)> callback, u64 n_events);
+   void getWrittenBfs(std::function<void(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events);
 };
 // -------------------------------------------------------------------------------------
 }  // namespace storage
