@@ -1054,7 +1054,7 @@ class TPCCWorkload
          }
          o_id++;
       }
-      for (Integer i = x2100; i <= c_ids.size(); i++)
+      for (Integer i = x2100; i <= static_cast<Integer>(c_ids.size()); i++)
          neworder.insert({w_id, d_id, i}, {});
    }
    // -------------------------------------------------------------------------------------
@@ -1115,9 +1115,8 @@ class TPCCWorkload
          return {1, true}; // order
       }
       rnd -= 400;
-      //if (rnd < 400 || FLAGS_steady_tpcc && leanstore::WorkerCounters::myCounters().tpcc_debug2*1 < leanstore::WorkerCounters::myCounters().tpcc_debug1) {
-      if (!FLAGS_steady_tpcc && rnd < 400 || FLAGS_steady_tpcc && (leanstore::WorkerCounters::myCounters().tpcc_neworder_insert/*insert*/ > 100+leanstore::WorkerCounters::myCounters().tpcc_neworder_erase/*erase*/)) {
-      ///if (rnd < 400) {
+      if ((!FLAGS_steady_tpcc && rnd < 400)
+          || (FLAGS_steady_tpcc && (leanstore::WorkerCounters::myCounters().tpcc_neworder_insert/*insert*/ > 100+leanstore::WorkerCounters::myCounters().tpcc_neworder_erase/*erase*/))) {
          return {2, false}; // delivery
       }
       rnd -= 400;
@@ -1182,7 +1181,7 @@ class TPCCWorkload
                 return false;
              },
              []() {});
-         for (int i = 0; i < ordersToDelete_o_id.size(); i++) {
+         for (u64 i = 0; i < ordersToDelete_o_id.size(); i++) {
             auto o_id = ordersToDelete_o_id[i];
             auto o_c_id = ordersToDelete_o_c_id[i];
             // check that this is not the last order from the customer

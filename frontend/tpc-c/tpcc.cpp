@@ -194,6 +194,9 @@ int main(int argc, char** argv)
    if (FLAGS_tpcc_stats) {
       tpccStats();
    }
+   if (FLAGS_run_for_seconds == 0) {
+      return 0;
+   }
    db.startProfilingThread();
    // -------------------------------------------------------------------------------------
    atomic<u64> keep_running = true;
@@ -323,8 +326,8 @@ int main(int argc, char** argv)
                {
                   WorkerCounters::myCounters().tx_abort++;
                }
-               auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-               COUNTERS_BLOCK()
+               u64 now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+               COUNTERS_BLOCK(txHist)
                {
                   auto elapsed = now - start;
                   if (WorkerCounters::myCounters().txHistLock.try_lock()) {
@@ -404,7 +407,7 @@ int main(int argc, char** argv)
       cout << "CH = " << total << endl;
    }
    // -------------------------------------------------------------------------------------
-   gib = (db.getBufferManager().consumedPages() * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0 / 1024.0);
+   gib = (db.getBufferManager().consumedPages() * PAGE_SIZE / 1024.0 / 1024.0 / 1024.0);
    cout << endl << "consumed space in GiB = " << gib << endl;
    // print stats about tables, this is not optimized and runs single threaded, so could take a long time.
    if (FLAGS_tpcc_stats) {
