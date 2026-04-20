@@ -353,10 +353,16 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   }
                   continue;
                }
-               // If I am not sure about the page state, assume pessimistically it is discarded.
-               // Make sure the page is not free
-               // This is not handled for now. We only support deterministic state.
-               ensure(!page_state.isFree());
+
+               // The page is Free when we it was reclaimed but its pid is still not reused.
+               // Even if the page id is reused we can later find out by checking whether the RU epoch
+               // stored in the page is the same as the RU epoch we're currentlty reclaiming.
+               // There is a case when the page is reclaimed and the RU is the same, which is after the
+               // pid is allocated and before the page is written to storage, in that case the page is 
+               // in HOT state and we should handle it separately.
+               if (page_state.isFree()) {
+                  continue;
+               }
 
                LID* lsn_list = nullptr;
                LID last_lsn = INVALID_LSN;

@@ -68,7 +68,6 @@ class Swip
    u64 raw() const { return pid; }
    u32 ru_epoch()
    {
-      ensure((pid2.meta & 0x80000000) == 0x80000000);
       return pid2.meta & 0x1FFFFFFF;
    }
    // -------------------------------------------------------------------------------------

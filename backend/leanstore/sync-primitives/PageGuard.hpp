@@ -5,6 +5,7 @@
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/storage/buffer-manager/BufferManager.hpp"
 #include "leanstore/storage/buffer-manager/Tracing.hpp"
+#include "leanstore/storage/btree/core/BTreeGenericWALEntry.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -52,15 +53,16 @@ class HybridPageGuard
    HybridPageGuard(HybridPageGuard&& other) = delete;  // Move constructor
    // -------------------------------------------------------------------------------------
    // I: Allocate a new page
-   HybridPageGuard(DTID dt_id, u8 fdp_plid, bool keep_alive = true)
+   HybridPageGuard(DTID dt_id, u8 fdp_plid, bool keep_alive)
        : bf(&BMC::global_bf->allocatePage()), guard(bf->header.latch, GUARD_STATE::EXCLUSIVE), keep_alive(keep_alive)
    {
       assert(BMC::global_bf != nullptr);
+      ensure(bf->header.discardable == false);
+      // By default pin a newly allocated page until we write a WALPageInit log record.
+      // This will give us more flexibility on when to increment the GSN.
+      bf->header.keep_in_memory = true;
       bf->page.dt_id = dt_id;
       bf->page.fdp_plid = fdp_plid;
-      bf->page.ru_epoch = s64(-1);
-      bf->page.last_written_lsn = INVALID_LSN;
-      markAsDirty();
       jumpmu_registerDestructor();
    }
    // -------------------------------------------------------------------------------------
@@ -122,16 +124,23 @@ class HybridPageGuard
       return *this;
    }
    // -------------------------------------------------------------------------------------
-   inline void markAsDirty() { bf->page.PLSN++; }
+   inline void markAsDirty()
+   {
+      bf->page.PLSN++;
+      if (FLAGS_enable_discarding
+         && bf->header.discardable.load(std::memory_order_acquire)
+         && (bf->page.PLSN - bf->header.last_written_plsn) > FLAGS_max_log_records_to_discard) {
+         bf->header.discardable.store(false, std::memory_order_release);
+      }
+   }
    inline void incrementGSN()
    {
       assert(bf != nullptr);
       ensure(bf->page.GSN <= cr::Worker::my().getCurrentGSN());
-      bf->page.PLSN++;
+      markAsDirty();
       LID new_gsn = cr::Worker::my().getCurrentGSN() + 1;
       bf->page.GSN = new_gsn;
       bf->header.last_writer_worker_id = cr::Worker::my().worker_id;  // RFA
-      // cr::Worker::my().setCurrentGSN(std::max<LID>(cr::Worker::my().logging.getCurrentGSN(), bf->page.GSN));
       cr::Worker::my().setCurrentGSN(new_gsn);
    }
    // WAL
@@ -148,20 +157,27 @@ class HybridPageGuard
          cr::Worker::my().setCurrentGSN(new_gsn);
       }
    }
+   inline void unPin()
+   {
+      ensure(bf->header.keep_in_memory);
+      bf->header.keep_in_memory = false;
+   }
    template <typename WT>
-   cr::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size)
+   cr::Logging::WALEntryHandler<WT> reserveWALEntry(u64 extra_size, bool disable_discarding = true)
    {
       assert(FLAGS_wal);
       assert(guard.state == GUARD_STATE::EXCLUSIVE);
+      if (disable_discarding && bf->isDiscardable()) {
+         bf->markUnDiscardable();
+      }
       if (!FLAGS_wal_tuple_rfa) {
          incrementGSN();
       }
       // -------------------------------------------------------------------------------------
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;
-      // TODO: verify
       s64 failure_counter = 0;
-retry:
+   retry:
       s64 reclaiming_ru_epoch_snapshot = storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
       auto& logging = cr::LogManager::getLog(bf);
       logging.mutex.lock();
@@ -179,10 +195,11 @@ retry:
       bool first_entry_in_log = false;
       if (bf->header.logging != nullptr) {
          if (bf->header.logging != &logging) {
-            if (logging.log_id != 0) {
+            // This only happens when the RU on which the page reside has started to be reclaimed.
+            if (logging.log_id != cr::LogManager::SINK_LOG_ID) {
                cerr << "Previous Log ID " << bf->header.logging->log_id << endl;
                cerr << "New Log ID " << logging.log_id << endl;
-               bf->page.dump();
+               bf->dump();
                raise(SIGTRAP);
             }
             first_entry_in_log = true;
@@ -191,15 +208,16 @@ retry:
       } else {
          first_entry_in_log = true;
       }
+      if (logging.log_id == cr::LogManager::SINK_LOG_ID) {
+         bf->markUnDiscardable();
+      }
       bf->header.logging = &logging;
       if (!cr::LogManager::global->isPartitionedByWorker()) {
          logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
       }
       ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
-      // XXX(mfd) : We need +1 so that we do not violate uniqueness of GSNs withing the log ?
       LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN() + 1);
       logging.setCurrentGSN(logGSN);
-      // THINK(mfd) : IS this line ok ?
       cr::Worker::my().syncGSN(logGSN);
       auto handler = logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
       logging.active_dt_entry->ru_epoch = bf->page.ru_epoch;
@@ -208,21 +226,21 @@ retry:
       if (FLAGS_wal_pwrite) {
          bf->page.last_written_lsn = handler.lsn;
          bf->page.log_id = logging.log_id;
+      } else {
+         // Write a special marker for debugging if something went wrong
+         // when recovering from the case where wal_pwrite was off.
+         bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN;
       }
       LID *pending_lsn = bf->header.pending_lsn;
-      if (FLAGS_enable_discarding && !FLAGS_fake_log_reapply) {
-         if (logging.log_id != 0) {
-            // ensure(!first_entry_in_log || (pending_lsn.size() == 0));
-            if (first_entry_in_log) ensure_equal(bf->header.pending_lsn_count, 0);
-            if (bf->header.pending_lsn_count < FLAGS_max_log_records_to_discard) {
-               pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
-               if (bf->header.pending_lsn_count != (bf->page.PLSN - bf->header.last_written_plsn)) {
-                  bf->page.dump();
-                  raise(SIGTRAP);
-               }
-               ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
-            }
+      if (FLAGS_enable_discarding && bf->isDiscardable()) { 
+         ensure(logging.log_id != cr::LogManager::SINK_LOG_ID);
+         ensure(!first_entry_in_log || (bf->header.pending_lsn_count == 0));
+         ensure_lt(bf->header.pending_lsn_count, FLAGS_max_log_records_to_discard);
+         pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
+         if (bf->header.pending_lsn_count != (bf->page.PLSN - bf->header.last_written_plsn)) {
+            bf->dump();
          }
+         ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
       }
       return handler;
    }
@@ -295,6 +313,7 @@ class ExclusivePageGuard
    void keepAlive() { ref_guard.keep_alive = true; }
    void incrementGSN() { ref_guard.incrementGSN(); }
    void markAsDirty() { ref_guard.markAsDirty(); }
+   void unPin() { ref_guard.unPin(); }
    // -------------------------------------------------------------------------------------
    ~ExclusivePageGuard()
    {

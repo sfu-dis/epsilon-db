@@ -105,7 +105,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
 
 u32 LogManager::LSN2LogID(LID lsn)
 {
-   if (lsn == INVALID_LSN) return 0;
+   if ((lsn == INVALID_LSN) || (lsn == NON_PERSISTED_LSN)) return -1;
    LID aligned_lsn = utils::downAlign(lsn, LOG_DEV_BLK_SIZE);
    u32 log_id = (aligned_lsn - meta_size) / log_segment_size;
    {

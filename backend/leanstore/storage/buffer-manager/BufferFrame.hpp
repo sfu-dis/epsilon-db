@@ -16,7 +16,7 @@ struct Logging; // Forward Declaration
 }
 namespace storage
 {
-static constexpr u64 MAX_PENDING_LSN_COUNT = 8;
+static constexpr u64 MAX_PENDING_LSN_COUNT = 7;
 // -------------------------------------------------------------------------------------
 const u64 PAGE_SIZE = 4 * 1024;
 // -------------------------------------------------------------------------------------
@@ -37,6 +37,12 @@ struct BufferFrame {
       bool flush_sink_log = false;
       u8 pending_lsn_count = 0;
       LID pending_lsn[MAX_PENDING_LSN_COUNT];
+      // Any page is by default discardable unless :
+      // 1. It is an inner node. (Simplicity)
+      // 2. It has been splitted. (Simplicity)
+      // 3. It is a newly allocated page. (Necessary)
+      // 4. It belongs to an already reclaimed RU epoch. (Simplicity)
+      std::atomic<bool> discardable = false;
       // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
@@ -73,6 +79,8 @@ struct BufferFrame {
       OptimisticParentPointer optimistic_parent_pointer;
       // -------------------------------------------------------------------------------------
       u64 crc = 0;
+      // -------------------------------------------------------------------------------------
+      void dump();
    };
    struct alignas(512) Page {
       LID PLSN = 0;
@@ -110,10 +118,8 @@ struct BufferFrame {
    // -------------------------------------------------------------------------------------
    inline bool isDirty() const { return page.PLSN != header.last_written_plsn; }
    inline bool isFree() const { return header.state == STATE::FREE; }
-   inline bool canDiscard() const {
-      return page.ru_epoch != s64(-1)
-             && ((page.PLSN - header.last_written_plsn) <= FLAGS_max_log_records_to_discard);
-   }
+   inline bool isDiscardable() const { return header.discardable.load(std::memory_order_acquire); }
+   inline void markUnDiscardable() { return header.discardable.store(false, std::memory_order_release); }
    // -------------------------------------------------------------------------------------
    // Pre: bf is exclusively locked
    void reset()
@@ -129,6 +135,7 @@ struct BufferFrame {
       header.pid = 9999;
       header.next_free_bf = nullptr;
       header.logging = nullptr;
+      header.discardable = false;
       header.flush_sink_log = false;
       header.contention_tracker.reset();
       header.keep_in_memory = false;
@@ -137,6 +144,8 @@ struct BufferFrame {
    }
    // -------------------------------------------------------------------------------------
    BufferFrame() { header.latch->store(0ul); }
+   // -------------------------------------------------------------------------------------
+   void dump();
 };
 // -------------------------------------------------------------------------------------
 static constexpr u64 EFFECTIVE_PAGE_SIZE = sizeof(BufferFrame::Page::dt);

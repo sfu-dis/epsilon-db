@@ -98,5 +98,11 @@ void DTRegistry::deserialize(DTID dt_id, std::unordered_map<std::string, std::st
    return dt_types_ht[std::get<0>(dt_meta)].deserialize(std::get<1>(dt_meta), map);
 }
 // -------------------------------------------------------------------------------------
+std::string DTRegistry::getDTName(DTID dt_id)
+{
+   if (dt_instances_ht.count(dt_id) == 0) return "INEXISTANT";
+   auto dt_meta = dt_instances_ht[dt_id];
+   return std::get<2>(dt_meta);
+}
 }  // namespace storage
 }  // namespace leanstore

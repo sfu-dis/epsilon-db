@@ -64,9 +64,18 @@ struct PageState {
    // -------------------------------------------------------------------------------------
    u64 lock()
    {
+   u64 attempts = 0;
+   u64 locked = 0;
    retry:
+      if ((++attempts % 1073741824) == 0) {
+         printf("[WARN] suspect deadlock, stuck in lock() for %lu iterations, locked(%lu)\n", attempts, locked);
+         _mm_pause();
+         dump();
+         __asm__ volatile("int3");
+      }
       u64 v1 = raw.load(std::memory_order_acquire);
       if (v1 & latch_bit) {
+         ++locked;
          goto retry;
       }
       u64 v2 = v1 | latch_bit;
@@ -77,16 +86,7 @@ struct PageState {
    }
    std::pair<u64, u8> getLocked()
    {
-   retry:
-      u64 v1 = raw.load(std::memory_order_acquire);
-      if (v1 & latch_bit) {
-         goto retry;
-      }
-      u64 v2 = v1 | latch_bit;
-      if (!raw.compare_exchange_strong(v1, v2)) {
-         goto retry;
-      }
-      // return v1 & state_unmask;
+      u64 v1 = lock();
       LID lsn = v1 & lsn_mask;
       u8 nb_log_records = (v1 & nb_log_records_mask) >> nb_log_records_shift;
       return {lsn, nb_log_records};
@@ -110,8 +110,11 @@ struct PageState {
       raw.store(new_value, std::memory_order_release);
       return true;
    }
-   // void unlockDirty(LID lsn) { raw.store(lsn | state_discarded_mask, std::memory_order_release); }
-   void unlockClean(LID lsn) { raw.store(lsn | state_clean_mask, std::memory_order_release); }
+   void unlockClean(LID lsn) {
+      ensure(lsn != INVALID_LSN);
+      ensure((lsn & ~lsn_mask) == 0);
+      raw.store(lsn | state_clean_mask, std::memory_order_release);
+   }
    void unlockBF(BufferFrame* bf) { raw.store(reinterpret_cast<u64>(bf) | state_hot_mask, std::memory_order_release); }
    void unlock()
    {
@@ -119,6 +122,7 @@ struct PageState {
       u64 unlocked = raw.load(std::memory_order_relaxed) & latch_mask;
       raw.store(unlocked, std::memory_order_release);
    }
+   void free() { raw.store(0, std::memory_order_release); }
    // BufferFrame& asBufferFrame() { return *reinterpret_cast<BufferFrame*>(raw); }
    // -------------------------------------------------------------------------------------
    static std::string to_string(PAGE_STATE s)

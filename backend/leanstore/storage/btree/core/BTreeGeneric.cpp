@@ -21,14 +21,11 @@ void BTreeGeneric::create(DTID dtid, Config config)
    meta_node_bf = &BMC::global_bf->allocatePage();
    Guard guard(meta_node_bf.asBufferFrame().header.latch, GUARD_STATE::EXCLUSIVE);
    meta_node_bf.asBufferFrame().header.keep_in_memory = true;
-   // TODO(mfd) : refactor that to reset page.
    meta_node_bf.asBufferFrame().page.dt_id = dtid;
    meta_node_bf.asBufferFrame().page.fdp_plid = config.fdp_plid;
-   meta_node_bf.asBufferFrame().page.ru_epoch = s64(-1);
-   meta_node_bf.asBufferFrame().page.last_written_lsn = LID(-1);
    guard.unlock();
    // -------------------------------------------------------------------------------------
-   auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid);
+   auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid, true);
    auto root_write_guard = ExclusivePageGuard<BTreeNode>(std::move(root_write_guard_h));
    root_write_guard.init(true);
    // -------------------------------------------------------------------------------------
@@ -37,11 +34,16 @@ void BTreeGeneric::create(DTID dtid, Config config)
    meta_page->is_leaf = false;
    meta_page->upper = root_write_guard.bf();  // HACK: use upper of meta node as a swip to the storage root
    // -------------------------------------------------------------------------------------
-   // TODO: write WALs
    if (FLAGS_wal) {
-     root_write_guard.incrementGSN();
-     meta_page.incrementGSN();
+      // TODO(mfd) : write a WAL entry.
+      root_write_guard.incrementGSN();
+      meta_page.incrementGSN();
+   } else {
+      root_write_guard.markAsDirty();
+      meta_page.markAsDirty();
    }
+   // unpin the root.
+   root_write_guard.unPin();
 }
 // -------------------------------------------------------------------------------------
 void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
@@ -74,11 +76,14 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       assert(height == 1 || !c_x_guard->is_leaf);
       // -------------------------------------------------------------------------------------
       // create new root
+      // root node is created with keepAlive == false because the split may fail if allocating
+      // a new left node fails.
       auto new_root_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, false);
       auto new_root = ExclusivePageGuard<BTreeNode>(std::move(new_root_h));
-      auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid);
+      auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, true);
       auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
       // -------------------------------------------------------------------------------------
+      c_x_guard.bf()->markUnDiscardable();
       if (config.enable_wal) {
          // TODO: System transactions
          new_root.incrementGSN();
@@ -133,6 +138,8 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       } else {
          exec();
       }
+      new_root.unPin();
+      new_left_node.unPin();
       // -------------------------------------------------------------------------------------
       height++;
       COUNTERS_BLOCK() { WorkerCounters::myCounters().dt_split[dt_id]++; }
@@ -149,9 +156,12 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          assert(&meta_node_bf.asBufferFrame() != p_x_guard.bf());
          assert(!p_x_guard->is_leaf);
          // -------------------------------------------------------------------------------------
-         auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid);
+         auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, true);
          auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
          // -------------------------------------------------------------------------------------
+         p_x_guard.bf()->markUnDiscardable();
+         c_x_guard.bf()->markUnDiscardable();
+         ensure(!new_left_node.bf()->isDiscardable());
          // Increment GSNs before writing WAL to make sure that these pages marked as dirty
          // regardless of the FLAGS_wal
          if (config.enable_wal) {
@@ -202,6 +212,7 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          } else {
             exec();
          }
+         new_left_node.unPin();
          COUNTERS_BLOCK() { WorkerCounters::myCounters().dt_split[dt_id]++; }
       } else {
          p_guard.unlock();
@@ -261,6 +272,9 @@ bool BTreeGeneric::tryMerge(BufferFrame& to_merge, bool swizzle_sibling)
             return false;
          }
          // -------------------------------------------------------------------------------------
+         p_x_guard.bf()->markUnDiscardable();
+         c_x_guard.bf()->markUnDiscardable();
+         l_x_guard.bf()->markUnDiscardable();
          if (config.enable_wal) {
             p_guard.incrementGSN();
             c_guard.incrementGSN();
@@ -296,6 +310,9 @@ bool BTreeGeneric::tryMerge(BufferFrame& to_merge, bool swizzle_sibling)
             return false;
          }
          // -------------------------------------------------------------------------------------
+         p_x_guard.bf()->markUnDiscardable();
+         c_x_guard.bf()->markUnDiscardable();
+         r_x_guard.bf()->markUnDiscardable();
          if (config.enable_wal) {
             p_guard.incrementGSN();
             c_guard.incrementGSN();
@@ -542,8 +559,8 @@ SpaceCheckResult BTreeGeneric::checkSpaceUtilization(void* btree_object, BufferF
 // pre: source buffer frame is shared latched
 void BTreeGeneric::checkpoint(BTreeGeneric&, BufferFrame& bf, u8* dest)
 {
-   std::memcpy(dest, bf.page.dt, EFFECTIVE_PAGE_SIZE);
-   auto& dest_node = *reinterpret_cast<BTreeNode*>(dest);
+   std::memcpy(dest, bf.page, PAGE_SIZE);
+   auto& dest_node = *reinterpret_cast<BTreeNode*>(dest + (PAGE_SIZE - EFFECTIVE_PAGE_SIZE));
    // root node is handled as inner
    if (dest_node.isInner()) {
       for (u64 t_i = 0; t_i < dest_node.count; t_i++) {

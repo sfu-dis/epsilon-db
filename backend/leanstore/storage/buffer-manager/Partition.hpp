@@ -73,26 +73,26 @@ struct Partition {
    // SSD Pages
    const u64 pid_distance;
    std::mutex pids_mutex;  // protect free pids vector
-   std::vector<PID> freed_pids;
+   std::vector<std::pair<PID, ru_epoch_t>> freed_pids;
    u64 next_pid;
-   inline PID nextPID()
+   inline std::pair<PID, ru_epoch_t> nextPID()
    {
       std::unique_lock<std::mutex> g_guard(pids_mutex);
       if (freed_pids.size()) {
-         const u64 pid = freed_pids.back();
+         auto pid = freed_pids.back();
          freed_pids.pop_back();
          return pid;
       } else {
          const u64 pid = next_pid;
          next_pid += pid_distance;
          ensure((pid * PAGE_SIZE / 1024 / 1024 / 1024) <= FLAGS_ssd_gib);
-         return pid;
+         return {pid, UNMAPPED_RU_EPOCH};
       }
    }
-   void freePage(PID pid)
+   void freePage(PID pid, ru_epoch_t ru_epoch)
    {
       std::unique_lock<std::mutex> g_guard(pids_mutex);
-      freed_pids.push_back(pid);
+      freed_pids.emplace_back(pid, ru_epoch);
    }
    u64 allocatedPages() { return next_pid / pid_distance; }
    u64 freedPages()

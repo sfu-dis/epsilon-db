@@ -162,7 +162,7 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
       OP_RESULT ret = iterator.insertKV(key, value);
       ensure(ret == OP_RESULT::OK);
       if (config.enable_wal) {
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(key.length() + value.length());
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(key.length() + value.length(), false);
          wal_entry->type = WAL_LOG_TYPE::WALInsert;
          wal_entry->key_length = key.length();
          wal_entry->value_length = value.length();
@@ -381,7 +381,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          assert(update_descriptor.count > 0);  // if it is a secondary index, then we can not use updateSameSize
          // -------------------------------------------------------------------------------------
          const u16 delta_length = update_descriptor.size() + update_descriptor.diffLength();
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(key.length() + delta_length);
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(key.length() + delta_length, false);
          wal_entry->type = WAL_LOG_TYPE::WALUpdate;
          wal_entry->key_length = key.length();
          wal_entry->delta_length = delta_length;
@@ -399,7 +399,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          callback(current_value.data(), current_value.length());
          iterator.markAsDirty();
       }
-      iterator.contentionSplit();
+      // iterator.contentionSplit();
       jumpmu_return OP_RESULT::OK;
    }
    jumpmuCatch() {}
@@ -423,14 +423,13 @@ OP_RESULT BTreeLL::remove(u8* o_key, u16 o_key_length)
       }
       Slice value = iterator.value();
       if (config.enable_wal) {
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(o_key_length + value.length());
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(o_key_length + value.length(), false);
          wal_entry->type = WAL_LOG_TYPE::WALRemove;
          wal_entry->key_length = o_key_length;
          wal_entry->value_length = value.length();
          std::memcpy(wal_entry->payload, key.data(), key.length());
          std::memcpy(wal_entry->payload + o_key_length, value.data(), value.length());
          wal_entry.submit();
-         iterator.markAsDirty();
       } else {
          iterator.markAsDirty();
       }
@@ -562,21 +561,44 @@ void BTreeLL::todo(void*, const u8*, const u64, const u64, const bool)
 void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr)
 {
    const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr);
-   ensure_equal(wal_entry->type, WAL_LOG_TYPE::WALUpdate);
-   const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(log_record_ptr);
-   ensure_equal(update_entry->key_length, 8);
-   BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-   ensure(node->is_leaf);
-   const u8 *key = update_entry->payload;
-   s16 key_length = update_entry->key_length;
-   bool found = false;
-   s16 pos = node->lowerBound<true>(key, key_length, &found);
-   ensure(pos != -1);
-   auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
-   ensure(update_descriptor->count == 1);
-   ensure(update_descriptor->slots[0].offset == 0);
-   BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
-                          update_entry->payload + update_entry->key_length + update_descriptor->size());
+   switch(wal_entry->type) {
+      case WAL_LOG_TYPE::WALUpdate: {
+         const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(log_record_ptr);
+         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+         ensure(node->is_leaf);
+         const u8 *key = update_entry->payload;
+         u16 key_length = update_entry->key_length;
+         bool found = false;
+         s16 pos = node->lowerBound<true>(key, key_length, &found);
+         ensure(pos != -1);
+         auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
+         BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
+                                update_entry->payload + update_entry->key_length + update_descriptor->size());
+         break;
+      }
+      case WAL_LOG_TYPE::WALInsert: {
+         const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(log_record_ptr); 
+         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+         ensure(node->is_leaf);
+         const u8* key = insert_entry->payload;
+         const u8* value = key + insert_entry->key_length;
+         node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
+         break;
+      }
+      case WAL_LOG_TYPE::WALRemove: {
+         const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(log_record_ptr); 
+         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+         ensure(node->is_leaf);
+         const u8* key = remove_entry->payload;
+         bool ok = node->remove(key, remove_entry->key_length);
+         ensure(ok);
+         break;
+      }
+      default: {
+         throw ex::GenericException("can only redo updates, inserts and removes, but got " + std::to_string(static_cast<u8>(wal_entry->type)));
+         break;
+      }
+   }
 }
 // -------------------------------------------------------------------------------------
 void BTreeLL::unlock(void*, const u8*)

@@ -325,12 +325,13 @@ void BufferManager::writeAllBufferFrames()
          auto& bf = bfs[bf_i];
          bf.header.latch.mutex.lock();
          if (!bf.isFree() && bf.isDirty()) {
-            page.dt_id = bf.page.dt_id;
-            page.magic_debugging_number = bf.header.pid;
+            // bf.page.dt_id = bf.page.dt_id;
+            bf.page.magic_debugging_number = bf.header.pid;
             s64 previous_ru_epoch = bf.page.ru_epoch;
             u64 cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
-            page.ru_epoch = cur_ru_epoch;
-            DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, page.dt);
+            bf.page.prev_ru_epoch = previous_ru_epoch;
+            bf.page.ru_epoch = cur_ru_epoch;
+            DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure_equal(ret, PAGE_SIZE);
             if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch) {
@@ -409,7 +410,7 @@ BufferFrame& BufferManager::allocatePage()
    // Pick a pratition randomly
    Partition& partition = randomPartition();
    BufferFrame& free_bf = partition.dram_free_list.tryPop();
-   PID free_pid = partition.nextPID();
+   auto [free_pid, ru_epoch] = partition.nextPID();
    if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
    assert(free_bf.header.state == BufferFrame::STATE::FREE);
    // -------------------------------------------------------------------------------------
@@ -419,9 +420,12 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.latch->fetch_add(LATCH_EXCLUSIVE_BIT);
    free_bf.header.pid = free_pid;
    free_bf.header.state = BufferFrame::STATE::HOT;
-   free_bf.header.last_written_plsn = free_bf.page.PLSN = free_bf.page.GSN = 0;
-   free_bf.page.ru_epoch = s64(-1);
-   free_bf.page.last_written_lsn = INVALID_LSN;
+   // A newly created page cannot be discarded.
+   ensure(!free_bf.header.discardable.load());
+   free_bf.header.last_written_plsn = 0;
+   free_bf.page.reset();
+   free_bf.page.ru_epoch = ru_epoch;
+   free_bf.page.magic_debugging_number = free_pid;
    free_bf.header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK()
@@ -498,9 +502,10 @@ void BufferManager::evictLastPage()
 // -------------------------------------------------------------------------------------
 void BufferManager::reclaimPage(BufferFrame& bf)
 {
+   if (FLAGS_enable_discarding) discard_state[bf.header.pid].free();
    Partition& partition = getPartition(bf.header.pid);
    if (FLAGS_recycle_pages) {
-      partition.freePage(bf.header.pid);
+      partition.freePage(bf.header.pid, bf.page.ru_epoch);
    }
    // -------------------------------------------------------------------------------------
    if (bf.header.is_being_written_back) {
@@ -527,6 +532,7 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);
    bf.header.last_written_plsn = bf.page.PLSN;
    bf.header.pid = meta_pid;
+   bf.header.discardable = false;
    meta_swip.warm(&bf);
    bf.header.state = BufferFrame::STATE::HOT;
    jumpmu_return bf;
@@ -583,10 +589,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       swip_guard.recheck();
       return bf;
    } else if (swip_value.isCOOL()) {
-      LIVELOCK_DEBUG_BLOCK()
-      {
-         WorkerCounters::myCounters().cool_success++;
-      }
       BufferFrame* bf = &swip_value.asBufferFrameMasked();
       swip_guard.recheck();
       BMOptimisticGuard bf_guard(bf->header.latch);
@@ -619,6 +621,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       }
       if (FLAGS_fake_log_reapply) {
          bf.page.PLSN += nb_log_records;
+         bf.page.last_written_lsn = lsn_list[nb_log_records -1];
          return;
       }
       cr::WALEntry* entry = nullptr;
@@ -666,6 +669,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       u8 nb_log_records = 0;
       LID* lsn_list = nullptr;
       if (FLAGS_enable_discarding) {
+         // Since I already locked the partition and there is no IO frame.
+         // Then the garbage collection is not able to concurrently fix the page.
+         // Therefore, I expect the page state to be unlocked.
+         ensure(!discard_state[pid].isLocked());
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
       }
@@ -752,6 +759,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       bf.header.state = BufferFrame::STATE::LOADED;
       bf.header.pid = pid;
       bf.header.last_written_plsn = bf.page.PLSN;
+      bf.header.discardable.store(true, std::memory_order_release);
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }

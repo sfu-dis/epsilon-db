@@ -73,6 +73,8 @@ struct DTRegistry {
    // Serialization
    std::unordered_map<std::string, std::string> serialize(DTID dt_id);
    void deserialize(DTID dt_id, std::unordered_map<std::string, std::string> map);
+   // -------------------------------------------------------------------------------------
+   std::string getDTName(DTID dt_id);
 };
 
 // -------------------------------------------------------------------------------------

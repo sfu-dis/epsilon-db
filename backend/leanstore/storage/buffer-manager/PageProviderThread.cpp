@@ -79,8 +79,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   repickIf(r_buffer->page.GSN > r_buffer->header.logging->hardened_gsn.load(std::memory_order_acquire));
                }
                // FIXME(mfd) : Temporarly avoiding evicting inner nodes.
-               auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
-               repickIf(!node->is_leaf);
+               if (FLAGS_enable_discarding) {
+                  auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
+                  repickIf(!node->is_leaf);
+               }
                r_guard.recheck();
                // -------------------------------------------------------------------------------------
                if (r_buffer->header.state == BufferFrame::STATE::COOL) {
@@ -210,11 +212,15 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          const PID evicted_pid = bf.header.pid;
          const LID last_write_lsn = bf.page.last_written_lsn;
          if (discard) {
+            if (!bf.isDiscardable()) {
+               c_guard.guard.unlock();
+               jumpmu::jump();
+            }
             // TODO(mfd) : PARANOID_BLOCK()
             if (FLAGS_wal & FLAGS_wal_pwrite) {
                u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
                if (log_id != (1 + (bf.page.ru_epoch % max_open_ru_epochs))) {
-                  bf.page.dump();
+                  bf.dump();
                   raise(SIGTRAP);
                }
             }
@@ -315,7 +321,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             */
             if (cooled_bf->isDirty()) {
                if (FLAGS_enable_discarding
-                  && cooled_bf->canDiscard() 
+                  && cooled_bf->isDiscardable()
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf
                   && cooled_bf->page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
@@ -365,21 +371,16 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          }
          
          async_write_buffer.getWrittenBfs(
-             [&](BufferFrame& written_bf, u64 written_lsn, ru_epoch_t written_ru_epoch) {
-                jumpmuTry()
-                {
-                   // When the written back page is being exclusively locked, we should rather waste the write and move on to another page
-                   // Instead of waiting on its latch because of the likelihood that a data structure implementation keeps holding a parent latch
-                   // while trying to acquire a new page
-                   // XXX(mfd) : Don't waste the write for now,.because we're updating the RU epoch directly on the page.
-                   // Also for us, because we're discarding PP threads rarely block on IO and there is plenty of free pages.
+             [&](BufferFrame& written_bf, u64 written_plsn, ru_epoch_t written_ru_epoch) {
+                while (true) {
+                   jumpmuTry()
                    {
                       BMOptimisticGuard o_guard(written_bf.header.latch);
                       // BMExclusiveGuard ex_guard(o_guard);
                       o_guard.guard.toExclusive(); 
 
                       ensure(written_bf.header.is_being_written_back);
-                      // ensure(written_bf.header.last_written_plsn < written_lsn);
+                      ensure_lte(written_bf.header.last_written_plsn, written_plsn);
                       // -------------------------------------------------------------------------------------
                       written_bf.header.is_being_written_back = false;
                       // written_bf.header.logging = nullptr;
@@ -392,12 +393,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                          ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       }
                       o_guard.guard.unlock();
+                      jumpmu_break;
                    }
-                }
-                jumpmuCatch()
-                {
-                   written_bf.header.crc = 0;
-                   written_bf.header.is_being_written_back.store(false, std::memory_order_release);
+                   jumpmuCatch() {}
                 }
                 // -------------------------------------------------------------------------------------
                 {
