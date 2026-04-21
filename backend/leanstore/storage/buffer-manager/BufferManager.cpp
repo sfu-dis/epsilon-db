@@ -690,6 +690,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
       u32 wait_for_io = 1;
+      using Time = decltype(std::chrono::high_resolution_clock::now());
+      [[maybe_unused]] Time start_io, end_io;
+      COUNTERS_BLOCK(buffer_miss_io_latency) { start_io = std::chrono::high_resolution_clock::now(); }
       if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
          // issue the asynchronus log record read.
          ensure(discard_state[pid].isDiscarded());
@@ -713,7 +716,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_uring_sqe_set_data64(sqe, pid | (1UL << 63));
       s32 s = io_uring_submit_and_wait(&cr::Worker::my().ring, wait_for_io);
       ensure_equal(s, wait_for_io);
-      // TODO(mfd) : Add the io Read Latency Histogram
       COUNTERS_BLOCK(read_operations_counter)
       {
          WorkerCounters::myCounters().read_operations_counter++;
@@ -722,6 +724,14 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       struct io_uring_cqe* cqes[1 + FLAGS_max_log_records_to_discard];
       u32 ready = io_uring_peek_batch_cqe(&cr::Worker::my().ring, cqes, wait_for_io);
       ensure_equal(ready, wait_for_io);
+      COUNTERS_BLOCK(buffer_miss_io_latency)
+      {
+         end_io = std::chrono::high_resolution_clock::now();
+         WorkerCounters::myCounters().io_phase_us[wait_for_io-1] += 
+             (std::chrono::duration_cast<std::chrono::microseconds>(end_io - start_io).count());
+         ensure(wait_for_io > 0 && wait_for_io <= (FLAGS_max_log_records_to_discard + 1));
+         WorkerCounters::myCounters().read_operations_histogram[wait_for_io-1]++;
+      }
       bool seen_page = false;
       for (int i = 0; i < wait_for_io; ++i) {
          auto* cqe = cqes[i];

@@ -5,6 +5,7 @@
 
 #include "PerfEvent.hpp"
 #include "leanstore/utils/Hist.hpp"
+#include "leanstore/storage/buffer-manager/BufferFrame.hpp"
 
 // -------------------------------------------------------------------------------------
 #include <atomic>
@@ -48,6 +49,9 @@ struct WorkerCounters {
    atomic<u64> tx_abort = 0;
    atomic<u64> olap_tx_abort = 0;
    atomic<u64> tmp = 0;
+   // -------------------------------------------------------------------------------------
+   atomic<u64> io_phase_us[1+MAX_PENDING_LSN_COUNT] = {0};
+   atomic<u64> read_operations_histogram[1+MAX_PENDING_LSN_COUNT] = {0};
    // -------------------------------------------------------------------------------------
    // Space and contention management
    atomic<u64> contention_split_succ_counter[max_dt_id] = {0};

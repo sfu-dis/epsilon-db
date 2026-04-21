@@ -42,22 +42,22 @@ columns:
 
   gct_phase_1_pct:
     field: "gct_p1%"
-    enabled: true
+    enabled: false
     source: cr
 
   gct_phase_2_pct:
     field: "gct_p2%"
-    enabled: true
+    enabled: false
     source: cr
 
   gct_write_pct:
     field: "gct_w%"
-    enabled: true
+    enabled: false
     source: cr
 
   failed_try_pop:
     field: "failed trypop"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_fixed_mib:
@@ -72,7 +72,7 @@ columns:
 
   gc_clean:
     field: "GC Clean"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_hot:
@@ -100,3 +100,52 @@ columns:
     enabled: true
     source: bm
 
+  io_phase_ns:
+    field: "IO Phase%"
+    enabled: false
+    source: bm
+
+  redo_phase_ns:
+    field: "redo Phase%"
+    enabled: false
+    source: bm
+
+  read_latency_us:
+    field: "rlat"
+    enabled: true
+    source: bm
+ 
+  read_latency_0_us:
+    field: "rlat0"
+    enabled: true
+    source: bm
+
+  read_latency_1_us:
+    field: "rlat1"
+    enabled: true
+    source: bm
+
+  read_latency_2_us:
+    field: "rlat2"
+    enabled: true
+    source: bm
+
+  read_latency_3_us:
+    field: "rlat3"
+    enabled: false
+    source: bm
+
+  read_latency_4_us:
+    field: "rlat4"
+    enabled: false
+    source: bm
+
+  read_depth_0:
+    field: "rd0"
+    enabled: false
+    source: bm
+
+  read_depth_1:
+    field: "rd1"
+    enabled: false
+    source: bm

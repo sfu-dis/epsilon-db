@@ -170,6 +170,20 @@ void BMTable::open()
       // PAGE_SIZE = 4KiB
       col << BMC::global_bf->bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
    });
+   // -------------------------------------------------------------------------------------
+   for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
+      columns.emplace("read_depth_" + to_string(i), [i, this](Column& col) {
+         col << local_read_operations_histogram[i];
+      });
+   }
+   for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
+      columns.emplace("read_latency_" + to_string(i) + "_us", [i, this](Column& col) {
+         col << (local_io_phase_us[i] * 1.0) / local_read_operations_histogram[i];
+      });
+   }
+   columns.emplace("read_latency_us", [this](Column& col) {
+      col << (local_agg_io_phase_us * 1.0) / local_read_operations_counter;
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()
@@ -187,6 +201,12 @@ void BMTable::next()
    total = local_phase_1_ms + local_phase_2_ms + local_phase_3_ms;
    // -------------------------------------------------------------------------------------
    local_read_operations_counter = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_counter);
+   local_agg_io_phase_us = 0;
+   for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
+      local_io_phase_us[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::io_phase_us, i);
+      local_agg_io_phase_us += local_io_phase_us[i];
+      local_read_operations_histogram[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_histogram, i); 
+   }
    // -------------------------------------------------------------------------------------
    // worker io read latency histogram, every N seconds
    WorkerCounters::worker_counters.begin()->seconds++;

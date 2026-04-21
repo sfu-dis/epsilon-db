@@ -10,13 +10,13 @@
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
+inline constexpr u64 MAX_PENDING_LSN_COUNT = 7;
 namespace cr
 {
 struct Logging; // Forward Declaration
 }
 namespace storage
 {
-static constexpr u64 MAX_PENDING_LSN_COUNT = 7;
 // -------------------------------------------------------------------------------------
 const u64 PAGE_SIZE = 4 * 1024;
 // -------------------------------------------------------------------------------------
