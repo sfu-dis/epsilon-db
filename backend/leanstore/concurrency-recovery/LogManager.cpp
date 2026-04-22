@@ -115,23 +115,34 @@ u32 LogManager::LSN2LogID(LID lsn)
    return log_id;
 }
 
-s32 LogManager::getLogID(s64 ru_epoch)
+u32 LogManager::getLogID(ru_epoch_t ru_epoch)
+{
+   ensure(global->isPartitionedByRUepoch());
+   return (ru_epoch % (global->log_count-FLAGS_wal_sink_logs)) + FLAGS_wal_sink_logs;
+}
+
+s32 LogManager::getLogID(ru_epoch_t ru_epoch, PID page_id)
 {
    ensure(global->isPartitionedByRUepoch());
    s32 log_id = -1;
    if ((ru_epoch == -1)
       || (ru_epoch <= storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire))) {
-      log_id = 0;
+      log_id = page_id % FLAGS_wal_sink_logs;
    } else {
-      // for now one to one mapping
-      log_id = (ru_epoch % (global->log_count-1)) + 1;
+      log_id = getLogID(ru_epoch); 
    }
    return log_id;
 }
 
-Logging& LogManager::getLog(s64 ru_epoch, [[maybe_unused]] PID page_id)
+Logging& LogManager::getLog(s64 ru_epoch)
 {
-   s32 log_id = getLogID(ru_epoch);
+   u32 log_id = getLogID(ru_epoch);
+   return global->all_logs[log_id];
+}
+
+Logging& LogManager::getLog(s64 ru_epoch, PID page_id)
+{
+   s32 log_id = getLogID(ru_epoch, page_id);
    ensure(log_id != -1);
    return global->all_logs[log_id];
 }
@@ -154,7 +165,7 @@ void LogManager::resetLogSegment(s64 ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
    ensure(ru_epoch >= 0); 
-   u32 log_id = (ru_epoch % (global->log_count - 1)) + 1;
+   u32 log_id = getLogID(ru_epoch);
    auto& lseg = global->meta->log_segments[log_id];
    fprintf(fp, "[INFO] Reclaiming log of RU epoch %ld mapped to %u\n", ru_epoch, log_id);
    fprintf(fp, "[INFO] Log space consumption was %.1f%% when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
@@ -186,7 +197,7 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    {
       //FIXME(mfd) : Do not account for writes to the sink log for now
       // until we implement recovery.
-      if (log_i != 0) {
+      if (!isSinkLog(log_i)) {
          u64 effective_size = size;
          if (!block_full) effective_size -= LOG_DEV_BLK_SIZE;
          log_stats.bytes_used.fetch_add(effective_size, std::memory_order_release);

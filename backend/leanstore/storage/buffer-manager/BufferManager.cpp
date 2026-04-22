@@ -778,12 +778,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // THINK of this: Is the last written lsn of a dirty page represents it's ru_epoch ?
          // TODO(mfd) : Do this sanity check for all log records.
          u32 log_id = cr::LogManager::global->LSN2LogID(lsn);
-         if (log_id != 1 + (bf.page.ru_epoch % max_open_ru_epochs)) {
+         if (log_id != cr::LogManager::getLogID(bf.page.ru_epoch)) {
             cerr << "RU epoch is swizzled pointer " << ru_epoch << endl;
-            bf.page.dump();
+            bf.dump();
          }
-         ensure_equal(log_id, 1 + (bf.page.ru_epoch % max_open_ru_epochs));
-         ensure(log_id != 0);
+         ensure_equal(log_id, cr::LogManager::getLogID(bf.page.ru_epoch));
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
          ensure_lte(nb_log_records, FLAGS_max_log_records_to_discard);
          fix_dirty_page(bf, lsn_list, nb_log_records);

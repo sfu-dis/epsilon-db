@@ -219,7 +219,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // TODO(mfd) : PARANOID_BLOCK()
             if (FLAGS_wal & FLAGS_wal_pwrite) {
                u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
-               if (log_id != (1 + (bf.page.ru_epoch % max_open_ru_epochs))) {
+               if (log_id != cr::LogManager::getLogID(bf.page.ru_epoch)) {
                   bf.dump();
                   raise(SIGTRAP);
                }

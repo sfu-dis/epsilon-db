@@ -196,7 +196,7 @@ class HybridPageGuard
       if (bf->header.logging != nullptr) {
          if (bf->header.logging != &logging) {
             // This only happens when the RU on which the page reside has started to be reclaimed.
-            if (logging.log_id != cr::LogManager::SINK_LOG_ID) {
+            if (logging.log_id >= FLAGS_wal_sink_logs) {
                cerr << "Previous Log ID " << bf->header.logging->log_id << endl;
                cerr << "New Log ID " << logging.log_id << endl;
                bf->dump();
@@ -208,7 +208,7 @@ class HybridPageGuard
       } else {
          first_entry_in_log = true;
       }
-      if (logging.log_id == cr::LogManager::SINK_LOG_ID) {
+      if (logging.log_id < FLAGS_wal_sink_logs) {
          bf->markUnDiscardable();
       }
       bf->header.logging = &logging;
@@ -233,7 +233,7 @@ class HybridPageGuard
       }
       LID *pending_lsn = bf->header.pending_lsn;
       if (FLAGS_enable_discarding && bf->isDiscardable()) { 
-         ensure(logging.log_id != cr::LogManager::SINK_LOG_ID);
+         ensure(logging.log_id >= FLAGS_wal_sink_logs);
          ensure(!first_entry_in_log || (bf->header.pending_lsn_count == 0));
          ensure_lt(bf->header.pending_lsn_count, FLAGS_max_log_records_to_discard);
          pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;

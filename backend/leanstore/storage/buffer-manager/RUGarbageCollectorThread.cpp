@@ -268,7 +268,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          current_gc_epoch = gc_ru_epoch;
          s64 prev_gc_ru_epoch = current_gc_epoch - 1;
          auto& set = ru_discard_set[gc_ru_epoch];
-         auto& logging = cr::LogManager::global->all_logs[1 + (gc_ru_epoch % max_open_ru_epochs)];
+         auto& logging = cr::LogManager::getLog(gc_ru_epoch);
          u32 ru_usage_before_gc;
          set.m.lock();
          if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
@@ -488,9 +488,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             s64 old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
             s64 new_re = old_re + 1;
             ensure_equal(new_re, current_gc_epoch);
-            u32 log_id = (current_gc_epoch % (cr::LogManager::global->log_count - 1)) + 1;
-            // FIXME(mfd) : This part is clumsy.
-            auto& logging = cr::LogManager::global->all_logs[log_id];
+            auto& logging = cr::LogManager::getLog(current_gc_epoch);
             u32 ru_usage = set.ReclaimUnitUsage();
             bm_stats.estimated_gc_writes.fetch_add(set.total.load() - ru_usage);
             u64 fixed_pages_in_ru = set.total_fixed.load();

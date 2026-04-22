@@ -79,6 +79,7 @@ DECLARE_uint64(wal_log_writers);
 DECLARE_uint64(wal_buffer_size);
 DECLARE_string(wal_partition_by);
 DECLARE_uint64(wal_partitions_count);
+DECLARE_uint32(wal_sink_logs);
 // -------------------------------------------------------------------------------------
 DECLARE_string(isolation_level);
 DECLARE_bool(mv);

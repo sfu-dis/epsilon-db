@@ -64,9 +64,14 @@ struct LogManager {
    ~LogManager();
 
    static Logging& getLog(storage::BufferFrame *bf);
-   static s32 getLogID(s64 ru_epoch);
-   static Logging& getLog(s64 ru_epoch, PID page_id);
+   static s32 getLogID(ru_epoch_t ru_epoch, PID page_id);
+   static Logging& getLog(ru_epoch_t ru_epoch, PID page_id);
+   // These variant of get log are to be used only when the log that the page is mapped to
+   // won't change concurrently.
+   static u32 getLogID(ru_epoch_t ru_epoch);
+   static Logging& getLog(ru_epoch_t ru_epoch);
    u32 LSN2LogID(LID lsn);
+   bool isSinkLog(u32 log_id) { return log_id < FLAGS_wal_sink_logs; }
 
    void resetLogSegment(s64 ru_epoch);
 
