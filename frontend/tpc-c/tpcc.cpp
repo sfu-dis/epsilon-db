@@ -51,6 +51,7 @@ int main(int argc, char** argv)
    gflags::SetUsageMessage("Leanstore TPC-C");
    gflags::ParseCommandLineFlags(&argc, &argv, true);
    assert(FLAGS_tpcc_warehouse_count > 0);
+   if (FLAGS_validate_flags_and_exit) { return 0; }
    LeanStore::addS64Flag("TPC_SCALE", &FLAGS_tpcc_warehouse_count);
    // -------------------------------------------------------------------------------------
    // Check arguments

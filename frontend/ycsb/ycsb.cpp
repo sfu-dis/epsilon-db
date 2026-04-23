@@ -49,6 +49,8 @@ int main(int argc, char** argv)
    gflags::SetUsageMessage("Leanstore Frontend");
    gflags::ParseCommandLineFlags(&argc, &argv, true);
    // -------------------------------------------------------------------------------------
+   if (FLAGS_validate_flags_and_exit) { return 0; }
+   // -------------------------------------------------------------------------------------
    chrono::high_resolution_clock::time_point begin, end;
    // -------------------------------------------------------------------------------------
    // Always init with the maximum number of threads (FLAGS_worker_threads)

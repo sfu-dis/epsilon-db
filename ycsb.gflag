@@ -1,0 +1,5 @@
+--ycsb_read_ratio=0
+--ycsb_worker_per_table
+--ycsb_profiler_thread
+--noycsb_warmup
+

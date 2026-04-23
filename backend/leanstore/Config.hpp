@@ -2,6 +2,8 @@
 #include <gflags/gflags_declare.h>
 #include "gflags/gflags.h"
 // -------------------------------------------------------------------------------------
+DECLARE_bool(validate_flags_and_exit);
+// -------------------------------------------------------------------------------------
 DECLARE_double(dram_gib);
 DECLARE_double(ssd_gib);
 DECLARE_string(ssd_path);

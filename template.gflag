@@ -1,7 +1,7 @@
 --partition_bits=12
 --dram_gib=80
 --ssd_gib=3500
---freepct=1
+--free_pct=1
 --recycle_pages
 --worker_threads=64
 --pp_threads=12
@@ -12,13 +12,9 @@
 
 --wal
 --nowal_tuple_rfa
+# --wal_partitions_count=310
 --wal_partitions_count=288
+--wal_sink_logs=1
 
 --redo_log_file=/dev/nvme2n1
 
---tpcc_abort_pct=0
---steady_tpcc
-
---ycsb_read_ratio=0
---ycsb_worker_per_table
---ycsb_profiling_thread

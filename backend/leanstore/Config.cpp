@@ -1,5 +1,7 @@
 #include "gflags/gflags.h"
 // -------------------------------------------------------------------------------------
+DEFINE_bool(validate_flags_and_exit, false, "");
+// -------------------------------------------------------------------------------------
 DEFINE_double(dram_gib, 1, "");
 DEFINE_double(ssd_gib, 1700, "");
 DEFINE_uint32(free_pct, 1, "pct");

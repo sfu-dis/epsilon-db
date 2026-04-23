@@ -10,6 +10,8 @@ STATS_DIR=/home/mfd4/fdp/paper
 SRC_DIR=".." # assume running from build dir
 BUILD_DIR="."
 FLAGS_FILE="${SRC_DIR}/template.gflag"
+YCSB_FLAGS_FILE="${SRC_DIR}/ycsb.gflag"
+TPCC_FLAGS_FILE="${SRC_DIR}/tpcc.gflag"
 
 device=
 vanilla=true
@@ -19,8 +21,10 @@ zipfian_skew=
 database_size_gib=
 threshold=
 trim=false
+prefix=""
 
 tpcc_warehouse_count=
+max_log_records_to_discard=3
 
 original_args=("$@")
 
@@ -60,6 +64,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --threshold)
             threshold="$2"
+            shift 2
+            ;;
+        --max_log_records_to_discard)
+            max_log_records_to_discard="$2"
+            shift 2
+            ;;
+        --prefix)
+            prefix="$2"
             shift 2
             ;;
         *)
@@ -133,22 +145,24 @@ if [[ "$distribution" == "zipfian" ]]; then
    skew="zipf${zipfian_skew}"
 fi
 
+dir_name="${STATS_DIR}/${prefix}${benchmark}"
+
 if [[ "$benchmark" == "ycsb" ]]; then
    tib_int=$(( database_size_gib / 1024 ))
    tib_dec=$(( (database_size_gib * 10 / 1024) % 10 ))
    database_size_tib="${tib_int}.${tib_dec}"
    util="${database_size_tib}TiB"
-   dir_name="${STATS_DIR}/${benchmark}_${skew}_${util}"
+   dir_name="${dir_name}_${util}"
 else
    util="${tpcc_warehouse_count}whs"
-   dir_name="${STATS_DIR}/${benchmark}_${util}"
+   dir_name="${dir_name}_${util}"
 fi
 
 
 if [[ "$vanilla" == true ]]; then
    dir_name="${dir_name}_vanilla"
 else 
-   dir_name="${dir_name}_${threshold}"
+   dir_name="${dir_name}_${threshold}_discard${max_log_records_to_discard}_epsilondb"
 fi
 
 
@@ -183,7 +197,7 @@ mkdir -p "$dir_name"
 
 passwd=""
 waf() {
-   echo "Background WAF sampling process: starting"
+   # echo "Background WAF sampling process: starting"
    while true; do
       wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
       echo "${wafstr}"
@@ -198,6 +212,14 @@ run_flags="run.gflag"
 
 cp "$FLAGS_FILE" "$load_flags"
 cp "$FLAGS_FILE" "$run_flags"
+
+if [[ "$benchmark" == "ycsb" ]]; then
+   cat "$YCSB_FLAGS_FILE" >> "$load_flags"
+   cat "$YCSB_FLAGS_FILE" >> "$run_flags"
+else
+   cat "$TPCC_FLAGS_FILE" >> "$load_flags"
+   cat "$TPCC_FLAGS_FILE" >> "$run_flags"
+fi
 
 {
    echo "--ssd_path=${device}"
@@ -218,8 +240,7 @@ cp "$FLAGS_FILE" "$run_flags"
 {
    echo "--ssd_path=${device}"
    echo "--recover"
-   echo "--run_for_seconds=14400" # 8 hours
-   echo "--noycsb_warmup"
+   echo "--run_for_seconds=18000" # 8 hours
    echo "--wal_pwrite"
    if [[ "$vanilla" == "true" ]]; then
       echo "--noenable_discarding"
@@ -229,10 +250,11 @@ cp "$FLAGS_FILE" "$run_flags"
       echo "--ru_gc_threads=4"
       echo "--ru_gc_threshold=${threshold}"
       echo "--wal_partition_by=ru_epoch"
+      echo "--max_log_records_to_discard=${max_log_records_to_discard}"
    fi
 
    if [[ "$benchmark" == "tpcc" ]]; then
-      echo "--steady_tpcc"
+      echo "--tpcc_warehouse_count=${tpcc_warehouse_count}"
    else
       # ycsb benchmark
       if [[ "$distribution" == "zipfian" ]]; then
@@ -244,6 +266,25 @@ cp "$FLAGS_FILE" "$run_flags"
    fi
 
 } >> "$run_flags"
+
+# turn the flags file to a single line of arguments
+flagfile_to_line() {
+    local file="$1"
+    local out=()
+
+    while IFS= read -r line; do
+        line="${line%%#*}"
+
+        line="$(echo "$line" | xargs)"
+
+        [[ -z "$line" ]] && continue
+
+        out+=( "$line" )
+    done < "$file"
+
+    printf "%s " "${out[@]}"
+}
+
 
 # exit 0
 
@@ -265,13 +306,18 @@ fi
 
 make -j 10
 
+# Validate flags before running long experiments.
+sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$load_flags")
+sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$run_flags")
+
 # Use a flags file
 # Generate from it the load and run flag files
 
 # sudo gdb --ex run --args ./frontend/ycsb --flagfile="$load_flags"
 
 
-sudo ${BENCHMARK_BINARY} --flagfile="$load_flags"
+# sudo ${BENCHMARK_BINARY} --flagfile="$load_flags"
+sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$load_flags")
 
 # lauch the WAF calculator in the background
 waf > "${dir_name}/waf" &
@@ -290,7 +336,8 @@ shutdown() {
 trap shutdown INT
 trap shutdown EXIT
 
-sudo ${BENCHMARK_BINARY} --flagfile="$run_flags"
+# sudo ${BENCHMARK_BINARY} --flagfile="$run_flags"
+sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
 # while true; do
 #   sleep 10
 #    echo "G"
