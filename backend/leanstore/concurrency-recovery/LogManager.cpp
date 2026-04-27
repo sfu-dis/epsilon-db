@@ -38,7 +38,8 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    fp = fopen("log_manager_journal.txt", "w");
    ensure(fp != nullptr);
    // -------------------------------------------------------------------------------------
-   if (FLAGS_recover) {
+   const bool recover_wal = FLAGS_recover && !FLAGS_clean_recover;
+   if (recover_wal) {
       s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, 0);
       ensure_equal(ret, s64(meta_size));
       ensure_equal(meta->number_logs, nb_logs);
@@ -58,7 +59,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    }
    for (u32 log_i = 0; log_i < log_count; ++log_i) {
       auto* seg = &meta->log_segments[log_i];
-      if (!FLAGS_recover) {
+      if (!recover_wal) {
          seg->start_off = log_start_offset + log_i * log_segment_size;
          seg->end_off = seg->start_off + log_segment_size;
          seg->offset = seg->last_start_offset = 0;
@@ -75,15 +76,15 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       auto& logging = all_logs[log_i];
       logging.log_id = log_i;
       logging.log_segment_start = seg->start_off;
-      logging.wal_lsn_counter = FLAGS_recover ? seg->offset : 0;
-      logging.log_gsn_clock = FLAGS_recover ? (seg->hardened_gsn) : 0;
+      logging.wal_lsn_counter = recover_wal ? seg->offset : 0;
+      logging.log_gsn_clock = recover_wal ? (seg->hardened_gsn) : 0;
       logging.wt_to_lw.current_value.last_gsn = logging.hardened_gsn = logging.log_gsn_clock;
       logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
       ensure(logging.wal_buffer != nullptr);
       ensure_equal(u64(logging.wal_buffer) % 4096, 0);
       std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    }
-   if (!FLAGS_recover) {
+   if (!recover_wal) {
       s64 ret = pwrite(log_dev_fd, meta_block_buffer, meta_size, /*offset*/ 0);
       ensure_equal(ret, s64(meta_size));
    }

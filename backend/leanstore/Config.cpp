@@ -122,6 +122,7 @@ DEFINE_bool(history_tree_inserts, true, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(persist, false, "");
 DEFINE_bool(recover, false, "");
+DEFINE_bool(clean_recover, false, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
 DEFINE_string(persist_file, "./leanstore.json", "Where should the persist config be saved to?");
 DEFINE_string(recover_file, "./leanstore.json", "Where should the recover config be loaded from?");
 // -------------------------------------------------------------------------------------
@@ -135,6 +136,7 @@ DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epoc
 DEFINE_uint32(max_log_records_to_discard, 3, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 4, "Force GC if the number of active RU epochs is less than max open by this value");
+DEFINE_uint32(ru_size, 3193344, "Unit of garbage collection in database pages (4 KiB)");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------

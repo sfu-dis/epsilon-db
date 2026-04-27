@@ -337,6 +337,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
                      cooled_bf->page.prev_ru_epoch = cooled_bf->page.ru_epoch;
                      cooled_bf->page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
+                     if (!FLAGS_wal) { cooled_bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }

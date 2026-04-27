@@ -34,9 +34,9 @@ namespace storage
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
-BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd) :
-  ssd_fd(ssd_fd), max_open_ru_epochs(total_blocks_in_ssd / RU_SIZE),
-  persistant_ru_state_offset(utils::upAlign(FLAGS_ssd_gib * 1073741824, 4096)),
+BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs) :
+  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs),
+  persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE),
   ru_discard_set(max_open_ru_epochs)
 {
    // -------------------------------------------------------------------------------------
@@ -331,6 +331,7 @@ void BufferManager::writeAllBufferFrames()
             u64 cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
             bf.page.prev_ru_epoch = previous_ru_epoch;
             bf.page.ru_epoch = cur_ru_epoch;
+            if (!FLAGS_wal) { bf.page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure_equal(ret, PAGE_SIZE);

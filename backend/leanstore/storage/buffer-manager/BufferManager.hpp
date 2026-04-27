@@ -226,7 +226,7 @@ public:
    FILE *fp;
   public:
    // -------------------------------------------------------------------------------------
-   BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd);
+   BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs);
    ~BufferManager();
    // -------------------------------------------------------------------------------------
    BufferFrame& allocatePage();

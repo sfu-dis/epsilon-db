@@ -87,26 +87,29 @@ LeanStore::LeanStore()
    }
    ensure(fcntl(ssd_fd, F_GETFL) != -1);
    // -------------------------------------------------------------------------------------
-   u64 total_blocks_in_ssd = 0; // depends on how the namespace is formatted
-   if (FLAGS_ssd_gib == 0) {
-      u64 ssd_size; // in bytes
-      if (ioctl(ssd_fd, BLKGETSIZE64, &ssd_size) == 0) {
-         std::cout << "[INFO] SSD size: " << ssd_size << " bytes" << std::endl;
-         total_blocks_in_ssd = ssd_size / 4096;
-      } else {
-         perror("ioctl");
-      }
+   u64 ssd_size_in_bytes;
+   if (ioctl(ssd_fd, BLKGETSIZE64, &ssd_size_in_bytes) == 0) {
+      std::cout << "[INFO] SSD size: " << ssd_size_in_bytes / 1073741824 << " GiB" << std::endl;
    } else {
-      total_blocks_in_ssd = (FLAGS_ssd_gib * 1048576) / 4;
+      perror("ioctl");
    }
-   u64 max_open_ru_epochs = total_blocks_in_ssd / BufferManager::RU_SIZE; // Hardcoded ru size
+   if (FLAGS_ssd_gib == 0) {
+      FLAGS_ssd_gib = ssd_size_in_bytes / 1073741824;
+   }
+   u64 total_blocks_in_ssd = (FLAGS_ssd_gib * 1048576) / 4;
+   BufferManager::RU_SIZE = FLAGS_ru_size;
+   u64 max_open_ru_epochs = total_blocks_in_ssd / BufferManager::RU_SIZE + FLAGS_overprovisioning_ru_epochs;
+   u64 persistant_state_blocks = utils::upAlign(sizeof(BufferManager::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
+   total_blocks_in_ssd -= persistant_state_blocks;
+   // Adjust ssd_gib
+   FLAGS_ssd_gib = (total_blocks_in_ssd * 4) / 1048576;
+   std::cout << "[INFO] Space reserved for database pages: " << FLAGS_ssd_gib << " GiB" << std::endl;
    // -------------------------------------------------------------------------------------
-   buffer_manager = make_unique<storage::BufferManager>(ssd_fd, total_blocks_in_ssd);
+   buffer_manager = make_unique<storage::BufferManager>(ssd_fd, total_blocks_in_ssd, max_open_ru_epochs);
    ensure_equal(BMC::global_bf, buffer_manager.get());
    BMC::global_bf = buffer_manager.get();
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "ru_epoch") {
-      // TODO(mfd) + FLAGS_op_rus
       FLAGS_wal_partitions_count = max_open_ru_epochs + FLAGS_wal_sink_logs;
       cout << "[INFO] number of Log partitions : " << FLAGS_wal_partitions_count << endl;
    }

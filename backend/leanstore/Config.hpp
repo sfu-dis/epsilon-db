@@ -117,6 +117,7 @@ DECLARE_bool(history_tree_inserts);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(persist);
 DECLARE_bool(recover);
+DECLARE_bool(clean_recover);
 DECLARE_string(persist_file);
 DECLARE_string(recover_file);
 // -------------------------------------------------------------------------------------
@@ -130,6 +131,7 @@ DECLARE_int32(ru_gc_threads);
 DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
 DECLARE_uint32(overprovisioning_ru_epochs);
+DECLARE_uint32(ru_size);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------
