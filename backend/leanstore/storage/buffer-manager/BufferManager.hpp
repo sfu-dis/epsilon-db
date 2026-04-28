@@ -116,10 +116,10 @@ class BufferManager
    atomic<u64> gc_threads_counter = 0;
    // -------------------------------------------------------------------------------------
 public:
-   atomic<u64> ru_epoch = 0; // persistant
-   atomic<u64> oldest_uncollected_ru_epoch = 0; // persistant
-   atomic<s64> reclaimed_ru_epoch = -1; // persistant
-   atomic<s64> reclaiming_ru_epoch = -1; // persistant
+   atomic<ru_epoch_t> ru_epoch = 0; // persistant
+   atomic<ru_epoch_t> oldest_uncollected_ru_epoch = 0; // persistant
+   atomic<ru_epoch_t> reclaimed_ru_epoch = -1; // persistant
+   atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad[7];
    static u64 RU_SIZE;
    PageState *discard_state;
@@ -132,6 +132,7 @@ public:
       std::unordered_map<PID, LID> pids;
       void* mmaped_log = nullptr;
       u64 log_segment_start = -1;
+      u64 log_segment_size = -1;
       bool force_gc = false;
       alignas(CACHE_LINE_SIZE) atomic<u64> offset_batch{0};
       // -------------------------------------------------------------------------------------
@@ -143,9 +144,10 @@ public:
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
       alignas(CACHE_LINE_SIZE) atomic<s32> total_fixed{0}; // used just as a stat
       // -------------------------------------------------------------------------------------
-      s64 cur_ru_epoch = -1;
+      ru_epoch_t cur_ru_epoch = -1;
       atomic<bool> active{false};
 
+      void open(ru_epoch_t new_ru_epoch);
       void reset();
       // Fails only when the RU epoch is being garbage collected
       bool insert(PID pid, LID lsn);
@@ -180,16 +182,8 @@ public:
       std::unique_ptr<RUEpochDiscardSet[]> data;
 
       RUEpochsState(u64 size)
-        : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size))
-      {
-         // XXX(mfd): Is is enough for proper recovery ?
-         // u64 cur_open = ru_epoch.load();
-         u64 cur_open = 0;
-         for (u64 e = 0; e < size; e++) {
-            data[e].cur_ru_epoch = cur_open + e;
-            data[e].id = e;
-         }
-      }
+        : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size)) {}
+
       RUEpochDiscardSet& operator[](size_t index) {
          ensure_equal(data[index % size].cur_ru_epoch, s64(index));
          return data[index % size];

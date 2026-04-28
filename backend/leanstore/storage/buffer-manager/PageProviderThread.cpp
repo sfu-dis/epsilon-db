@@ -217,18 +217,19 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                jumpmu::jump();
             }
             // TODO(mfd) : PARANOID_BLOCK()
-            if (FLAGS_wal & FLAGS_wal_pwrite) {
+            if (FLAGS_wal && FLAGS_wal_pwrite && !FLAGS_fake_log_reapply) {
+               // ensure(last_write_lsn != INVALID_LSN);
+               if (last_write_lsn == INVALID_LSN) {
+                  bf.dump();
+                  __asm__ volatile("int3");
+               }
                u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
                if (log_id != cr::LogManager::getLogID(bf.page.ru_epoch)) {
                   bf.dump();
                   raise(SIGTRAP);
                }
             }
-            if (!FLAGS_fake_log_reapply) {
-               ensure(last_write_lsn != INVALID_LSN);
-            }
             if (bf.page.ru_epoch <= reclaiming_ru_epoch.load(std::memory_order_acquire)) {
-               // This means the page is clean. Should I just evict it ?
                c_guard.guard.unlock();
                jumpmu::jump();
             }
@@ -384,15 +385,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       ensure_lte(written_bf.header.last_written_plsn, written_plsn);
                       // -------------------------------------------------------------------------------------
                       written_bf.header.is_being_written_back = false;
-                      // written_bf.header.logging = nullptr;
-                      // written_bf.header.flush_sink_log = false;
-                      if (FLAGS_enable_discarding) {
-                         s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
-                         if (previous_ru_epoch != -1 && previous_ru_epoch >= oldest_uncollected_ru_epoch.load(std::memory_order_acquire)) {
-                            s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
-                         }
-                         ru_discard_set[written_ru_epoch].total.fetch_add(1);
+                      s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
+                      if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
+                         ru_discard_set.data[previous_ru_epoch % max_open_ru_epochs].invalid.fetch_add(1);
                       }
+                      ru_discard_set[written_ru_epoch].total.fetch_add(1);
                       o_guard.guard.unlock();
                       jumpmu_break;
                    }

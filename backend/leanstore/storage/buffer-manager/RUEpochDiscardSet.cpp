@@ -8,10 +8,17 @@ namespace storage
 {
 // -------------------------------------------------------------------------------------
 // Responsability of the caller to acquire the set lock
+void BufferManager::RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
+{
+   ensure(!FLAGS_enable_discarding || !active.load());
+   ensure(!FLAGS_enable_discarding || cur_ru_epoch == -1);
+   cur_ru_epoch = new_ru_epoch;
+   active.store(true);
+}
 void BufferManager::RUEpochDiscardSet::reset()
 {
    ensure_equal(pids.size(), 0);
-   ensure(is_garbage_collected == true);
+   ensure(FLAGS_enable_discarding || is_garbage_collected == true);
    ensure_equal(done_gc, 0);
    ensure(force_gc == false);
    offset_batch = 0;
@@ -22,7 +29,10 @@ void BufferManager::RUEpochDiscardSet::reset()
    invalid = 0;
    done_gc = FLAGS_ru_gc_threads;
    total_fixed = 0;
-   cur_ru_epoch += BMC::global_bf->max_open_ru_epochs;
+   log_segment_start = -1;
+   log_segment_size = -1;
+   cur_ru_epoch = -1;
+   active.store(false);
    BMC::global_bf->reclaimed_ru_epoch.fetch_add(1);
 }
 // -------------------------------------------------------------------------------------
