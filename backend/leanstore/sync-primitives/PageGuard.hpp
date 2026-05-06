@@ -219,6 +219,7 @@ class HybridPageGuard
       LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN() + 1);
       logging.setCurrentGSN(logGSN);
       cr::Worker::my().syncGSN(logGSN);
+      bf->page.GSN = logGSN;
       auto handler = logging.reserveDTEntry<WT>(sizeof(WT) + extra_size, pid, logGSN, dt_id);
       logging.active_dt_entry->ru_epoch = bf->page.ru_epoch;
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.

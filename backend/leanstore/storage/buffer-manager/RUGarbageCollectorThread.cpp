@@ -166,9 +166,15 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
 
       if (to_apply_log_records > 0) {
-         for (u64 i = to_apply_log_records - 1; i != 0; --i) {
-            auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i]);
-            DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload);
+         for (u64 i = to_apply_log_records; i != 0; --i) {
+            if (to_apply_log_records_stack[i-1]->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
+               ensure_equal(to_apply_log_records, 1);
+               auto* ppl = reinterpret_cast<BufferFrame::PPL*>(to_apply_log_records_stack[i-1]);
+               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records);
+            } else {
+               auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i-1]);
+               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload, 1);
+            }
          }
       }
 
@@ -319,7 +325,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   continue;
                }
 
-               ensure_equal(entry.type, cr::WALDTEntry::TYPE::DT_SPECIFIC);
+               ensure((entry.type == cr::WALDTEntry::TYPE::DT_SPECIFIC)
+                      || (entry.type == cr::WALDTEntry::TYPE::PER_PAGE_DT_SPECIFIC));
+               // Hacky to interpret the PPL as a WALDTEntry
                auto& dte = *reinterpret_cast<cr::WALDTEntry*>(&entry);
 
                if (entry.prev_lsn != INVALID_LSN) {

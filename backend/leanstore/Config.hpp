@@ -132,6 +132,7 @@ DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
 DECLARE_uint32(overprovisioning_ru_epochs);
 DECLARE_uint32(ru_size);
+DECLARE_bool(per_page_logging);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------

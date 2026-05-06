@@ -184,6 +184,10 @@ void BMTable::open()
    columns.emplace("read_latency_us", [this](Column& col) {
       col << (local_agg_io_phase_us * 1.0) / local_read_operations_counter;
    });
+   // -------------------------------------------------------------------------------------
+   columns.emplace("ppl_not_yet_persisted", [this](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::ppl_not_yet_persisted);
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

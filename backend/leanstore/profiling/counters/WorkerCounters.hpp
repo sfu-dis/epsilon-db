@@ -150,6 +150,8 @@ struct WorkerCounters {
    atomic<u64> total_try_pop = 0;
    atomic<u64> failed_try_pop = 0;
    // -------------------------------------------------------------------------------------
+   atomic<u64> ppl_not_yet_persisted = 0;
+   // -------------------------------------------------------------------------------------
    // Debugging livelock : stuck in jump retry
    u64 reading_retry_debug_counter = 0;
    u64 to_delete_retry_debug_counter = 0;

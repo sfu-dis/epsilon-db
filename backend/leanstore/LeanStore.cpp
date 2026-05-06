@@ -59,8 +59,20 @@ LeanStore::LeanStore()
    if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
       SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
    }
-   if (FLAGS_enable_discarding && FLAGS_ru_gc_threads == 0) {
-      SetupFailed("You have to create at least one RU GC thread to enable discarding");
+   if (FLAGS_enable_discarding) {
+      if (FLAGS_ru_gc_threads == 0) {
+         SetupFailed("You have to create at least one RU GC thread to enable discarding");
+      }
+      if (FLAGS_wal_partition_by != "ru_epoch") {
+         SetupFailed("You have to partition the log by ru_epoch to enable discarding");
+      }
+      if (FLAGS_contention_split) {
+         SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
+      }
+   }
+   if (FLAGS_per_page_logging && !FLAGS_enable_discarding) {
+      // per page logging is only relevant when discarding is enabled, silently turn it off.
+      FLAGS_per_page_logging = false;
    }
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger

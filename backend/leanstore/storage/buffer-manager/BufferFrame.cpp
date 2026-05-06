@@ -1,11 +1,58 @@
 #include "BufferFrame.hpp"
+#include "BufferManager.hpp"
 #include "leanstore/concurrency-recovery/LogManager.hpp"
+#include "leanstore/concurrency-recovery/Logging.hpp"
 #include "leanstore/storage/buffer-manager/DTRegistry.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace storage
 {
+// -------------------------------------------------------------------------------------
+bool BufferFrame::submitPPLEntry()
+{
+   ensure(FLAGS_per_page_logging);
+   if (!isDiscardable())
+      return false;
+   ru_epoch_t reclaiming_v1 = BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
+   if (reclaiming_v1 >= page.ru_epoch) {
+      // after implementing GC of pages in the buffer pool, this invariant should hold
+      // ensure(reclaiming == page.ru_epoch);
+      markUnDiscardable();
+      return false;
+   }
+   ensure(header.logging != nullptr);
+   auto& logging = *header.logging;
+   logging.mutex.lock();
+   ru_epoch_t reclaiming_v2 = BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire);
+   if (reclaiming_v2 != reclaiming_v1 && reclaiming_v2 >= page.ru_epoch) {
+      logging.mutex.unlock();
+      markUnDiscardable();
+      return false;
+   }
+   logging.walEnsureEnoughSpace(ppl.wal_entry.size);
+   LID logGSN = std::max<LID>(page.GSN + 1, logging.getCurrentGSN() + 1);
+   LID syncGSN = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
+   if (syncGSN > logGSN) {
+      logGSN = syncGSN;
+   }
+   page.GSN = logGSN;
+   logging.setCurrentGSN(logGSN);
+   LID ppl_lsn = logging.reserveLSN(ppl.wal_entry.size);
+   page.last_written_lsn = ppl_lsn;
+   ppl.wal_entry.lsn = ppl_lsn;
+   ppl.wal_entry.prev_lsn = INVALID_LSN;
+   ppl.header.gsn = logGSN;
+   ppl.header.pid = header.pid;
+   ppl.header.dt_id = page.dt_id;
+   std::memcpy(logging.wal_buffer + logging.wal_log_cursor, &ppl, ppl.wal_entry.size);
+   // use existing submitDTEntry to make the entry visible to the group committer.
+   // this will release the log buffer mutex.
+   logging.submitDTEntry(ppl.wal_entry.size);
+   header.pending_lsn_count = 1;
+   header.pending_lsn[0] = ppl_lsn;
+   return true;
+}
 // -------------------------------------------------------------------------------------
 void BufferFrame::dump()
 {
@@ -40,6 +87,7 @@ void BufferFrame::Header::dump()
         << " next_free_bf          = " << next_free_bf << "\n"
         << " logging ptr           = " << logging << "\n"
         << " flush_sink_log        = " << flush_sink_log << "\n"
+        << " fixed_at_plsn         = " << fixed_at_plsn << "\n"
         << " pending_lsn_count     = " << +pending_lsn_count << "\n"
         << " discardable           = " << discardable.load() << "\n";
 

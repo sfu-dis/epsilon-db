@@ -381,19 +381,39 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          assert(update_descriptor.count > 0);  // if it is a secondary index, then we can not use updateSameSize
          // -------------------------------------------------------------------------------------
          const u16 delta_length = update_descriptor.size() + update_descriptor.diffLength();
+         const u16 wal_entry_size = sizeof(WALUpdate) + key.length() + delta_length;
+         auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
+            wal_entry.type = WAL_LOG_TYPE::WALUpdate;
+            wal_entry.key_length = key.length();
+            wal_entry.delta_length = delta_length;
+            u8* wal_ptr = wal_entry.payload;
+            std::memcpy(wal_ptr, key.data(), key.length());
+            wal_ptr += key.length();
+            std::memcpy(wal_ptr, &update_descriptor, update_descriptor.size());
+            wal_ptr += update_descriptor.size();
+            generateDiff(update_descriptor, wal_ptr, current_value.data());
+            // The actual update by the client
+            callback(current_value.data(), current_value.length());
+            generateXORDiff(update_descriptor, wal_ptr, current_value.data());
+         };
+         bool ppl_success = false;
+         WALUpdate* ppl_wal_entry = nullptr;
+         // TODO(mfd) : Add flag to selectively enable discarding of different log entries.
+         if (FLAGS_per_page_logging) {
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(key.length() + delta_length);
+            if (wal_entry) {
+               ppl_success = true;
+               ppl_wal_entry = wal_entry.value();
+               populate_wal_update_entry(*ppl_wal_entry);
+            }
+         }
          auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(key.length() + delta_length, false);
-         wal_entry->type = WAL_LOG_TYPE::WALUpdate;
-         wal_entry->key_length = key.length();
-         wal_entry->delta_length = delta_length;
-         u8* wal_ptr = wal_entry->payload;
-         std::memcpy(wal_ptr, key.data(), key.length());
-         wal_ptr += key.length();
-         std::memcpy(wal_ptr, &update_descriptor, update_descriptor.size());
-         wal_ptr += update_descriptor.size();
-         generateDiff(update_descriptor, wal_ptr, current_value.data());
-         // The actual update by the client
-         callback(current_value.data(), current_value.length());
-         generateXORDiff(update_descriptor, wal_ptr, current_value.data());
+         if (ppl_success) {
+            assert(FLAGS_per_page_logging);
+            std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
+         } else {
+            populate_wal_update_entry(*wal_entry);
+         }
          wal_entry.submit();
       } else {
          callback(current_value.data(), current_value.length());
@@ -558,45 +578,52 @@ void BTreeLL::todo(void*, const u8*, const u64, const u64, const bool)
    UNREACHABLE();
 }
 // -------------------------------------------------------------------------------------
-void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr)
+void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_log_records)
 {
-   const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr);
-   switch(wal_entry->type) {
-      case WAL_LOG_TYPE::WALUpdate: {
-         const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(log_record_ptr);
-         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-         ensure(node->is_leaf);
-         const u8 *key = update_entry->payload;
-         u16 key_length = update_entry->key_length;
-         bool found = false;
-         s16 pos = node->lowerBound<true>(key, key_length, &found);
-         ensure(pos != -1);
-         auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
-         BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
-                                update_entry->payload + update_entry->key_length + update_descriptor->size());
-         break;
-      }
-      case WAL_LOG_TYPE::WALInsert: {
-         const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(log_record_ptr); 
-         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-         ensure(node->is_leaf);
-         const u8* key = insert_entry->payload;
-         const u8* value = key + insert_entry->key_length;
-         node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
-         break;
-      }
-      case WAL_LOG_TYPE::WALRemove: {
-         const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(log_record_ptr); 
-         BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-         ensure(node->is_leaf);
-         const u8* key = remove_entry->payload;
-         bool ok = node->remove(key, remove_entry->key_length);
-         ensure(ok);
-         break;
-      }
-      default: {
-         throw ex::GenericException("can only redo updates, inserts and removes, but got " + std::to_string(static_cast<u8>(wal_entry->type)));
-         break;
+   u32 offset = 0;
+   u8 i = 0;
+   while (i++ < nb_log_records) {
+      const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr + offset);
+      switch(wal_entry->type) {
+         case WAL_LOG_TYPE::WALUpdate: {
+            const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(wal_entry);
+            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+            ensure(node->is_leaf);
+            const u8 *key = update_entry->payload;
+            u16 key_length = update_entry->key_length;
+            bool found = false;
+            s16 pos = node->lowerBound<true>(key, key_length, &found);
+            ensure(pos != -1);
+            auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
+            BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
+                                   update_entry->payload + update_entry->key_length + update_descriptor->size());
+            offset += (sizeof(WALUpdate) + update_entry->key_length + update_entry->delta_length);
+            break;
+         }
+         case WAL_LOG_TYPE::WALInsert: {
+            const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(wal_entry); 
+            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+            ensure(node->is_leaf);
+            const u8* key = insert_entry->payload;
+            const u8* value = key + insert_entry->key_length;
+            node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
+            offset += (sizeof(WALInsert) + insert_entry->key_length + insert_entry->value_length);
+            break;
+         }
+         case WAL_LOG_TYPE::WALRemove: {
+            const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(wal_entry); 
+            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+            ensure(node->is_leaf);
+            const u8* key = remove_entry->payload;
+            bool ok = node->remove(key, remove_entry->key_length);
+            offset += (sizeof(WALRemove) + remove_entry->key_length + remove_entry->value_length);
+            ensure(ok);
+            break;
+         }
+         default: {
+            throw ex::GenericException("can only redo updates, inserts and removes, but got " + std::to_string(static_cast<u8>(wal_entry->type)));
+            break;
+         }
       }
    }
 }

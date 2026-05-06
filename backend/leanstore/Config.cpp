@@ -37,7 +37,7 @@ DEFINE_double(target_gib, 0.0, "size of dataset in gib (exact interpretation dep
 DEFINE_uint64(run_for_seconds, 10, "Keep the experiment running for x seconds");
 DEFINE_uint64(warmup_for_seconds, 10, "Warmup for x seconds");
 // -------------------------------------------------------------------------------------
-DEFINE_bool(contention_split, true, "");
+DEFINE_bool(contention_split, false, "");
 DEFINE_uint64(cm_update_on, 7, "as exponent of 2");
 DEFINE_uint64(cm_period, 14, "as exponent of 2");
 DEFINE_uint64(cm_slowpath_threshold, 1, "");
@@ -137,6 +137,7 @@ DEFINE_uint32(max_log_records_to_discard, 3, "Limit discarding if log records to
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 4, "Force GC if the number of active RU epochs is less than max open by this value");
 DEFINE_uint32(ru_size, 3193344, "Unit of garbage collection in database pages (4 KiB)");
+DEFINE_bool(per_page_logging, false, "Group log records per page");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------

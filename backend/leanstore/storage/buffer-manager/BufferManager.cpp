@@ -4,6 +4,7 @@
 #include "BufferFrame.hpp"
 #include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
+#include "PageState.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/storage/btree/core/BTreeGeneric.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
@@ -63,6 +64,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
             SetupFailed("Do you have enough memory ?");
          }
          discard_state = static_cast<PageState*>(entries_p);
+         PageState::global_discard_state = discard_state;
          madvise(entries_p, total_blocks_in_ssd * sizeof(PageState), MADV_HUGEPAGE);
          int rc = mlock(entries_p, total_blocks_in_ssd * sizeof(PageState));
          if (rc == -1) {
@@ -547,15 +549,17 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
 // -------------------------------------------------------------------------------------
 bool BufferManager::logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page& page, LID lsn)
 {
-   auto* dte = (cr::WALDTEntry*)entry;
-   auto* btree_entry = (btree::WALEntry*) dte->payload;
+   auto* dte = reinterpret_cast<cr::WALDTEntry*>(entry);
+   auto* btree_entry = reinterpret_cast<btree::WALEntry*>(dte->payload);
 
    if (entry->type != cr::WALEntry::TYPE::DT_SPECIFIC
-      || entry->lsn != lsn) {
+      && entry->type != cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
+      cerr << "Invalid log entry type." << endl;
       goto fail;
    }
-   ensure_equal(entry->type, cr::WALEntry::TYPE::DT_SPECIFIC);
-   ensure_equal(entry->lsn, lsn);
+   if (entry->lsn != lsn) {
+      goto fail;
+   }
    if (dte->pid != page.magic_debugging_number || dte->gsn < page.GSN) {
       goto fail;
    }
@@ -633,16 +637,16 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       }
       cr::WALEntry* entry = nullptr;
       cr::WALDTEntry* dte = nullptr;
-      LID lsn = INVALID_LSN;
+      LID last_lsn = INVALID_LSN;
+      LID last_gsn = 0;
       // TODO(mfd) : Sanity check that prev lsn field in the log recods agrees with the list.
       for (u8 i = 0; i < nb_log_records; ++i) {
-         lsn = lsn_list[i];
-         ensure(lsn != INVALID_LSN);
-         u64 off = (lsn % 4096) + 4096 * i;
+         last_lsn = lsn_list[i];
+         ensure(last_lsn != INVALID_LSN);
+         u64 off = (last_lsn % 4096) + 4096 * i;
          entry = reinterpret_cast<cr::WALEntry*>(&cr::Worker::my().log_record_buf[off]);
-         dte = reinterpret_cast<cr::WALDTEntry*>(entry);
 
-         bool ok = logRecordSanityCheck(entry, bf.page, lsn);
+         bool ok = logRecordSanityCheck(entry, bf.page, last_lsn);
 
          if (!ok) {
             cout << "Page need fixing ? " << page_need_fixing << endl;
@@ -651,11 +655,27 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             raise(SIGTRAP);
          }
 
-         DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload);
+         if (entry->type == cr::WALEntry::TYPE::DT_SPECIFIC) {
+            dte = reinterpret_cast<cr::WALDTEntry*>(entry);
+            DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload, 1);
+            last_gsn = dte->gsn;
+         } else { // cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC
+            ensure(FLAGS_per_page_logging);
+            ensure(nb_log_records == 1); // Temporary.
+            auto* ppl = reinterpret_cast<BufferFrame::PPL*>(entry);
+            // some sanity checks
+            ensure_equal(ppl->header.pid, bf.page.magic_debugging_number);
+            ensure_equal(ppl->header.dt_id, bf.page.dt_id);
+            DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, ppl->log_records, ppl->nb_log_records);
+            // copy back the ppl as is to the PPL buffer.
+            std::memcpy(&bf.ppl, ppl, ppl->wal_entry.size);
+            last_gsn = ppl->header.gsn;
+         }
       }
-      bf.page.GSN = dte->gsn;
+      bf.page.GSN = last_gsn;
       bf.page.PLSN += nb_log_records;
-      bf.page.last_written_lsn = lsn;
+      bf.page.last_written_lsn = last_lsn;
+      bf.header.fixed_at_plsn = bf.page.PLSN;
 
       return;
    };
@@ -679,9 +699,15 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
          // Therefore, I expect the page state to be unlocked.
-         ensure(!discard_state[pid].isLocked());
+         // This only holds when PPL is disabled, because ppl keeps the page state
+         // locked until PPL entry is persisted.
+         const bool was_locked = discard_state[pid].isLocked();
+         ensure(FLAGS_per_page_logging || !was_locked);
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
+         COUNTERS_BLOCK(ppl_not_yet_persisted) {
+            if (was_locked) { WorkerCounters::myCounters().ppl_not_yet_persisted++; }
+         }
       }
       if (page_need_fixing) {
          gc_fixed = discard_state[pid].isClean();
@@ -796,6 +822,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure_equal(bf.header.pending_lsn_count, 0);
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
+         ensure(!FLAGS_per_page_logging || (nb_log_records <= 1));
          if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);

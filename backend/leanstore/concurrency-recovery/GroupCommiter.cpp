@@ -243,9 +243,24 @@ void CRManager::groupCommiter()
          CRCounters::myCounters().gct_write_ms += (std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_begin).count());
       }
       // -------------------------------------------------------------------------------------
-      ensure_lte(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
-      if (!straggler) {
-         ensure_lt(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+#if 0
+      if (Logging::global_min_gsn_flushed.load() > min_durable_gsn) {
+         printf("prev_min_all_worker_gsn : %lu\n", prev_min_all_workers_gsn);
+         printf("min_all_worker_gsn : %lu\n", min_all_workers_gsn);
+         printf("min_all_logs_gsn : %lu\n", min_all_logs_gsn);
+         printf("min_all_straggler_logs_gsn : %lu\n", min_all_straggler_logs_gsn);
+         printf("min_all_active_logs_gsn : %lu\n", min_all_active_logs_gsn);
+      }
+#endif
+      // FIXME(mfd) : Temporarily, avoid worrying about durability in PPL.
+      // PPL breaks the straggler aware group commit protocol because PPL
+      // log entries are inserted by pp threads not by workers.
+      // Durability of PPL entries is not needed for transaction durability.
+      if (!FLAGS_per_page_logging) {
+         ensure_lte(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+         if (!straggler) {
+            ensure_lt(Logging::global_min_gsn_flushed.load(), min_durable_gsn);
+         }
       }
       ensure_lt(min_durable_gsn, std::numeric_limits<LID>::max());
       Logging::global_min_gsn_flushed.store(min_durable_gsn, std::memory_order_release);

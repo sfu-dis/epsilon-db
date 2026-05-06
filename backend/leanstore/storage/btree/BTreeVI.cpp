@@ -797,7 +797,8 @@ void BTreeVI::todo(void* btree_object, const u8* entry_ptr, const u64 version_wo
    }
 }
 // -------------------------------------------------------------------------------------
-void BTreeVI::redo(void* btree_node_ptr, const u8* log_record_ptr) {
+void BTreeVI::redo(void* btree_node_ptr, const u8* log_record_ptr, [[maybe_unused]] const u8 nb_log_records) {
+   TODOException(); // discarding with multiversionning is not implemented.
    const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr);
    ensure_equal(wal_entry->type, WAL_LOG_TYPE::WALUpdate);
    const WALUpdateSSIP *update_entry = reinterpret_cast<const WALUpdateSSIP*>(log_record_ptr);

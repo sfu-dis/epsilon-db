@@ -26,6 +26,13 @@ namespace leanstore
 namespace storage
 {
 // -------------------------------------------------------------------------------------
+struct ppl_info {
+   u32 log_id;
+   PID pid;
+   LID gsn;
+   LID lsn;
+};
+// -------------------------------------------------------------------------------------
 void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p_begin, p_end)
 {
    std::string thread_name("pp_" + std::to_string(p_begin) + "_" + std::to_string(p_end));
@@ -38,6 +45,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
    AsyncWriteBuffer async_write_buffer(ssd_fd, PAGE_SIZE, FLAGS_write_buffer_size);
    std::vector<BufferFrame*> cool_candidate_bfs, evict_candidate_bfs;
    // -------------------------------------------------------------------------------------
+   std::vector<ppl_info> to_discard_queue;
+   // -------------------------------------------------------------------------------------
    auto next_bf_range = [&]() {
       const u64 BATCH_SIZE = FLAGS_replacement_chunk_size;
       cool_candidate_bfs.clear();
@@ -47,6 +56,20 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          cool_candidate_bfs.push_back(r_bf);
       }
       return;
+   };
+   // -------------------------------------------------------------------------------------
+   auto unlock_discarded_pages_with_persisted_ppl = [&]() {
+      if (FLAGS_per_page_logging) {
+         std::vector<ppl_info> unpersisted_ppl;
+         for (const auto& entry: to_discard_queue) {
+            if (cr::LogManager::global->all_logs[entry.log_id].hardened_gsn.load(std::memory_order_acquire) >= entry.gsn) {
+               discard_state[entry.pid].unlock();
+            } else {
+               unpersisted_ppl.push_back(entry);
+            }
+         }
+         to_discard_queue = unpersisted_ppl;
+      }
    };
    // -------------------------------------------------------------------------------------
    while (bg_threads_keep_running) {
@@ -247,13 +270,34 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (bf.header.pending_lsn_count == 1) {
                pending_lsn = bf.header.pending_lsn;
             } else {
-               pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
-               ensure(pending_lsn != nullptr);
-               std::memcpy(pending_lsn, bf.header.pending_lsn, bf.header.pending_lsn_count * sizeof(LID));
+               if (FLAGS_per_page_logging) {
+                  bool ok = bf.submitPPLEntry();
+                  if (!ok) {
+                     // only fails when the log that is mapped to this page changes.
+                     // just retry and next time I will write the page without trying to discard it.
+                     assert(!bf.isDiscardable());
+                     c_guard.guard.unlock();
+                     jumpmu::jump();
+                  }
+                  ensure(bf.header.pending_lsn_count == 1);
+                  pending_lsn = bf.header.pending_lsn;
+               } else {
+                  pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
+                  ensure(pending_lsn != nullptr);
+                  std::memcpy(pending_lsn, bf.header.pending_lsn, bf.header.pending_lsn_count * sizeof(LID));
+               }
             }
-            bool success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count);
+            bool success = false;
+            if (FLAGS_per_page_logging) {
+               to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.page.GSN, bf.page.last_written_lsn);
+               success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count);
+            } else {
+               success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count);
+            }
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
+               // THINK(mfd) : How may this affect the PPL?
+               to_discard_queue.pop_back();
                c_guard.guard.unlock();
                jumpmu::jump();
             }
@@ -309,10 +353,15 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // Prevent evicting a page that already has an IO Frame with (possibly) threads working on it.
             {
                Partition& partition = getPartition(p_i);
-               JMUW<std::unique_lock<instrumented_mutex>> io_guard(partition.ht_mutex);
-               if (partition.io_ht.lookup(cooled_bf_pid)) {
+               bool success = partition.ht_mutex.try_lock();
+               if (!success || partition.io_ht.lookup(cooled_bf_pid)) {
+                  if (success) {
+                     partition.ht_mutex.unlock();
+                  }
                   jumpmu_continue;
                }
+               assert(success);
+               partition.ht_mutex.unlock();
             }
             /**
             XXX(mfd) : Quite often we have a lot of RU epoch where the potential invalid exceeds 
@@ -339,6 +388,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      cooled_bf->page.prev_ru_epoch = cooled_bf->page.ru_epoch;
                      cooled_bf->page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
                      if (!FLAGS_wal) { cooled_bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
+                     if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
                      if (FLAGS_crc_check) {
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }
@@ -356,6 +406,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          jumpmuCatch() {}
       }
       evict_candidate_bfs.clear();
+      // -------------------------------------------------------------------------------------
+      unlock_discarded_pages_with_persisted_ppl();
       // -------------------------------------------------------------------------------------
       // Phase 3:
       auto start = std::chrono::high_resolution_clock::now();
@@ -377,6 +429,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                 while (true) {
                    jumpmuTry()
                    {
+                      // TODO(mfd): With per page logging, the page provider thread needs to unlock
+                      // the global page state after the ppl is persisted, stayed locked here may
+                      // delay that (no risk of deadlock).
                       BMOptimisticGuard o_guard(written_bf.header.latch);
                       // BMExclusiveGuard ex_guard(o_guard);
                       o_guard.guard.toExclusive(); 
@@ -412,6 +467,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       if (freed_bfs_batch.size()) {
          freed_bfs_batch.push(current_partition);
       }
+      unlock_discarded_pages_with_persisted_ppl();
       COUNTERS_BLOCK() { PPCounters::myCounters().pp_thread_rounds++; }
    }
    bg_threads_counter--;
