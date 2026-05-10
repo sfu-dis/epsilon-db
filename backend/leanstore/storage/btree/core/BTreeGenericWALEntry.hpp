@@ -7,6 +7,7 @@ namespace storage
 namespace btree
 {
 // -------------------------------------------------------------------------------------
+inline constexpr u8 WAL_BTREE_MAGIC = 0x55;
 enum class WAL_LOG_TYPE : u8 {
    WALInsert = 1,
    WALUpdate = 2,
@@ -18,6 +19,7 @@ enum class WAL_LOG_TYPE : u8 {
 };
 struct WALEntry {
    WAL_LOG_TYPE type;
+   u8 magic_debugging_number = WAL_BTREE_MAGIC;
 };
 struct WALInitPage : WALEntry {
    DTID dt_id;

@@ -62,7 +62,7 @@ bool BTreeNode::prepareInsert(u16 key_len, u16 payload_len)
 // -------------------------------------------------------------------------------------
 s16 BTreeNode::insertDoNotCopyPayload(const u8* key, u16 key_len, u16 payload_length, s32 pos)
 {
-   assert(canInsert(key_len, payload_length));
+   ensure(canInsert(key_len, payload_length));
    prepareInsert(key_len, payload_length);
    // -------------------------------------------------------------------------------------
    s32 slotId = (pos == -1) ? lowerBound<false>(key, key_len) : pos;
@@ -87,12 +87,12 @@ s16 BTreeNode::insertDoNotCopyPayload(const u8* key, u16 key_len, u16 payload_le
 // -------------------------------------------------------------------------------------
 s32 BTreeNode::insert(const u8* key, u16 key_len, const u8* payload, u16 payload_length)
 {
-   DEBUG_BLOCK()
+   // DEBUG_BLOCK()
    {
       assert(canInsert(key_len, payload_length));
       s32 exact_pos = lowerBound<true>(key, key_len);
       static_cast<void>(exact_pos);
-      assert(exact_pos == -1);  // assert for duplicates
+      ensure(exact_pos == -1);  // assert for duplicates
    }
    // -------------------------------------------------------------------------------------
    prepareInsert(key_len, payload_length);
@@ -103,11 +103,11 @@ s32 BTreeNode::insert(const u8* key, u16 key_len, const u8* payload, u16 payload
    updateHint(slotId);
    return slotId;
    // -------------------------------------------------------------------------------------
-   DEBUG_BLOCK()
+   // DEBUG_BLOCK()
    {
       s32 exact_pos = lowerBound<true>(key, key_len);
       static_cast<void>(exact_pos);
-      assert(exact_pos == slotId);  // assert for duplicates
+      ensure(exact_pos == slotId);  // assert for duplicates
    }
 }
 // -------------------------------------------------------------------------------------

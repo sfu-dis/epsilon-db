@@ -76,9 +76,11 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       auto& logging = all_logs[log_i];
       logging.log_id = log_i;
       logging.log_segment_start = seg->start_off;
+      logging.log_segment_size = log_segment_size;
       logging.wal_lsn_counter = recover_wal ? seg->offset : 0;
       logging.log_gsn_clock = recover_wal ? (seg->hardened_gsn) : 0;
       logging.wt_to_lw.current_value.last_gsn = logging.hardened_gsn = logging.log_gsn_clock;
+      logging.is_sink_log = isSinkLog(log_i);
       logging.wal_buffer = reinterpret_cast<u8*>(std::aligned_alloc(4096, FLAGS_wal_buffer_size));
       ensure(logging.wal_buffer != nullptr);
       ensure_equal(u64(logging.wal_buffer) % 4096, 0);
@@ -131,6 +133,9 @@ s32 LogManager::getLogID(ru_epoch_t ru_epoch, PID page_id)
       log_id = page_id % FLAGS_wal_sink_logs;
    } else {
       log_id = getLogID(ru_epoch); 
+      if (global->all_logs[log_id].redirect_to_sink_log.load(std::memory_order_acquire)) {
+         log_id = page_id % FLAGS_wal_sink_logs;
+      }
    }
    return log_id;
 }
@@ -205,7 +210,7 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
       }
    }
    lseg.last_start_offset = buffer_offset;
-   if (lseg.offset + FLAGS_wal_pwrite >= log_segment_size) {
+   if (lseg.offset >= log_segment_size) {
       // FIXME(mfd) : Either proper checkpointing of the sink log or obviate it.
       // For now, no writes go to the sink log.
       ensure(log_i != 0);

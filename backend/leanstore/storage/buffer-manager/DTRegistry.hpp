@@ -43,7 +43,7 @@ struct DTRegistry {
       std::function<void(void* dt_object, const u8* entry, const u64 version_worker_id, u64 version_tx_id, const bool called_before)> todo;
       std::function<void(void* dt_object, const u8* entry)> unlock;
       // -------------------------------------------------------------------------------------
-      std::function<void(void* dt_object_node, const u8* entry, const u8 nb_entries)> redo;
+      std::function<void(void* dt_object_node, const u8* entry, const u8 nb_entries, const u16 total_log_records_size)> redo;
       // Serialization
       std::function<std::unordered_map<std::string, std::string>(void* btree_boject)> serialize;
       std::function<void(void* btree_boject, std::unordered_map<std::string, std::string>)> deserialize;
@@ -68,7 +68,7 @@ struct DTRegistry {
    // Recovery / SI
    void undo(DTID dt_id, const u8* wal_entry, u64 tts);
    void todo(DTID dt_id, const u8* entry, const u64 version_worker_id, u64 version_tts, const bool called_before);
-   void redo(DTID dt_id, u8* page, const u8* wal_entry, const u8 nb_entries);
+   void redo(DTID dt_id, u8* page, const u8* wal_entry, const u8 nb_entries, const u16 total_log_records_size);
    void unlock(DTID dt_id, const u8* entry);
    // Serialization
    std::unordered_map<std::string, std::string> serialize(DTID dt_id);

@@ -191,12 +191,16 @@ class HybridPageGuard
             }
             goto retry;
          }
+         if (logging.redirect_to_sink_log.load(std::memory_order_acquire)) {
+            logging.mutex.unlock();
+            goto retry;
+         }
       }
       bool first_entry_in_log = false;
       if (bf->header.logging != nullptr) {
          if (bf->header.logging != &logging) {
             // This only happens when the RU on which the page reside has started to be reclaimed.
-            if (logging.log_id >= FLAGS_wal_sink_logs) {
+            if (!logging.is_sink_log) {
                cerr << "Previous Log ID " << bf->header.logging->log_id << endl;
                cerr << "New Log ID " << logging.log_id << endl;
                bf->dump();
@@ -208,13 +212,11 @@ class HybridPageGuard
       } else {
          first_entry_in_log = true;
       }
-      if (logging.log_id < FLAGS_wal_sink_logs) {
+      if (logging.is_sink_log) {
          bf->markUnDiscardable();
       }
       bf->header.logging = &logging;
-      if (!cr::LogManager::global->isPartitionedByWorker()) {
-         logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
-      }
+      logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);
       ensure_equal(cr::Worker::my().getCurrentGSN(), bf->page.GSN);
       LID logGSN = std::max<LID>(bf->page.GSN, logging.getCurrentGSN() + 1);
       logging.setCurrentGSN(logGSN);
@@ -242,6 +244,11 @@ class HybridPageGuard
             bf->dump();
          }
          ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
+      }
+      if (!logging.is_sink_log && ((logging.log_segment_size - logging.wal_lsn_counter) <= (logging.log_segment_size/5))) {
+         logging.redirect_to_sink_log.store(true, std::memory_order_release);
+         // TODO(mfd) : Optinally just garbage collect the corresponding RU epoch.
+         printf("[INFO] Log %u is full, disable discarding for it and redirect the log entries to sink logs\n", logging.log_id);
       }
       return handler;
    }

@@ -46,6 +46,9 @@ struct Logging {
    LID wal_lsn_counter = 0;
    LID log_gsn_clock;
    u64 log_segment_start = -1;
+   u64 log_segment_size = -1;
+   bool is_sink_log = false;
+   std::atomic<bool> redirect_to_sink_log = false;
    // Should be called only by the group committer thread.
    void reset()
    {
@@ -54,6 +57,7 @@ struct Logging {
          cerr << "Trying to reset a log while there are some log entries in the buffer" << endl;
          raise(SIGTRAP);
       }
+      redirect_to_sink_log.store(false);
       wal_lsn_counter = 0;
       wal_log_cursor = 0;
       publishOffset();
@@ -83,6 +87,7 @@ struct Logging {
    template <typename T>
    WALEntryHandler<T> reserveDTEntry(u64 requested_size, PID pid, LID gsn, DTID dt_id)
    {
+      ensure(!redirect_to_sink_log.load());
       const u64 total_size = sizeof(WALDTEntry) + requested_size;
       const LID lsn = reserveLSN(total_size);
       active_dt_entry = new (wal_buffer + wal_log_cursor) WALDTEntry();
@@ -100,6 +105,7 @@ struct Logging {
    // -------------------------------------------------------------------------------------
    LID reserveLSN(u64 requested_size)
    {
+      ensure(is_sink_log || (wal_lsn_counter < log_segment_size));
       const auto lsn = this->log_segment_start + wal_lsn_counter;
       if (FLAGS_wal_pwrite) {
          wal_lsn_counter += requested_size;

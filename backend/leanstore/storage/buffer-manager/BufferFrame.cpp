@@ -24,6 +24,11 @@ bool BufferFrame::submitPPLEntry()
    ensure(header.logging != nullptr);
    auto& logging = *header.logging;
    logging.mutex.lock();
+   if (logging.redirect_to_sink_log.load()) {
+      logging.mutex.unlock();
+      markUnDiscardable();
+      return false;
+   }
    ru_epoch_t reclaiming_v2 = BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire);
    if (reclaiming_v2 != reclaiming_v1 && reclaiming_v2 >= page.ru_epoch) {
       logging.mutex.unlock();

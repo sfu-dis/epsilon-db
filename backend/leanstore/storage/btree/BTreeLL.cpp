@@ -151,9 +151,6 @@ OP_RESULT BTreeLL::scanDesc(u8* start_key, u16 key_length, std::function<bool(co
 OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_length)
 {
    cr::activeTX().markAsWrite();
-   if (FLAGS_wal && config.enable_wal && cr::LogManager::global->isPartitionedByWorker()) {
-      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
-   }
    const Slice key(o_key, o_key_length);
    const Slice value(o_value, o_value_length);
    jumpmuTry()
@@ -161,13 +158,34 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
       BTreeExclusiveIterator iterator(*static_cast<BTreeGeneric*>(this));
       OP_RESULT ret = iterator.insertKV(key, value);
       ensure(ret == OP_RESULT::OK);
+      
       if (config.enable_wal) {
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(key.length() + value.length(), false);
-         wal_entry->type = WAL_LOG_TYPE::WALInsert;
-         wal_entry->key_length = key.length();
-         wal_entry->value_length = value.length();
-         std::memcpy(wal_entry->payload, key.data(), key.length());
-         std::memcpy(wal_entry->payload + key.length(), value.data(), value.length());
+         const u16 payload_size = key.length() + value.length();
+         const u16 wal_entry_size = sizeof(WALInsert) + payload_size;
+         auto populate_wal_insert_entry = [&](WALInsert& wal_entry) {
+            wal_entry.type = WAL_LOG_TYPE::WALInsert;
+            wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
+            wal_entry.key_length = key.length();
+            wal_entry.value_length = value.length();
+            std::memcpy(wal_entry.payload, key.data(), key.length());
+            std::memcpy(wal_entry.payload + key.length(), value.data(), value.length());
+         };
+         bool ppl_success = false;
+         WALInsert* ppl_wal_entry = nullptr;
+         if (FLAGS_per_page_logging) {
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALInsert>(payload_size);
+            if (wal_entry) {
+               ppl_success = true;
+               ppl_wal_entry = wal_entry.value();
+               populate_wal_insert_entry(*ppl_wal_entry);
+            }
+         }
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(payload_size, false);
+         if (ppl_success) {
+            std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
+         } else {
+            populate_wal_insert_entry(*wal_entry);
+         }
          wal_entry.submit();
       } else {
          iterator.markAsDirty();
@@ -365,9 +383,6 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
                                          UpdateSameSizeInPlaceDescriptor& update_descriptor)
 {
    cr::activeTX().markAsWrite();
-   if (FLAGS_wal && config.enable_wal && cr::LogManager::global->isPartitionedByWorker()) {
-      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
-   }
    Slice key(o_key, o_key_length);
    jumpmuTry()
    {
@@ -381,9 +396,11 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          assert(update_descriptor.count > 0);  // if it is a secondary index, then we can not use updateSameSize
          // -------------------------------------------------------------------------------------
          const u16 delta_length = update_descriptor.size() + update_descriptor.diffLength();
-         const u16 wal_entry_size = sizeof(WALUpdate) + key.length() + delta_length;
+         const u16 payload_size = key.length() + delta_length;
+         const u16 wal_entry_size = sizeof(WALUpdate) + payload_size;
          auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
+            wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
             wal_entry.key_length = key.length();
             wal_entry.delta_length = delta_length;
             u8* wal_ptr = wal_entry.payload;
@@ -400,14 +417,14 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          WALUpdate* ppl_wal_entry = nullptr;
          // TODO(mfd) : Add flag to selectively enable discarding of different log entries.
          if (FLAGS_per_page_logging) {
-            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(key.length() + delta_length);
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size);
             if (wal_entry) {
                ppl_success = true;
                ppl_wal_entry = wal_entry.value();
                populate_wal_update_entry(*ppl_wal_entry);
             }
          }
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(key.length() + delta_length, false);
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(payload_size, false);
          if (ppl_success) {
             assert(FLAGS_per_page_logging);
             std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
@@ -430,9 +447,6 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
 OP_RESULT BTreeLL::remove(u8* o_key, u16 o_key_length)
 {
    cr::activeTX().markAsWrite();
-   if (config.enable_wal && cr::LogManager::global->isPartitionedByWorker()) {
-      cr::Worker::my().myLog().walEnsureEnoughSpace(PAGE_SIZE * 1);
-   }
    const Slice key(o_key, o_key_length);
    jumpmuTry()
    {
@@ -443,12 +457,32 @@ OP_RESULT BTreeLL::remove(u8* o_key, u16 o_key_length)
       }
       Slice value = iterator.value();
       if (config.enable_wal) {
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(o_key_length + value.length(), false);
-         wal_entry->type = WAL_LOG_TYPE::WALRemove;
-         wal_entry->key_length = o_key_length;
-         wal_entry->value_length = value.length();
-         std::memcpy(wal_entry->payload, key.data(), key.length());
-         std::memcpy(wal_entry->payload + o_key_length, value.data(), value.length());
+         const u16 payload_size = o_key_length + value.length();
+         const u16 wal_entry_size = sizeof(WALRemove) + payload_size;
+         auto populate_wal_remove_entry = [&] (WALRemove& wal_entry) {
+            wal_entry.type = WAL_LOG_TYPE::WALRemove;
+            wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
+            wal_entry.key_length = o_key_length;
+            wal_entry.value_length = value.length();
+            std::memcpy(wal_entry.payload, key.data(), key.length());
+            std::memcpy(wal_entry.payload + o_key_length, value.data(), value.length());
+         };
+         bool ppl_success = false;
+         WALRemove* ppl_wal_entry = nullptr;
+         if (FLAGS_per_page_logging) {
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALRemove>(payload_size);
+            if (wal_entry) {
+               ppl_success = true;
+               ppl_wal_entry = wal_entry.value();
+               populate_wal_remove_entry(*ppl_wal_entry);
+            }
+         }
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(payload_size, false);
+         if (ppl_success) {
+            std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
+         } else {
+            populate_wal_remove_entry(*wal_entry);
+         }
          wal_entry.submit();
       } else {
          iterator.markAsDirty();
@@ -578,17 +612,20 @@ void BTreeLL::todo(void*, const u8*, const u64, const u64, const bool)
    UNREACHABLE();
 }
 // -------------------------------------------------------------------------------------
-void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_log_records)
+void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_log_records, const u16 total_log_records_size)
 {
    u32 offset = 0;
    u8 i = 0;
+   BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
+   ensure(node->is_leaf);
    while (i++ < nb_log_records) {
+      ensure_lt(offset, total_log_records_size);
       const WALEntry *wal_entry = reinterpret_cast<const WALEntry*>(log_record_ptr + offset);
+      if (static_cast<u8>(wal_entry->type) == 0) __asm__ volatile("int3");
+      ensure_equal(wal_entry->magic_debugging_number, WAL_BTREE_MAGIC);
       switch(wal_entry->type) {
          case WAL_LOG_TYPE::WALUpdate: {
             const WALUpdate *update_entry = reinterpret_cast<const WALUpdate*>(wal_entry);
-            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-            ensure(node->is_leaf);
             const u8 *key = update_entry->payload;
             u16 key_length = update_entry->key_length;
             bool found = false;
@@ -602,8 +639,6 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
          }
          case WAL_LOG_TYPE::WALInsert: {
             const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(wal_entry); 
-            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-            ensure(node->is_leaf);
             const u8* key = insert_entry->payload;
             const u8* value = key + insert_entry->key_length;
             node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
@@ -612,12 +647,10 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
          }
          case WAL_LOG_TYPE::WALRemove: {
             const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(wal_entry); 
-            BTreeNode *node = reinterpret_cast<BTreeNode*>(btree_node_ptr);
-            ensure(node->is_leaf);
             const u8* key = remove_entry->payload;
             bool ok = node->remove(key, remove_entry->key_length);
-            offset += (sizeof(WALRemove) + remove_entry->key_length + remove_entry->value_length);
             ensure(ok);
+            offset += (sizeof(WALRemove) + remove_entry->key_length + remove_entry->value_length);
             break;
          }
          default: {
@@ -626,6 +659,8 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
          }
       }
    }
+   ensure_equal(offset, total_log_records_size);
+   static_cast<void>(offset);
 }
 // -------------------------------------------------------------------------------------
 void BTreeLL::unlock(void*, const u8*)

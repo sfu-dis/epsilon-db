@@ -121,7 +121,7 @@ void CRManager::groupCommiter()
          // or force those pages to be persisted on disk.
          // For the sink log either it will be a circular log (need proper checkpointing in GSN order)
          // OR we need some tricks to obviate its use.
-         if (log_i == 0) continue;
+         if (logging.is_sink_log) continue;
          if (log2gct.wal_written_offset > logging.wal_gct_cursor) {
             const u64 lower_offset = utils::downAlign(logging.wal_gct_cursor, LOG_DEV_BLK_SIZE);
             const u64 upper_offset = utils::upAlign(log2gct.wal_written_offset, LOG_DEV_BLK_SIZE);

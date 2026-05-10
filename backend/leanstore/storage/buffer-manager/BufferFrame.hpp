@@ -103,14 +103,17 @@ struct BufferFrame {
       {
          wal_entry.type = cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC;
          wal_entry.magic_debugging_number = 99;
-         wal_entry.size = offsetof(PPL, log_records);
-         nb_log_records = 0;
+         // wal_entry.size = offsetof(PPL, log_records);
+         // nb_log_records = 0;
+         reset();
       }
       void reset()
       {
          nb_log_records = 0;
          wal_entry.size = offsetof(PPL, log_records);
+         std::memset(log_records, 0xff, space_for_log_records);
       }
+      u16 size() const { return wal_entry.size - offsetof(PPL, log_records); }
    };
    static_assert(offsetof(PPL, PPL::log_records) == 57, "");
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);
@@ -201,6 +204,7 @@ struct BufferFrame {
       const u32 offset = ppl.wal_entry.size - log_records_offset;
       ppl.wal_entry.size += total_entry_size;
       ppl.nb_log_records++;
+      ensure_equal(ppl.log_records[offset], 0xff);
       return reinterpret_cast<WT*>(&ppl.log_records[offset]);
    }
    // -------------------------------------------------------------------------------------

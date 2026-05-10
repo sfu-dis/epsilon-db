@@ -39,6 +39,7 @@ u32 Logging::walContiguousFreeSpace()
 void Logging::walEnsureEnoughSpace(u32 requested_size)
 {
    if (FLAGS_wal) {
+      ensure(!redirect_to_sink_log.load());
       u32 wait_untill_free_bytes = requested_size + CR_ENTRY_SIZE;
       if ((FLAGS_wal_buffer_size - wal_log_cursor) < static_cast<u32>(requested_size + CR_ENTRY_SIZE)) {
          wait_untill_free_bytes += FLAGS_wal_buffer_size - wal_log_cursor;  // we have to skip this round
