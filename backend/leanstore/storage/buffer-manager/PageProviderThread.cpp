@@ -270,7 +270,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             if (bf.header.pending_lsn_count == 1) {
                pending_lsn = bf.header.pending_lsn;
             } else {
-               if (FLAGS_per_page_logging) {
+               if (FLAGS_per_page_logging && bf.header.pending_lsn_count >= FLAGS_ppl_merge_threshold) {
                   bool ok = bf.submitPPLEntry();
                   if (!ok) {
                      // only fails when the log that is mapped to this page changes.

@@ -662,23 +662,26 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload, 1, lrec_size);
             last_gsn = dte->gsn;
             if (FLAGS_per_page_logging) {
-               ensure(nb_log_records == 1); // Temporary.
+               // ensure(nb_log_records == 1); // Temporary.
                // reconstruct the ppl.
-               std::memcpy(bf.ppl.log_records, dte->payload, lrec_size);
-               bf.ppl.nb_log_records = 1;
-               bf.ppl.wal_entry.size = BufferFrame::log_records_offset + lrec_size;
+               std::memcpy(bf.ppl.log_records + bf.ppl.payload_size(), dte->payload, lrec_size);
+               bf.ppl.nb_log_records += 1;
+               bf.ppl.wal_entry.size += lrec_size;
             }
          } else { // cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC
             ensure(FLAGS_per_page_logging);
-            ensure(nb_log_records == 1); // Temporary.
+            // ensure(nb_log_records == 1); // Temporary.
             auto* ppl = reinterpret_cast<BufferFrame::PPL*>(entry);
             // some sanity checks
             ensure_equal(ppl->header.pid, bf.page.magic_debugging_number);
             ensure_equal(ppl->header.dt_id, bf.page.dt_id);
-            DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, ppl->log_records, ppl->nb_log_records, ppl->size());
+            DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
             // copy back the ppl as is to the PPL buffer.
             ensure_lte(ppl->wal_entry.size, sizeof(BufferFrame::PPL));
-            std::memcpy(&bf.ppl, ppl, ppl->wal_entry.size);
+            // std::memcpy(&bf.ppl, ppl, ppl->wal_entry.size);
+            std::memcpy(bf.ppl.log_records + bf.ppl.payload_size(), ppl->log_records, ppl->payload_size());
+            bf.ppl.nb_log_records += ppl->nb_log_records;
+            bf.ppl.wal_entry.size += ppl->payload_size();
             last_gsn = ppl->header.gsn;
          }
       }
@@ -833,7 +836,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure_equal(bf.header.pending_lsn_count, 0);
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
-         ensure(!FLAGS_per_page_logging || (nb_log_records == 1));
+         // ensure(!FLAGS_per_page_logging || (nb_log_records == 1));
          if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);

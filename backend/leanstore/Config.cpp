@@ -138,6 +138,7 @@ DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds t
 DEFINE_uint32(overprovisioning_ru_epochs, 4, "Force GC if the number of active RU epochs is less than max open by this value");
 DEFINE_uint32(ru_size, 3193344, "Unit of garbage collection in database pages (4 KiB)");
 DEFINE_bool(per_page_logging, false, "Group log records per page");
+DEFINE_uint32(ppl_merge_threshold, 3, "Threshold after which we merge the log records of a page");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------

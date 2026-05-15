@@ -113,7 +113,7 @@ struct BufferFrame {
          wal_entry.size = offsetof(PPL, log_records);
          std::memset(log_records, 0xff, space_for_log_records);
       }
-      u16 size() const { return wal_entry.size - offsetof(PPL, log_records); }
+      u16 payload_size() const { return wal_entry.size - offsetof(PPL, log_records); }
    };
    static_assert(offsetof(PPL, PPL::log_records) == 57, "");
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);

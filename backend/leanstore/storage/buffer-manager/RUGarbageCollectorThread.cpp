@@ -168,9 +168,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       if (to_apply_log_records > 0) {
          for (u64 i = to_apply_log_records; i != 0; --i) {
             if (to_apply_log_records_stack[i-1]->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
-               ensure_equal(to_apply_log_records, 1);
                auto* ppl = reinterpret_cast<BufferFrame::PPL*>(to_apply_log_records_stack[i-1]);
-               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records, ppl->size());
+               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
             } else {
                auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i-1]);
                DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload, 1, dte->size - sizeof(cr::WALDTEntry));
