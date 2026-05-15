@@ -32,6 +32,7 @@ class BTreeGeneric
    struct Config {
       bool enable_wal = true;
       bool use_bulk_insert = false;
+      bool discardable = true;
       u8 fdp_plid = 0;
    };
    Config config;

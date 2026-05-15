@@ -102,17 +102,17 @@ int main(int argc, char** argv)
    };
    // -------------------------------------------------------------------------------------
    crm.scheduleJobSync(0, [&]() {
-      warehouse = LeanStoreAdapter<warehouse_t>(db, "warehouse", 0);
-      district = LeanStoreAdapter<district_t>(db, "district", 0);
-      customer = LeanStoreAdapter<customer_t>(db, "customer", 0);
-      customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl", 0);
-      history = LeanStoreAdapter<history_t>(db, "history", 0);
-      neworder = LeanStoreAdapter<neworder_t>(db, "neworder", 0);
-      order = LeanStoreAdapter<order_t>(db, "order", 0);
-      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc", 0);
-      item = LeanStoreAdapter<item_t>(db, "item", 0);
-      stock = LeanStoreAdapter<stock_t>(db, "stock", 0);
-      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", 0);
+      warehouse = LeanStoreAdapter<warehouse_t>(db, "warehouse");
+      district = LeanStoreAdapter<district_t>(db, "district");
+      customer = LeanStoreAdapter<customer_t>(db, "customer");
+      customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl");
+      history = LeanStoreAdapter<history_t>(db, "history");
+      neworder = LeanStoreAdapter<neworder_t>(db, "neworder");
+      order = LeanStoreAdapter<order_t>(db, "order");
+      order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc");
+      item = LeanStoreAdapter<item_t>(db, "item");
+      stock = LeanStoreAdapter<stock_t>(db, "stock");
+      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", false, 0);
    });
    // -------------------------------------------------------------------------------------
    db.registerConfigEntry("tpcc_warehouse_count", FLAGS_tpcc_warehouse_count);

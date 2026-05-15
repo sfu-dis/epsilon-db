@@ -18,19 +18,20 @@ struct LeanStoreAdapter : Adapter<Record> {
    {
       // hack
    }
-   LeanStoreAdapter(LeanStore& db, string name, u8 plid = 0) : name(name)
+   LeanStoreAdapter(LeanStore& db, string name, bool discardable = true, u8 plid = 0) : name(name)
    {
+      btree::BTreeGeneric::Config config = {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .discardable = discardable, .fdp_plid = plid};
       if (FLAGS_vi) {
          if (FLAGS_recover) {
-            btree = &db.retrieveBTreeVI(name);
+            btree = &db.retrieveBTreeVI(name, config);
          } else {
-            btree = &db.registerBTreeVI(name, {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .fdp_plid = plid});
+            btree = &db.registerBTreeVI(name, config);
          }
       } else {
          if (FLAGS_recover) {
-            btree = &db.retrieveBTreeLL(name);
+            btree = &db.retrieveBTreeLL(name, config);
          } else {
-            btree = &db.registerBTreeLL(name, {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .fdp_plid = plid});
+            btree = &db.registerBTreeLL(name, config);
          }
       }
    }

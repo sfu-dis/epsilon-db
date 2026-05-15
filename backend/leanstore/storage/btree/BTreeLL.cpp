@@ -172,7 +172,7 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
          };
          bool ppl_success = false;
          WALInsert* ppl_wal_entry = nullptr;
-         if (FLAGS_per_page_logging) {
+         if (config.discardable && FLAGS_per_page_logging) {
             auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALInsert>(payload_size);
             if (wal_entry) {
                ppl_success = true;
@@ -180,7 +180,7 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
                populate_wal_insert_entry(*ppl_wal_entry);
             }
          }
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(payload_size, false);
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALInsert>(payload_size, !config.discardable);
          if (ppl_success) {
             std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
          } else {
@@ -416,7 +416,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          bool ppl_success = false;
          WALUpdate* ppl_wal_entry = nullptr;
          // TODO(mfd) : Add flag to selectively enable discarding of different log entries.
-         if (FLAGS_per_page_logging) {
+         if (config.discardable && FLAGS_per_page_logging) {
             auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size);
             if (wal_entry) {
                ppl_success = true;
@@ -424,7 +424,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
                populate_wal_update_entry(*ppl_wal_entry);
             }
          }
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(payload_size, false);
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(payload_size, !config.discardable);
          if (ppl_success) {
             assert(FLAGS_per_page_logging);
             std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
@@ -469,7 +469,7 @@ OP_RESULT BTreeLL::remove(u8* o_key, u16 o_key_length)
          };
          bool ppl_success = false;
          WALRemove* ppl_wal_entry = nullptr;
-         if (FLAGS_per_page_logging) {
+         if (config.discardable && FLAGS_per_page_logging) {
             auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALRemove>(payload_size);
             if (wal_entry) {
                ppl_success = true;
@@ -477,7 +477,7 @@ OP_RESULT BTreeLL::remove(u8* o_key, u16 o_key_length)
                populate_wal_remove_entry(*ppl_wal_entry);
             }
          }
-         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(payload_size, false);
+         auto wal_entry = iterator.leaf.reserveWALEntry<WALRemove>(payload_size, !config.discardable);
          if (ppl_success) {
             std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
          } else {
