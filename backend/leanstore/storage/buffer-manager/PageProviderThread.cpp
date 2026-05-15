@@ -267,6 +267,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
             ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
             LID *pending_lsn = nullptr;
+            bool submitted_ppl = false;
             if (bf.header.pending_lsn_count == 1) {
                pending_lsn = bf.header.pending_lsn;
             } else {
@@ -281,6 +282,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   }
                   ensure(bf.header.pending_lsn_count == 1);
                   pending_lsn = bf.header.pending_lsn;
+                  submitted_ppl = true;
                } else {
                   pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
                   ensure(pending_lsn != nullptr);
@@ -288,7 +290,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
             }
             bool success = false;
-            if (FLAGS_per_page_logging) {
+            if (submitted_ppl) {
                to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.page.GSN, bf.page.last_written_lsn);
                success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count);
             } else {
