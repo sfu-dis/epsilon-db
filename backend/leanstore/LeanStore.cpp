@@ -141,12 +141,16 @@ LeanStore::LeanStore()
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
       ensure(log_dev_fd > 0);
 
-      if (ioctl(log_dev_fd, BLKGETSIZE64, &log_device_size) == 0) {
-         std::cout << "[INFO] Log device size: " << log_device_size << " bytes" << std::endl;
-         ensure((log_device_size % 4096) == 0);
-         // log_device_size = log_device_size / 4096;
+      if (FLAGS_log_dev_size_gib == 0) {
+         if (ioctl(log_dev_fd, BLKGETSIZE64, &log_device_size) == 0) {
+            log_device_size = utils::downAlign(log_device_size, 4096);
+            std::cout << "[INFO] Log device size: " << log_device_size << " bytes" << std::endl;
+            ensure((log_device_size % 4096) == 0);
+         } else {
+            perror("ioctl");
+         }
       } else {
-         perror("ioctl");
+         log_device_size = FLAGS_log_dev_size_gib * 1073741824ul;
       }
    }
    cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);

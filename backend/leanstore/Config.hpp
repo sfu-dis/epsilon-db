@@ -137,3 +137,4 @@ DECLARE_bool(per_page_logging);
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------
 DECLARE_string(redo_log_file);
+DECLARE_uint64(log_dev_size_gib);
