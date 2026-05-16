@@ -667,6 +667,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
                std::memcpy(bf.ppl.log_records + bf.ppl.payload_size(), dte->payload, lrec_size);
                bf.ppl.nb_log_records += 1;
                bf.ppl.wal_entry.size += lrec_size;
+            } else if (i == (nb_log_records - 1)) {
+               // Copy the last log record on the PPL.
+               // TODO(mfd): DO THIS IN A PRINCIPLED MANNER.
+               std::memcpy(bf.ppl.log_records, dte->payload, lrec_size);
+               bf.header.last_entry_ptr = &bf.ppl.log_records[0];
             }
          } else { // cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC
             ensure(FLAGS_per_page_logging);

@@ -132,6 +132,8 @@ struct WorkerCounters {
    atomic<u64> wal_buffer_hit = 0;
    atomic<u64> wal_buffer_miss = 0;
    // -------------------------------------------------------------------------------------
+   atomic<u64> consecutive_same_key_in_page = 0;
+   // -------------------------------------------------------------------------------------
    std::mutex ioReadHistLock;
    Hist<int, u64> ioReadHist{1000, 0, 20000};
    std::mutex ioWriteHistLock;

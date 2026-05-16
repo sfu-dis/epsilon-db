@@ -398,6 +398,12 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          const u16 delta_length = update_descriptor.size() + update_descriptor.diffLength();
          const u16 payload_size = key.length() + delta_length;
          const u16 wal_entry_size = sizeof(WALUpdate) + payload_size;
+         auto* bf = iterator.leaf.bf;
+         WALUpdate wal_prefix;
+         wal_prefix.type = WAL_LOG_TYPE::WALUpdate;
+         wal_prefix.magic_debugging_number = WAL_BTREE_MAGIC;
+         wal_prefix.key_length = key.length();
+         wal_prefix.delta_length = delta_length;
          auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
@@ -432,6 +438,25 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             populate_wal_update_entry(*wal_entry);
          }
          wal_entry.submit();
+         if (config.discardable && !FLAGS_per_page_logging) {
+            if (bf->header.pending_lsn_count >= 2) {
+               ensure(bf->header.last_entry_ptr != nullptr);
+               if (std::memcmp(bf->header.last_entry_ptr, &wal_prefix, sizeof(WALUpdate)) == 0
+                    && std::memcmp(bf->header.last_entry_ptr + sizeof(WALUpdate), o_key, o_key_length) == 0)
+               {
+                  // Good news, Previous WAL entry no longer needed.
+                  u8 n = bf->header.pending_lsn_count;
+                  bf->header.pending_lsn[n-2] = bf->header.pending_lsn[n-1];
+                  bf->header.pending_lsn_count--;
+                  bf->page.PLSN--;
+                  WorkerCounters::myCounters().consecutive_same_key_in_page++;
+               }
+            }
+            // use the ppl space to store the last entry prefix.
+            std::memcpy(bf->ppl.log_records, &wal_prefix, sizeof(WALUpdate));
+            std::memcpy(bf->ppl.log_records + sizeof(WALUpdate), o_key, o_key_length);
+            bf->header.last_entry_ptr = &bf->ppl.log_records[0];
+         }
       } else {
          callback(current_value.data(), current_value.length());
          iterator.markAsDirty();

@@ -122,11 +122,11 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       }
 
       LID lsn = last_lsn;
-      u64 to_apply_log_records = 0;
       std::vector<cr::WALEntry*> to_apply_log_records_stack;
       ensure(lsn != INVALID_LSN);
 
-      // Could it be the case, that the page is indeed clean?
+      int i = to_fix_pids[idx].nb_log_records - 1;
+      ensure(to_fix_pids[idx].nb_log_records > 0);
       while (lsn != INVALID_LSN) {
          ensure_lte(cur_log_segment_start, lsn);
          u64 off = lsn - cur_log_segment_start;
@@ -135,8 +135,12 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
          bool ok = logRecordSanityCheck(entry, *page, lsn);
          ensure(ok);
-
-         to_apply_log_records_stack.push_back(entry);
+         
+         if (to_fix_pids[idx].lsn_list[i] == lsn) {
+            i--;
+            to_apply_log_records_stack.push_back(entry);
+            if (i < 0) break;
+         }
 
          if (to_apply_log_records_stack.size() > FLAGS_max_log_records_to_discard) {
             printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
@@ -152,8 +156,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          ensure(to_apply_log_records_stack.size() <= FLAGS_max_log_records_to_discard);
          lsn = entry->prev_lsn;
       }
+      // ensure_equal_goto_fail(i, u8(-1));
 
-      to_apply_log_records = to_apply_log_records_stack.size();
+      u64 to_apply_log_records = to_apply_log_records_stack.size();
 
       ensure(to_apply_log_records != 0);
       // Sanity checks.

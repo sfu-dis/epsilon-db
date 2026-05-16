@@ -188,6 +188,9 @@ void BMTable::open()
    columns.emplace("ppl_not_yet_persisted", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::ppl_not_yet_persisted);
    });
+   columns.emplace("consecutive_same_key_in_page", [this](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::consecutive_same_key_in_page);
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

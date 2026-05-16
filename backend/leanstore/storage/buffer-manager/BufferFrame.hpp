@@ -48,6 +48,8 @@ struct BufferFrame {
       // 4. It belongs to an already reclaimed RU epoch. (Simplicity)
       std::atomic<bool> discardable = false;
       // -------------------------------------------------------------------------------------
+      u8* last_entry_ptr;
+      // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
          u32 restarts_counter = 0;
@@ -180,6 +182,7 @@ struct BufferFrame {
       header.contention_tracker.reset();
       header.keep_in_memory = false;
       header.pending_lsn_count = 0;
+      header.last_entry_ptr = nullptr;
       ppl.reset();
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
