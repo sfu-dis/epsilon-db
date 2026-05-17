@@ -662,31 +662,18 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload, 1, lrec_size);
             last_gsn = dte->gsn;
             if (FLAGS_per_page_logging) {
-               // ensure(nb_log_records == 1); // Temporary.
-               // reconstruct the ppl.
-               std::memcpy(bf.ppl.log_records + bf.ppl.payload_size(), dte->payload, lrec_size);
-               bf.ppl.nb_log_records += 1;
-               bf.ppl.wal_entry.size += lrec_size;
+               bf.ppl.insertLogRecord(dte->payload, lrec_size);
             } else if (i == (nb_log_records - 1)) {
-               // Copy the last log record on the PPL.
-               // TODO(mfd): DO THIS IN A PRINCIPLED MANNER.
-               std::memcpy(bf.ppl.log_records, dte->payload, lrec_size);
-               bf.header.last_entry_ptr = &bf.ppl.log_records[0];
+               bf.ppl.insertWALPrefix(dte->payload, lrec_size, dte->payload, 0);
             }
          } else { // cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC
             ensure(FLAGS_per_page_logging);
-            // ensure(nb_log_records == 1); // Temporary.
             auto* ppl = reinterpret_cast<BufferFrame::PPL*>(entry);
             // some sanity checks
             ensure_equal(ppl->header.pid, bf.page.magic_debugging_number);
             ensure_equal(ppl->header.dt_id, bf.page.dt_id);
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
-            // copy back the ppl as is to the PPL buffer.
-            ensure_lte(ppl->wal_entry.size, sizeof(BufferFrame::PPL));
-            // std::memcpy(&bf.ppl, ppl, ppl->wal_entry.size);
-            std::memcpy(bf.ppl.log_records + bf.ppl.payload_size(), ppl->log_records, ppl->payload_size());
-            bf.ppl.nb_log_records += ppl->nb_log_records;
-            bf.ppl.wal_entry.size += ppl->payload_size();
+            bf.ppl.insertPPL(*ppl);
             last_gsn = ppl->header.gsn;
          }
       }

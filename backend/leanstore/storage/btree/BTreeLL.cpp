@@ -404,6 +404,13 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          wal_prefix.magic_debugging_number = WAL_BTREE_MAGIC;
          wal_prefix.key_length = key.length();
          wal_prefix.delta_length = delta_length;
+         bool entry_overrides_previous = false;
+         if (config.discardable && bf->isDiscardable()
+             && bf->canMergeWithLastRecord(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, o_key_length))
+         {
+            ensure(bf->header.pending_lsn_count >= 1);
+            entry_overrides_previous = true;
+         }
          auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
@@ -421,9 +428,8 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          };
          bool ppl_success = false;
          WALUpdate* ppl_wal_entry = nullptr;
-         // TODO(mfd) : Add flag to selectively enable discarding of different log entries.
          if (config.discardable && FLAGS_per_page_logging) {
-            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size);
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size, entry_overrides_previous);
             if (wal_entry) {
                ppl_success = true;
                ppl_wal_entry = wal_entry.value();
@@ -438,24 +444,21 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             populate_wal_update_entry(*wal_entry);
          }
          wal_entry.submit();
-         if (config.discardable && !FLAGS_per_page_logging) {
-            if (bf->header.pending_lsn_count >= 2) {
-               ensure(bf->header.last_entry_ptr != nullptr);
-               if (std::memcmp(bf->header.last_entry_ptr, &wal_prefix, sizeof(WALUpdate)) == 0
-                    && std::memcmp(bf->header.last_entry_ptr + sizeof(WALUpdate), o_key, o_key_length) == 0)
-               {
-                  // Good news, Previous WAL entry no longer needed.
-                  u8 n = bf->header.pending_lsn_count;
-                  bf->header.pending_lsn[n-2] = bf->header.pending_lsn[n-1];
-                  bf->header.pending_lsn_count--;
-                  bf->page.PLSN--;
-                  WorkerCounters::myCounters().consecutive_same_key_in_page++;
-               }
+         if (config.discardable && bf->isDiscardable() && (!FLAGS_per_page_logging || ppl_success)) {
+            if (entry_overrides_previous) {
+               ensure_lte(2, bf->header.pending_lsn_count);
+               ensure(bf->lastLogRecord() != nullptr);
+               // Good news, Previous WAL entry no longer needed.
+               u8 n = bf->header.pending_lsn_count;
+               bf->header.pending_lsn[n-2] = bf->header.pending_lsn[n-1];
+               bf->header.pending_lsn_count--;
+               bf->page.PLSN--;
+               WorkerCounters::myCounters().consecutive_same_key_in_page++;
             }
-            // use the ppl space to store the last entry prefix.
-            std::memcpy(bf->ppl.log_records, &wal_prefix, sizeof(WALUpdate));
-            std::memcpy(bf->ppl.log_records + sizeof(WALUpdate), o_key, o_key_length);
-            bf->header.last_entry_ptr = &bf->ppl.log_records[0];
+            if (!FLAGS_per_page_logging) {
+               // use the ppl space to store the last entry prefix.
+               bf->ppl.insertWALPrefix(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, o_key_length);
+            }
          }
       } else {
          callback(current_value.data(), current_value.length());

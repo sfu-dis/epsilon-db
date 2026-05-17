@@ -48,8 +48,6 @@ struct BufferFrame {
       // 4. It belongs to an already reclaimed RU epoch. (Simplicity)
       std::atomic<bool> discardable = false;
       // -------------------------------------------------------------------------------------
-      u8* last_entry_ptr;
-      // -------------------------------------------------------------------------------------
       // Contention Split data structure
       struct ContentionTracker {
          u32 restarts_counter = 0;
@@ -98,27 +96,30 @@ struct BufferFrame {
          PID pid;
       };
       PerPageLogEntryHeader header;
+      u16 last_entry_offset = -1;
       u8 nb_log_records;
-      static constexpr u32 space_for_log_records = PAGE_ALIGNEMENT - sizeof(Header) - sizeof(wal_entry) - sizeof(header) - 1;
+      static constexpr u32 space_for_log_records = PAGE_ALIGNEMENT - sizeof(Header) - sizeof(wal_entry) - sizeof(header) - 3;
       u8 log_records[space_for_log_records];
       void init()
       {
          wal_entry.type = cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC;
          wal_entry.magic_debugging_number = 99;
-         // wal_entry.size = offsetof(PPL, log_records);
-         // nb_log_records = 0;
          reset();
       }
       void reset()
       {
          nb_log_records = 0;
          wal_entry.size = offsetof(PPL, log_records);
+         last_entry_offset = -1;
          std::memset(log_records, 0xff, space_for_log_records);
       }
       u16 payload_size() const { return wal_entry.size - offsetof(PPL, log_records); }
+      void insertLogRecord(u8* log_record_buf, u32 log_record_size);
+      void insertPPL(const PPL& other);
+      void insertWALPrefix(u8* prefix, u16 prefix_len, u8* key, u16 key_len);
    };
-   static_assert(offsetof(PPL, PPL::log_records) == 57, "");
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);
+   static_assert(log_records_offset == 59, "");
    // -------------------------------------------------------------------------------------
    struct alignas(PAGE_ALIGNEMENT) Page {
       LID PLSN = 0;
@@ -132,7 +133,7 @@ struct BufferFrame {
       LID last_written_lsn = INVALID_LSN;
       s32 prev_log_id = -1; // TODO(mfd) : Used just for debugging, remove later
       s32 log_id = -1; // TODO(mfd) : Used just for debugging, remove later
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) 
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number)
              - sizeof(fdp_plid) - sizeof(nbfixed) - 2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - 2*sizeof(log_id)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
@@ -182,7 +183,6 @@ struct BufferFrame {
       header.contention_tracker.reset();
       header.keep_in_memory = false;
       header.pending_lsn_count = 0;
-      header.last_entry_ptr = nullptr;
       ppl.reset();
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
@@ -195,10 +195,15 @@ struct BufferFrame {
    }
    // -------------------------------------------------------------------------------------
    template <typename WT>
-   std::optional<WT*> reservePPLEntry(u32 payload_size)
+   std::optional<WT*> reservePPLEntry(u32 payload_size, bool overrides_previous = false)
    {
       ensure(FLAGS_per_page_logging);
       if (!isDiscardable()) return std::nullopt;
+      if (overrides_previous) {
+         ensure(lastLogRecord() != nullptr);
+         ensure(ppl.last_entry_offset != -1);
+         return reinterpret_cast<WT*>(lastLogRecord());
+      }
       u32 total_entry_size = sizeof(WT) + payload_size;
       if (ppl.wal_entry.size + total_entry_size > sizeof(PPL)) {
          this->markUnDiscardable();
@@ -208,7 +213,25 @@ struct BufferFrame {
       ppl.wal_entry.size += total_entry_size;
       ppl.nb_log_records++;
       ensure_equal(ppl.log_records[offset], 0xff);
+      ppl.last_entry_offset = offset;
       return reinterpret_cast<WT*>(&ppl.log_records[offset]);
+   }
+   // -------------------------------------------------------------------------------------
+   u8* lastLogRecord()
+   {
+      if (ppl.last_entry_offset == u16(-1)) {
+         return nullptr;
+      }
+      u16 offset = FLAGS_per_page_logging ? ppl.last_entry_offset : 0;
+      return &ppl.log_records[offset];
+   }
+   // -------------------------------------------------------------------------------------
+   bool canMergeWithLastRecord(u8* header, u16 header_len, u8* key, u16 key_len)
+   {
+      u8* last_entry_ptr = lastLogRecord();
+      return last_entry_ptr != nullptr
+             && std::memcmp(last_entry_ptr, header, header_len) == 0
+             && std::memcmp(last_entry_ptr + header_len, key, key_len) == 0;
    }
    // -------------------------------------------------------------------------------------
    bool submitPPLEntry();

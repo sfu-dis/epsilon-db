@@ -59,6 +59,37 @@ bool BufferFrame::submitPPLEntry()
    return true;
 }
 // -------------------------------------------------------------------------------------
+void BufferFrame::PPL::insertWALPrefix(u8* prefix, u16 prefix_len, u8* key, u16 key_len)
+{
+   ensure(!FLAGS_per_page_logging);
+   std::memcpy(log_records, prefix, prefix_len);
+   std::memcpy(log_records + prefix_len, key, key_len);
+   if (last_entry_offset == u16(-1)) last_entry_offset = 0;
+   ensure_equal(last_entry_offset, 0);
+}
+// -------------------------------------------------------------------------------------
+void BufferFrame::PPL::insertLogRecord(u8* log_record_buf, u32 log_record_size)
+{
+   ensure(FLAGS_per_page_logging);
+   ensure(wal_entry.size + log_record_size <= sizeof(PPL));
+   std::memcpy(log_records + payload_size(), log_record_buf, log_record_size);
+   nb_log_records += 1;
+   wal_entry.size += log_record_size;
+   if (last_entry_offset == u16(-1)) last_entry_offset = 0;
+   // last_entry_offset += relative_last_entry_offset;
+}
+// -------------------------------------------------------------------------------------
+void BufferFrame::PPL::insertPPL(const PPL& other)
+{
+   ensure(FLAGS_per_page_logging);
+   ensure(wal_entry.size + other.payload_size() <= sizeof(PPL));
+   std::memcpy(log_records + payload_size(), other.log_records, other.payload_size());
+   nb_log_records += other.nb_log_records;
+   wal_entry.size += other.payload_size();
+   if (last_entry_offset == u16(-1)) last_entry_offset = 0;
+   last_entry_offset += other.last_entry_offset;
+}
+// -------------------------------------------------------------------------------------
 void BufferFrame::dump()
 {
    cout << "\nBuffer Frame Dump: \n";
