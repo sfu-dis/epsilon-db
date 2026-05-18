@@ -103,6 +103,11 @@ struct Logging {
    }
    void submitDTEntry(u64 total_size);
    // -------------------------------------------------------------------------------------
+   u64 logSegmentFreeSpace()
+   {
+      return log_segment_size - wal_lsn_counter;
+   }
+   // -------------------------------------------------------------------------------------
    LID reserveLSN(u64 requested_size)
    {
       ensure(is_sink_log || (wal_lsn_counter < log_segment_size));
@@ -111,6 +116,11 @@ struct Logging {
          wal_lsn_counter += requested_size;
       }
       ensure(walContiguousFreeSpace() >= requested_size);
+      if (!is_sink_log && (logSegmentFreeSpace() <= FLAGS_wal_buffer_size)) {
+         redirect_to_sink_log.store(true, std::memory_order_release);
+         // TODO(mfd) : Optinally just garbage collect the corresponding RU epoch.
+         printf("[INFO] Log %u is full, disable discarding for it and redirect the log entries to sink logs\n", log_id);
+      }
       return lsn;
    }
    void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }
@@ -141,7 +151,7 @@ struct Logging {
    void submitWALMetaEntry(u64 active_tx_start_ts);
    inline LID getCurrentGSN() { return log_gsn_clock; }
    inline void setCurrentGSN(LID gsn) { log_gsn_clock = gsn; }
-   inline void syncGSN(LID other_gsn) { 
+   inline void syncGSN(LID other_gsn) {
       if (other_gsn > log_gsn_clock) {
          log_gsn_clock = other_gsn;
       }

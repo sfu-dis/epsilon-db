@@ -245,11 +245,6 @@ class HybridPageGuard
          }
          ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
       }
-      if (!logging.is_sink_log && ((logging.log_segment_size - logging.wal_lsn_counter) <= (logging.log_segment_size/5))) {
-         logging.redirect_to_sink_log.store(true, std::memory_order_release);
-         // TODO(mfd) : Optinally just garbage collect the corresponding RU epoch.
-         printf("[INFO] Log %u is full, disable discarding for it and redirect the log entries to sink logs\n", logging.log_id);
-      }
       return handler;
    }
    inline void submitWALEntry(u64 total_size)
