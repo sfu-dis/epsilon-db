@@ -5,6 +5,7 @@
 #include "LogManager.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/utils/OptimisticSpinStruct.hpp"
+#include "leanstore/utils/CircularQueue.hpp"
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 
 namespace leanstore
@@ -49,6 +50,9 @@ struct Logging {
    u64 log_segment_size = -1;
    bool is_sink_log = false;
    std::atomic<bool> redirect_to_sink_log = false;
+   // -------------------------------------------------------------------------------------
+   utils::CircularQueue<atomic<u64>, 1024> holes;
+   // -------------------------------------------------------------------------------------
    // Should be called only by the group committer thread.
    void reset()
    {
