@@ -395,9 +395,11 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
       if (config.enable_wal) {
          assert(update_descriptor.count > 0);  // if it is a secondary index, then we can not use updateSameSize
          // -------------------------------------------------------------------------------------
+         const u16 prefix_length = key.length() + update_descriptor.size();
          const u16 delta_length = update_descriptor.size() + update_descriptor.diffLength();
          const u16 payload_size = key.length() + delta_length;
          const u16 wal_entry_size = sizeof(WALUpdate) + payload_size;
+#if 0
          auto* bf = iterator.leaf.bf;
          WALUpdate wal_prefix;
          wal_prefix.type = WAL_LOG_TYPE::WALUpdate;
@@ -406,11 +408,12 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          wal_prefix.delta_length = delta_length;
          bool entry_overrides_previous = false;
          if (config.discardable && bf->isDiscardable()
-             && bf->canMergeWithLastRecord(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, o_key_length))
+             && bf->canMergeWithLastRecord(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, prefix_length))
          {
             ensure(bf->header.pending_lsn_count >= 1);
             entry_overrides_previous = true;
          }
+#endif
          auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
@@ -429,7 +432,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          bool ppl_success = false;
          WALUpdate* ppl_wal_entry = nullptr;
          if (config.discardable && FLAGS_per_page_logging) {
-            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size, entry_overrides_previous);
+            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size);
             if (wal_entry) {
                ppl_success = true;
                ppl_wal_entry = wal_entry.value();
@@ -444,6 +447,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             populate_wal_update_entry(*wal_entry);
          }
          wal_entry.submit();
+#if 0
          if (config.discardable && bf->isDiscardable() && (!FLAGS_per_page_logging || ppl_success)) {
             if (entry_overrides_previous) {
                ensure_lte(2, bf->header.pending_lsn_count);
@@ -457,9 +461,10 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             }
             if (!FLAGS_per_page_logging) {
                // use the ppl space to store the last entry prefix.
-               bf->ppl.insertWALPrefix(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, o_key_length);
+               bf->ppl.insertWALPrefix(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, prefix_length);
             }
          }
+#endif
       } else {
          callback(current_value.data(), current_value.length());
          iterator.markAsDirty();

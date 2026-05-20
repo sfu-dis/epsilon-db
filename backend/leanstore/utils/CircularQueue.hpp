@@ -1,5 +1,6 @@
 #pragma once
 #include "Units.hpp"
+#include "Exceptions.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -26,23 +27,21 @@ struct CircularQueue {
    // Caller must ensure non-empty.
    T& pop_front()
    {
-      assert(!empty());
+      ensure(!empty());
       return arr[head++ % N];
    }
 
-#if 0
    template <typename Pred>
    T* erase_front_while(Pred pred) {
        u64 last_erased_idx = -1;
        while (!empty() && pred(arr[head % N])) {
            last_erased_idx = head++;
        }
-       if (last_erased_idx != -1) {
+       if (last_erased_idx != u64(-1)) {
           return &arr[last_erased_idx % N];
        }
        return nullptr;
    }
-#endif
 
    struct iterator {
       CircularQueue* q;

@@ -181,6 +181,10 @@ class HybridPageGuard
       s64 reclaiming_ru_epoch_snapshot = storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
       auto& logging = cr::LogManager::getLog(bf);
       logging.mutex.lock();
+      if (logging.redirect_to_sink_log.load(std::memory_order_acquire)) {
+         logging.mutex.unlock();
+         goto retry;
+      }
       if (reclaiming_ru_epoch_snapshot < bf->page.ru_epoch) {
          s64 reclaiming_ru_epoch_snapshot2 = storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
          if ((reclaiming_ru_epoch_snapshot2 != reclaiming_ru_epoch_snapshot)
@@ -189,10 +193,6 @@ class HybridPageGuard
             if ((++failure_counter % 4096) == 0) {
                printf("[WARN] I think I am stuck retrying in reserveWALEntry!!\n");
             }
-            goto retry;
-         }
-         if (logging.redirect_to_sink_log.load(std::memory_order_acquire)) {
-            logging.mutex.unlock();
             goto retry;
          }
       }
@@ -226,6 +226,8 @@ class HybridPageGuard
       logging.active_dt_entry->ru_epoch = bf->page.ru_epoch;
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
       logging.active_dt_entry->prev_lsn = first_entry_in_log ? INVALID_LSN : bf->page.last_written_lsn;
+      logging.mutex.unlock();
+
       if (FLAGS_wal_pwrite) {
          bf->page.last_written_lsn = handler.lsn;
          bf->page.log_id = logging.log_id;
@@ -235,8 +237,8 @@ class HybridPageGuard
          bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN;
       }
       LID *pending_lsn = bf->header.pending_lsn;
-      if (FLAGS_enable_discarding && bf->isDiscardable()) { 
-         ensure(logging.log_id >= FLAGS_wal_sink_logs);
+      if (FLAGS_enable_discarding && bf->isDiscardable()) {
+         ensure(!logging.is_sink_log);
          ensure(!first_entry_in_log || (bf->header.pending_lsn_count == 0));
          ensure_lt(bf->header.pending_lsn_count, FLAGS_max_log_records_to_discard);
          pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
@@ -246,11 +248,6 @@ class HybridPageGuard
          ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
       }
       return handler;
-   }
-   inline void submitWALEntry(u64 total_size)
-   {
-      ensure(bf->header.logging != nullptr);
-      bf->header.logging->submitDTEntry(total_size);
    }
    // -------------------------------------------------------------------------------------
    inline bool hasFacedContention() { return guard.faced_contention; }
@@ -304,8 +301,6 @@ class ExclusivePageGuard
    {
       return ref_guard.template reserveWALEntry<WT>(extra_size);
    }
-   // -------------------------------------------------------------------------------------
-   inline void submitWALEntry(u64 total_size) { ref_guard.submitWALEntry(total_size); }
    // -------------------------------------------------------------------------------------
    template <typename... Args>
    void init(Args&&... args)

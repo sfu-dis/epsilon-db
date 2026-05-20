@@ -191,11 +191,12 @@ struct Worker {
    inline WORKERID workerID() { return worker_id; }
    inline LID getCurrentGSN() { return worker_gsn_clock; }
    inline void setCurrentGSN(LID gsn) { worker_gsn_clock = gsn; }
-   inline void syncGSN(LID other_gsn) { 
+   inline void syncGSN(LID other_gsn) {
       if (other_gsn > worker_gsn_clock) {
          worker_gsn_clock = other_gsn;
       }
    }
+   inline void publishGSN() { gct_visible_worker_gsn_clock.store(worker_gsn_clock, std::memory_order_release); }
    Logging& myLog();
 };
 // -------------------------------------------------------------------------------------

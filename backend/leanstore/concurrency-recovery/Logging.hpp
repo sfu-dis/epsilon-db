@@ -18,6 +18,7 @@ struct Transaction;
 
 struct Logging {
    static constexpr s64 CR_ENTRY_SIZE = sizeof(WALMetaEntry);
+   static constexpr u64 MAX_PENDING_HOLES = 16384;
    static atomic<u64> global_min_gsn_flushed;   // The minimum of all workers maximum flushed GSN
    static atomic<u64> global_sync_to_this_gsn;  // Artifically increment the workers GSN to this point at the next round to prevent GSN from
                                                 // skewing and undermining RFA
@@ -51,7 +52,23 @@ struct Logging {
    bool is_sink_log = false;
    std::atomic<bool> redirect_to_sink_log = false;
    // -------------------------------------------------------------------------------------
-   utils::CircularQueue<atomic<u64>, 1024> holes;
+   struct hole_t {
+      static constexpr u32 HOLE_LATCH_BIT = (u32(1) << 31);
+      static_assert(HOLE_LATCH_BIT == 0x80000000, "");
+      atomic<u32> log_buffer_offset;
+      LID gsn;
+      hole_t() : log_buffer_offset(-1), gsn(0) {}
+      // always create it locked;
+      hole_t(u32 offset, LID gsn) : log_buffer_offset(offset|HOLE_LATCH_BIT), gsn(gsn) {}
+      void unlock()
+      {
+         ensure(isLocked());
+         u32 unlocked = log_buffer_offset.load(std::memory_order_relaxed) & ~HOLE_LATCH_BIT;
+         log_buffer_offset.store(unlocked);
+      }
+      bool isLocked() { return log_buffer_offset.load(std::memory_order_acquire) & HOLE_LATCH_BIT; }
+   };
+   utils::CircularQueue<hole_t, MAX_PENDING_HOLES> holes;
    // -------------------------------------------------------------------------------------
    // Should be called only by the group committer thread.
    void reset()
@@ -64,10 +81,34 @@ struct Logging {
       redirect_to_sink_log.store(false);
       wal_lsn_counter = 0;
       wal_log_cursor = 0;
-      publishOffset();
+      // publishOffset();
+      wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor);
       wal_gct_cursor.store(0);
    }
    // -------------------------------------------------------------------------------------
+   void collect_filled_holes(bool wait_if_none)
+   {
+      // I should be holding the log buffer mutex inside this method.
+   retry:
+      auto* last_erased_hole = holes.erase_front_while([](hole_t& hole) {
+         return !hole.isLocked();
+      });
+      if (last_erased_hole == nullptr) {
+         if (wait_if_none) {
+            _mm_pause();
+            goto retry;
+         }
+         return;
+      }
+      assert(last_erased_hole != nullptr);
+      ensure(!holes.full());
+
+      // notify the GCT thread with the new visible log buffer offset and its gsn.
+      auto wt2gct = wt_to_lw.getNoSync();
+      wt2gct.wal_written_offset = last_erased_hole->log_buffer_offset.load(std::memory_order_relaxed);
+      wt2gct.last_gsn = last_erased_hole->gsn;
+      wt_to_lw.pushSync(wt2gct);
+   }
    // -------------------------------------------------------------------------------------
    template <typename T>
    class WALEntryHandler
@@ -78,15 +119,29 @@ struct Logging {
       u64 lsn;
       u32 in_memory_offset;
       Logging *logging;
+      hole_t* hole;
       inline T* operator->() { return reinterpret_cast<T*>(entry); }
       inline T& operator*() { return *reinterpret_cast<T*>(entry); }
       WALEntryHandler() = default;
-      WALEntryHandler(u8* entry, u64 size, u64 lsn, u64 in_memory_offset, Logging *logging)
-          : entry(entry), total_size(size), lsn(lsn), in_memory_offset(in_memory_offset), logging(logging)
+      WALEntryHandler(u8* entry, u64 size, u64 lsn, u64 in_memory_offset, Logging *logging, hole_t* hole)
+          : entry(entry), total_size(size), lsn(lsn), in_memory_offset(in_memory_offset),
+            logging(logging), hole(hole)
       {
       }
-      void submit() { logging->submitDTEntry(total_size); }
+      void submit()
+      {
+         hole->unlock();
+         logging->submitDTEntry(total_size);
+      }
    };
+   // -------------------------------------------------------------------------------------
+   hole_t* insertHole()
+   {
+      collect_filled_holes(holes.full()); // wait if the the buffer is full.
+      hole_t* hole = holes.emplace_back(wal_log_cursor, log_gsn_clock);
+      ensure(hole != nullptr);
+      return hole;
+   }
    // -------------------------------------------------------------------------------------
    template <typename T>
    WALEntryHandler<T> reserveDTEntry(u64 requested_size, PID pid, LID gsn, DTID dt_id)
@@ -95,6 +150,8 @@ struct Logging {
       const u64 total_size = sizeof(WALDTEntry) + requested_size;
       const LID lsn = reserveLSN(total_size);
       active_dt_entry = new (wal_buffer + wal_log_cursor) WALDTEntry();
+      const u32 this_entry_log_cursor = wal_log_cursor;
+      wal_log_cursor += total_size;
       active_dt_entry->lsn.store(lsn, std::memory_order_release);
       active_dt_entry->magic_debugging_number = 99;
       active_dt_entry->type = WALEntry::TYPE::DT_SPECIFIC;
@@ -103,7 +160,9 @@ struct Logging {
       active_dt_entry->pid = pid;
       active_dt_entry->gsn = gsn;
       active_dt_entry->dt_id = dt_id;
-      return {active_dt_entry->payload, total_size, active_dt_entry->lsn, wal_log_cursor, this};
+      // -------------------------------------------------------------------------------------
+      auto* hole = insertHole();
+      return {active_dt_entry->payload, total_size, active_dt_entry->lsn, this_entry_log_cursor, this, hole};
    }
    void submitDTEntry(u64 total_size);
    // -------------------------------------------------------------------------------------
@@ -135,11 +194,6 @@ struct Logging {
       current.last_gsn = log_gsn_clock;
       wt_to_lw.pushSync(current);
    }
-   std::tuple<LID, u64> fetchMaxGSNOffset()
-   {
-      const auto current = wt_to_lw.getSync();
-      return {current.last_gsn, current.wal_written_offset};
-   }
    // -------------------------------------------------------------------------------------
    u32 walFreeSpace();
    u32 walContiguousFreeSpace();
@@ -161,11 +215,7 @@ struct Logging {
       }
    }
    // -------------------------------------------------------------------------------------
-#if 0
-   Logging& other(WORKERID other_worker_id) { return Worker::my().all_workers[other_worker_id]->logging; }
-#endif
 };
-
 // -------------------------------------------------------------------------------------
 }  // namespace cr
 }  // namespace leanstore

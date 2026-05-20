@@ -62,7 +62,8 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          }
          // -------------------------------------------------------------------------------------
          wal_log_cursor = 0;
-         publishOffset();
+         auto* hole = insertHole();
+         hole->unlock();
          wal_next_to_clean = 0;
          wal_buffer_round++;  // Carriage Return
       } else if (utils::downAlign(wal_log_cursor, 4096) != utils::downAlign(wal_log_cursor + requested_size, 4096)) {
@@ -72,6 +73,8 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          wal_log_cursor = utils::upAlign(wal_log_cursor, 4096);
          wal_lsn_counter = utils::upAlign(wal_lsn_counter, 4096);
          // No need to make it visible straight away to the GCT thread
+         auto* hole = insertHole();
+         hole->unlock();
       }
       ensure(walContiguousFreeSpace() >= requested_size);
       ensure(wal_log_cursor + requested_size + CR_ENTRY_SIZE <= FLAGS_wal_buffer_size);
@@ -122,10 +125,12 @@ void Logging::submitDTEntry(u64 total_size)
    {
       WorkerCounters::myCounters().wal_write_bytes += total_size;
    }
-   wal_log_cursor += total_size;
-   publishMaxGSNOffset();
-   cr::Worker::my().gct_visible_worker_gsn_clock.store(cr::Worker::my().worker_gsn_clock, std::memory_order_release);
-   this->mutex.unlock();
+   cr::Worker::my().publishGSN();
+   // opportunistically if the log buffer mutex is free, collect some holes
+   if (mutex.try_lock()) {
+      collect_filled_holes(false /* don't wait if none */);
+      mutex.unlock();
+   }
 }
 // -------------------------------------------------------------------------------------
 // Called by worker, so concurrent writes on the buffer
