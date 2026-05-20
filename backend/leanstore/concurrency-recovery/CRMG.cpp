@@ -78,22 +78,13 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
    }
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal) {
-      if (FLAGS_wal_variant == 0) {
-         std::thread group_commiter([&]() {
-            if (FLAGS_pin_threads) {
-               utils::pinThisThread(workers_count);
-            }
-            groupCommiter();
-         });
-         group_commiter.detach();
-      } else {
-         groupCommitCordinator();
-         if (FLAGS_wal_variant == 1) {
-            groupCommiter1();
-         } else if (FLAGS_wal_variant == 2) {
-            groupCommiter2();
+      std::thread group_commiter([&]() {
+         if (FLAGS_pin_threads) {
+            utils::pinThisThread(workers_count);
          }
-      }
+         groupCommiter();
+      });
+      group_commiter.detach();
    }
 }
 // -------------------------------------------------------------------------------------

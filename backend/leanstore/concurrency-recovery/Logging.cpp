@@ -45,9 +45,6 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          wait_untill_free_bytes += FLAGS_wal_buffer_size - wal_log_cursor;  // we have to skip this round
       }
       // Spin until we have enough space
-      if (FLAGS_wal_variant == 2 && walFreeSpace() < wait_untill_free_bytes) {
-         wt_to_lw.optimistic_latch.notify_all();
-      }
       while (walFreeSpace() < wait_untill_free_bytes) {
       }
       if (walContiguousFreeSpace() < requested_size + CR_ENTRY_SIZE) {  // always keep place for CR entry

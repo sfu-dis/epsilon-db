@@ -81,8 +81,6 @@ DEFINE_bool(wal_rfa, false, "Remote Flush Avoidance (RFA)");
 DEFINE_bool(wal_tuple_rfa, false, "tuple-wise tracking");
 DEFINE_bool(wal_pwrite, false, "Does not really write logs on SSD");
 DEFINE_bool(wal_fsync, false, "");
-DEFINE_int64(wal_variant, 0, "");
-DEFINE_uint64(wal_log_writers, 1, "");
 DEFINE_uint64(wal_buffer_size, 1024 * 1024 * 10, "");
 DEFINE_string(wal_partition_by, "worker", "options: worker, page, ru_epoch");
 DEFINE_uint64(wal_partitions_count, 32, "Valid only when we use page based partitioning");

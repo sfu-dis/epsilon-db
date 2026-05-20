@@ -183,9 +183,6 @@ void Worker::commitTX()
       }
       // XXX(mfd) : the use of start_ts is sceptical.
       last_precommitted_tx_commit_ts.store(active_tx.start_ts, std::memory_order_release);
-      if (FLAGS_wal_variant == 2) {
-        myLog().wt_to_lw.optimistic_latch.notify_all();
-      }
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
       std::unique_lock<instrumented_mutex> g(precommitted_queue_mutex);
