@@ -177,24 +177,37 @@ class TPCCWorkload
       order.insert({w_id, d_id, o_id}, {c_id, timestamp, carrier_id, cnt, all_local});
       if (order_wdc_index) {
          ensure(c_id <= 3000 && c_id > 0);
-         order_wdc.insert({w_id, d_id, c_id, o_id}, {});
+         order_wdc.insert({w_id, d_id, c_id, o_id}, {101});
       }
-      neworder.insert({w_id, d_id, o_id}, {});
+      neworder.insert({w_id, d_id, o_id}, {103});
       leanstore::WorkerCounters::myCounters().tpcc_neworder_insert++;
 
       for (unsigned i = 0; i < lineNumbers.size(); i++) {
          Integer qty = qtys[i];
-         UpdateDescriptorGenerator4(stock_update_descriptor, stock_t, s_remote_cnt, s_order_cnt, s_ytd, s_quantity);
-         stock.update1(
-             {supwares[i], itemids[i]},
-             [&](stock_t& rec) {
-                auto& s_quantity = rec.s_quantity;  // Attention: we also modify s_quantity
-                s_quantity = (s_quantity >= qty + 10) ? s_quantity - qty : s_quantity + 91 - qty;
-                rec.s_remote_cnt += (supwares[i] != w_id);
-                rec.s_order_cnt++;
-                rec.s_ytd += qty;
-             },
-             stock_update_descriptor);
+         if (supwares[i] == w_id) {
+            UpdateDescriptorGenerator3(stock_update_descriptor, stock_t, s_order_cnt, s_ytd, s_quantity);
+            stock.update1(
+                {supwares[i], itemids[i]},
+                [&](stock_t& rec) {
+                   auto& s_quantity = rec.s_quantity;  // Attention: we also modify s_quantity
+                   s_quantity = (s_quantity >= qty + 10) ? s_quantity - qty : s_quantity + 91 - qty;
+                   rec.s_order_cnt++;
+                   rec.s_ytd += qty;
+                },
+                stock_update_descriptor);
+          } else {
+            UpdateDescriptorGenerator4(stock_update_descriptor, stock_t, s_remote_cnt, s_order_cnt, s_ytd, s_quantity);
+            stock.update1(
+                {supwares[i], itemids[i]},
+                [&](stock_t& rec) {
+                   auto& s_quantity = rec.s_quantity;  // Attention: we also modify s_quantity
+                   s_quantity = (s_quantity >= qty + 10) ? s_quantity - qty : s_quantity + 91 - qty;
+                   rec.s_remote_cnt += 1;
+                   rec.s_order_cnt++;
+                   rec.s_ytd += qty;
+                },
+                stock_update_descriptor);
+          }
       }
       for (unsigned i = 0; i < lineNumbers.size(); i++) {
          Integer lineNumber = lineNumbers[i];
