@@ -39,19 +39,8 @@ void CRTable::open()
    // -------------------------------------------------------------------------------------
    columns.emplace("cc_snapshot_restart", [](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_snapshot_restart); });
    // -------------------------------------------------------------------------------------
-   columns.emplace("wal_read_gib", [&](Column& col) {
-      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::wal_read_bytes) * 1.0) / 1024.0 / 1024.0 / 1024.0;
-   });
    columns.emplace("gct_write_gib",
                    [&](Column& col) { col << (sum(CRCounters::cr_counters, &CRCounters::gct_write_bytes) * 1.0) / 1024.0 / 1024.0 / 1024.0; });
-   columns.emplace("wal_write_gib", [&](Column& col) {
-      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::wal_write_bytes) * 1.0) / 1024.0 / 1024.0 / 1024.0;
-   });
-   columns.emplace("wal_miss_pct", [&](Column& col) { col << wal_miss_pct; });
-   columns.emplace("wal_hit_pct", [&](Column& col) { col << wal_hit_pct; });
-   columns.emplace("wal_miss", [&](Column& col) { col << wal_miss; });
-   columns.emplace("wal_hit", [&](Column& col) { col << wal_hits; });
-   columns.emplace("wal_total", [&](Column& col) { col << wal_total; });
    // -------------------------------------------------------------------------------------
    columns.emplace("cc_prepare_igc", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_prepare_igc); });
    columns.emplace("cc_cross_workers_visibility_check",
@@ -79,22 +68,22 @@ void CRTable::open()
    // Instrumented Mutexes
    for (const auto&[name, id] : instrumented_mutex::name2id)
    {
-      columns.emplace(name, [id](Column& col) { 
+      columns.emplace(name, [id](Column& col) {
          col << (sum(WorkerCounters::worker_counters, &WorkerCounters::contended_lock_calls, id) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_lock_calls, id));
       });
    }
    // -------------------------------------------------------------------------------------
-   columns.emplace("log_space_usage", [&](Column& col) { col << cr::LogManager::global->log_stats.bytes_used / 1073741824.0; });
+   columns.emplace("log_space_usage", [&](Column& col) {
+      if (FLAGS_wal) {
+         col << cr::LogManager::global->log_stats.bytes_used / 1073741824.0;
+      } else {
+         col << 0;
+      }
+   });
 }
 // -------------------------------------------------------------------------------------
 void CRTable::next()
 {
-   wal_hits = sum(WorkerCounters::worker_counters, &WorkerCounters::wal_buffer_hit);
-   wal_miss = sum(WorkerCounters::worker_counters, &WorkerCounters::wal_buffer_miss);
-   wal_total = wal_hits + wal_miss;
-   wal_hit_pct = wal_hits * 1.0 / wal_total;
-   wal_miss_pct = wal_miss * 1.0 / wal_total;
-   // -------------------------------------------------------------------------------------
    p1 = sum(CRCounters::cr_counters, &CRCounters::gct_phase_1_ms);
    p2 = sum(CRCounters::cr_counters, &CRCounters::gct_phase_2_ms);
    write = sum(CRCounters::cr_counters, &CRCounters::gct_write_ms);

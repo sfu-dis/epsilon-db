@@ -126,12 +126,6 @@ struct WorkerCounters {
    atomic<u64> cc_fat_tuple_convert[max_dt_id] = {0};
    atomic<u64> cc_fat_tuple_decompose[max_dt_id] = {0};
    // -------------------------------------------------------------------------------------
-   // WAL
-   atomic<u64> wal_write_bytes = 0;
-   atomic<u64> wal_read_bytes = 0;
-   atomic<u64> wal_buffer_hit = 0;
-   atomic<u64> wal_buffer_miss = 0;
-   // -------------------------------------------------------------------------------------
    atomic<u64> consecutive_same_key_in_page = 0;
    // -------------------------------------------------------------------------------------
    std::mutex ioReadHistLock;

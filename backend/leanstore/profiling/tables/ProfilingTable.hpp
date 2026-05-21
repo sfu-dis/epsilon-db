@@ -70,6 +70,7 @@ class ProfilingTable
       auto& c = columns.at("key");
       for (u64 r_i = 0; r_i < size(); r_i++) {
          if (c.values[r_i] == key) {
+            if (columns.count(column) == 0) return "NA";
             return columns.at(column).values[r_i];
          }
       }

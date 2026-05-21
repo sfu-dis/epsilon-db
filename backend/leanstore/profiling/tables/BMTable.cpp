@@ -170,6 +170,9 @@ void BMTable::open()
       // PAGE_SIZE = 4KiB
       col << BMC::global_bf->bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
    });
+   columns.emplace("forced_gc_count", [](Column& col) {
+      col << BMC::global_bf->bm_stats.forced_gc_count.load(std::memory_order_acquire);
+   });
    // -------------------------------------------------------------------------------------
    for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
       columns.emplace("read_depth_" + to_string(i), [i, this](Column& col) {

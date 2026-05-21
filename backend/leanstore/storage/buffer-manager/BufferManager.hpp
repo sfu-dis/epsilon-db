@@ -269,6 +269,7 @@ public:
    struct Stats {
       atomic<u64> discard_state_peak_mem_usage = 0;
       atomic<u64> estimated_gc_writes = 0;
+      atomic<u64> forced_gc_count = 0;
    } bm_stats;
 };
 // -------------------------------------------------------------------------------------
