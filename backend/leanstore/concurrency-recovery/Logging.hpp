@@ -81,8 +81,7 @@ struct Logging {
       redirect_to_sink_log.store(false);
       wal_lsn_counter = 0;
       wal_log_cursor = 0;
-      // publishOffset();
-      wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor);
+      publishOffset();
       wal_gct_cursor.store(0);
    }
    // -------------------------------------------------------------------------------------
@@ -131,9 +130,19 @@ struct Logging {
       void submit()
       {
          hole->unlock();
-         logging->submitDTEntry(total_size);
+         cr::Worker::my().publishGSN();
+         logging->opportunisticCollectHoles();
       }
    };
+   // -------------------------------------------------------------------------------------
+   // Must be called without the log buffer mutex
+   void opportunisticCollectHoles()
+   {
+      if (mutex.try_lock()) {
+         collect_filled_holes(false /* don't block */);
+         mutex.unlock();
+      }
+   }
    // -------------------------------------------------------------------------------------
    hole_t* insertHole()
    {
@@ -164,7 +173,25 @@ struct Logging {
       auto* hole = insertHole();
       return {active_dt_entry->payload, total_size, active_dt_entry->lsn, this_entry_log_cursor, this, hole};
    }
-   void submitDTEntry(u64 total_size);
+   // -------------------------------------------------------------------------------------
+   LID reservePPLEntry(storage::BufferFrame::PPL& ppl)
+   {
+      walEnsureEnoughSpace(ppl.wal_entry.size);
+      log_gsn_clock++;
+      const LID ppl_lsn = reserveLSN(ppl.wal_entry.size);
+      ppl.wal_entry.lsn = ppl_lsn;
+      ppl.wal_entry.prev_lsn = INVALID_LSN;
+      ppl.header.gsn = log_gsn_clock;
+      const u32 this_entry_log_cursor = wal_log_cursor;
+      wal_log_cursor += ppl.wal_entry.size;
+      // It is guarentted that the log GSN >= pageGSN.
+      auto* hole = insertHole();
+      mutex.unlock();
+      std::memcpy(wal_buffer + this_entry_log_cursor, &ppl, ppl.wal_entry.size);
+      hole->unlock();
+      opportunisticCollectHoles();
+      return ppl_lsn;
+   }
    // -------------------------------------------------------------------------------------
    u64 logSegmentFreeSpace()
    {
@@ -186,7 +213,9 @@ struct Logging {
       }
       return lsn;
    }
+   // Should only be used when resetting the log segment.
    void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }
+#if 0
    void publishMaxGSNOffset()
    {
       auto current = wt_to_lw.getNoSync();
@@ -194,6 +223,7 @@ struct Logging {
       current.last_gsn = log_gsn_clock;
       wt_to_lw.pushSync(current);
    }
+#endif
    // -------------------------------------------------------------------------------------
    u32 walFreeSpace();
    u32 walContiguousFreeSpace();

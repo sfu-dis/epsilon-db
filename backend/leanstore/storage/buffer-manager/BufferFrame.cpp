@@ -35,25 +35,12 @@ bool BufferFrame::submitPPLEntry()
       markUnDiscardable();
       return false;
    }
-   logging.walEnsureEnoughSpace(ppl.wal_entry.size);
-   LID logGSN = std::max<LID>(page.GSN + 1, logging.getCurrentGSN() + 1);
-   LID syncGSN = cr::Logging::global_sync_to_this_gsn.load(std::memory_order_acquire);
-   if (syncGSN > logGSN) {
-      logGSN = syncGSN;
-   }
-   page.GSN = logGSN;
-   logging.setCurrentGSN(logGSN);
-   LID ppl_lsn = logging.reserveLSN(ppl.wal_entry.size);
-   page.last_written_lsn = ppl_lsn;
-   ppl.wal_entry.lsn = ppl_lsn;
-   ppl.wal_entry.prev_lsn = INVALID_LSN;
-   ppl.header.gsn = logGSN;
    ppl.header.pid = header.pid;
    ppl.header.dt_id = page.dt_id;
-   std::memcpy(logging.wal_buffer + logging.wal_log_cursor, &ppl, ppl.wal_entry.size);
-   // use existing submitDTEntry to make the entry visible to the group committer.
-   // this will release the log buffer mutex.
-   logging.submitDTEntry(ppl.wal_entry.size);
+   ensure_lte(page.GSN, logging.getCurrentGSN());
+   const LID ppl_lsn = logging.reservePPLEntry(ppl);
+   page.last_written_lsn = ppl_lsn;
+   // page.GSN = ppl.header.gsn;
    header.pending_lsn_count = 1;
    header.pending_lsn[0] = ppl_lsn;
    return true;

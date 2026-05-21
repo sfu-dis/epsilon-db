@@ -291,7 +291,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             bool success = false;
             if (submitted_ppl) {
-               to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.page.GSN, bf.page.last_written_lsn);
+               to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.ppl.header.gsn, bf.page.last_written_lsn);
                success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count);
             } else {
                success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count);
