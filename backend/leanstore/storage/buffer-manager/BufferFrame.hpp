@@ -1,8 +1,9 @@
 #pragma once
 #include "Swip.hpp"
 #include "Units.hpp"
-#include "leanstore/sync-primitives/Latch.hpp"
+#include "leanstore/KVInterface.hpp"
 #include "leanstore/concurrency-recovery/WALEntry.hpp"
+#include "leanstore/sync-primitives/Latch.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <atomic>
@@ -15,10 +16,14 @@ namespace leanstore
 inline constexpr u64 MAX_PENDING_LSN_COUNT = 7;
 namespace cr
 {
-struct Logging; // Forward Declaration
+struct Logging;  // Forward Declaration
 }
 namespace storage
 {
+namespace btree
+{
+struct WALEntry;
+}  // namespace btree
 // -------------------------------------------------------------------------------------
 const u64 PAGE_SIZE = 4 * 1024;
 constexpr u64 PAGE_ALIGNEMENT = 1024;
@@ -226,12 +231,17 @@ struct BufferFrame {
       return &ppl.log_records[offset];
    }
    // -------------------------------------------------------------------------------------
-   bool canMergeWithLastRecord(u8* header, u16 header_len, u8* key, u16 key_len)
+   bool canMergeWithLastRecord(u8* header, u16 header_len, u8* key, u16 key_len, UpdateSameSizeInPlaceDescriptor& update_descriptor)
    {
+      // For now, merging is only implemented with PPL enabled.
+      if (!FLAGS_per_page_logging) {
+         return false;
+      }
       u8* last_entry_ptr = lastLogRecord();
       return last_entry_ptr != nullptr
-             && std::memcmp(last_entry_ptr, header, header_len) == 0
-             && std::memcmp(last_entry_ptr + header_len, key, key_len) == 0;
+         && std::memcmp(last_entry_ptr, header, header_len) == 0
+         && std::memcmp(last_entry_ptr + header_len, key, key_len) == 0
+         && std::memcmp(last_entry_ptr + header_len + key_len, reinterpret_cast<u8*>(&update_descriptor), update_descriptor.size()) == 0;
    }
    // -------------------------------------------------------------------------------------
    bool submitPPLEntry();
