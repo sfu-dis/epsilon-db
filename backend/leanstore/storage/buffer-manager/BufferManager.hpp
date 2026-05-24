@@ -10,6 +10,7 @@
 // -------------------------------------------------------------------------------------
 #include "PerfEvent.hpp"
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
+#include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
 #include <libaio.h>
 #include <sys/mman.h>
@@ -115,6 +116,8 @@ class BufferManager
    atomic<u64> pp_threads_counter = 0;
    atomic<u64> gc_threads_counter = 0;
    // -------------------------------------------------------------------------------------
+   std::unique_ptr<utils::Logger> logger;
+   // -------------------------------------------------------------------------------------
 public:
    atomic<ru_epoch_t> ru_epoch = 0; // persistant
    atomic<ru_epoch_t> oldest_uncollected_ru_epoch = 0; // persistant
@@ -216,8 +219,6 @@ public:
    // -------------------------------------------------------------------------------------
    // Temporary hack: let workers evict the last page they used
    static thread_local BufferFrame* last_read_bf;
-   // Temporary strawman printf logging
-   FILE *fp;
   public:
    // -------------------------------------------------------------------------------------
    BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs);

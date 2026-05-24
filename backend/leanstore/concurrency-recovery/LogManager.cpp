@@ -35,8 +35,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    meta = (struct meta_block*)meta_block_buffer;
    log_segment_size = utils::downAlign((log_dev_size - meta_size) / nb_logs, LOG_DEV_BLK_SIZE);
    // -------------------------------------------------------------------------------------
-   fp = fopen("log_manager_journal.txt", "w");
-   ensure(fp != nullptr);
+   logger = std::make_unique<utils::Logger>("log_manager_journal.txt");
    // -------------------------------------------------------------------------------------
    const bool recover_wal = FLAGS_recover && !FLAGS_clean_recover;
    if (recover_wal) {
@@ -46,8 +45,8 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       Logging::global_min_gsn_flushed.store(meta->min_durable_gsn);
       LID sync_point = std::max<LID>(meta->global_sync_to_this_gsn, meta->min_all_workers_gsn);
       Logging::global_sync_to_this_gsn.store(sync_point);
-      fprintf(fp, "[INFO] Recovering min all logs gsn %lu\n", meta->min_durable_gsn);
-      fprintf(fp, "[INFO] Recovering max all logs gsn %lu\n", meta->global_sync_to_this_gsn);
+      LOG_INFO(logger, "Recovering min all logs gsn %lu", meta->min_durable_gsn);
+      LOG_INFO(logger, "Recovering max all logs gsn %lu", meta->global_sync_to_this_gsn);
       // TX timestamp need not be recovered!
    } else {
       meta->number_logs = nb_logs;
@@ -103,7 +102,6 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
          throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
       }
    }
-   fflush(fp);
 }
 
 u32 LogManager::LSN2LogID(LID lsn)
@@ -170,12 +168,12 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
 void LogManager::resetLogSegment(s64 ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
-   ensure(ru_epoch >= 0); 
+   ensure(ru_epoch >= 0);
    u32 log_id = getLogID(ru_epoch);
    auto& lseg = global->meta->log_segments[log_id];
-   fprintf(fp, "[INFO] Reclaiming log of RU epoch %ld mapped to %u\n", ru_epoch, log_id);
-   fprintf(fp, "[INFO] Log space consumption was %.1f%% when trimming log %u\n", lseg.offset * 100.0f/log_segment_size, log_id);
-   fprintf(fp, "%.4f GiB Log space\n", lseg.offset/ 1073741824.0);
+   LOG_INFO(logger, "Reclaiming log of RU epoch %ld mapped to %u", ru_epoch, log_id);
+   LOG_INFO(logger, "Log space consumption was %.1f%% when trimming log %u", lseg.offset * 100.0f/log_segment_size, log_id);
+   LOG_INFO(logger, "%.4f GiB Log space", lseg.offset/ 1073741824.0);
    COUNTERS_BLOCK(log_space_usage)
    {
       log_stats.bytes_used.fetch_sub(lseg.offset);
@@ -268,7 +266,6 @@ LogManager::~LogManager()
 {
     // ensure background threads are stopped ?
     persistMetaBlock();
-    fclose(fp);
 }
 
 }  // namespace cr

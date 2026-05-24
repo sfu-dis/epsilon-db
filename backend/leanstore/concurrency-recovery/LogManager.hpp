@@ -1,6 +1,7 @@
 #pragma once
 #include "Units.hpp"
 #include "Worker.hpp"
+#include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
 #include <libaio.h>
 // -------------------------------------------------------------------------------------
@@ -58,7 +59,8 @@ struct LogManager {
    enum class PARTITION_BY : u8 { WORKER, PAGE, RU_EPOCH };
    PARTITION_BY partition_by;
    // -------------------------------------------------------------------------------------
-   FILE* fp;
+   std::unique_ptr<utils::Logger> logger;
+   // -------------------------------------------------------------------------------------
 
    LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
    ~LogManager();

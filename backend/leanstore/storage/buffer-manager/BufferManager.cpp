@@ -103,8 +103,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          }
       });
       // -------------------------------------------------------------------------------------
-      fp = fopen("buffer_manager_journal.txt", "w");
-      ensure(fp != nullptr);
+      logger = std::make_unique<utils::Logger>("buffer_manager_journal.txt");
       // -------------------------------------------------------------------------------------
       per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
       u64 aligned_size = utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs*sizeof(u32), 4096);
@@ -115,7 +114,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          persistant_ru_state->loadFromPersistantStorage();
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          ru_epoch_t newest_active_ru_epoch = persistant_ru_state->ru_epoch;
-         fprintf(fp, "[INFO] Recovering, Newest Active RU epoch is %lu\n", newest_active_ru_epoch);
+         LOG_INFO(logger, "Recovering, Newest Active RU epoch is %lu", newest_active_ru_epoch);
          ensure(newest_active_ru_epoch < max_open_ru_epochs);
          ru_epoch.store(newest_active_ru_epoch);
          if (persistant_ru_state->oldest_active_ru_epoch != 0) {
@@ -127,7 +126,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          reclaimed_ru_epoch.store(persistant_ru_state->reclaimed_ru_epoch);
          u32 last_total = persistant_ru_state->totals[newest_active_ru_epoch];
          per_pp_iostats[0].io_counter = last_total;
-         fprintf(fp, "[INFO] Recovering, pages used in the newest RU %u\n", last_total);
+         LOG_INFO(logger, "Recovering, pages used in the newest RU %u", last_total);
          for (ru_epoch_t e = oldest_uncollected_ru_epoch; e <= newest_active_ru_epoch; ++e) {
             auto& set = ru_discard_set.data[e % max_open_ru_epochs];
             set.total.store(persistant_ru_state->totals[e - oldest_uncollected_ru_epoch]);
@@ -246,7 +245,7 @@ void BufferManager::startBackgroundThreads()
                   set.open(new_ru_epoch);
                }
                ru_epoch.store(new_ru_epoch, std::memory_order_release);
-               fprintf(fp, "[INFO] Opened up a new RU Epoch %lu!!!\n", new_ru_epoch);
+               LOG_INFO(logger, "Opened up a new RU Epoch %lu!!!", new_ru_epoch);
             }
          };
          while (bg_threads_keep_running) {
@@ -348,9 +347,9 @@ void BufferManager::writeAllBufferFrames()
                ru_discard_set.data[(cur_ru_epoch + 1) % max_open_ru_epochs].open(cur_ru_epoch+1);
                bool ok = ru_epoch.compare_exchange_strong(cur_ru_epoch, cur_ru_epoch + 1);
                ensure(ok);
-               fprintf(fp, "[INFO] Opened up a new RU epoch %lu\n", cur_ru_epoch + 1);
-               // FIXME(mfd) : should force garbage collection if this event is 
-               // close to happen.
+               LOG_INFO(logger, "Opened up a new RU epoch %lu", cur_ru_epoch + 1);
+               // FIXME(mfd) : Ensure that the buffer manager size is always less than the
+               // overprovision size, so that we're gaarenteed that this will never happen.
                ensure((cur_ru_epoch + 1 - reclaimed_ru_epoch) <= max_open_ru_epochs);
             }
             if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch) {
@@ -362,7 +361,7 @@ void BufferManager::writeAllBufferFrames()
       }
    });
    u64 e = ru_epoch.load(std::memory_order_acquire);
-   fprintf(fp, "[INFO] newest RU epoch is left with %d\n", ru_discard_set[e].total.load());
+   LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[e].total.load());
    fprintf(stdout, "%lu\n", e);
    ensure_equal(oldest_uncollected_ru_epoch, 0);
    ensure_equal(reclaimed_ru_epoch, -1);
@@ -993,7 +992,6 @@ BufferManager::~BufferManager()
    // -------------------------------------------------------------------------------------
    const u64 dram_total_size = sizeof(BufferFrame) * (dram_pool_size + safety_pages);
    munmap(bfs, dram_total_size);
-   fclose(fp);
 }
 // -------------------------------------------------------------------------------------
 BufferManager* BMC::global_bf(nullptr);
