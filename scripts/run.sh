@@ -9,38 +9,50 @@ trap 'echo "Error: command failed: $BASH_COMMAND"' ERR
 STATS_DIR=/home/mfd4/fdp/paper
 SRC_DIR=".." # assume running from build dir
 BUILD_DIR="."
+DEVICE_RESET_SCRIPT="${SRC_DIR}/scripts/reset-single-ns.sh"
 FLAGS_FILE="${SRC_DIR}/template.gflag"
+DRY_RUN_FLAGS_FILE="${SRC_DIR}/template.dry_run.gflag"
 YCSB_FLAGS_FILE="${SRC_DIR}/ycsb.gflag"
 TPCC_FLAGS_FILE="${SRC_DIR}/tpcc.gflag"
 
 device=
-vanilla=true
+vanilla=0
 benchmark=
 distribution=
-zipfian_skew=
+zipfian_skew=0.8
 database_size_gib=
-threshold=
-trim=false
+threshold=0.8
+trim=0
 prefix=""
+dry_run=0
+stats_dir=1
+gdb=0
 
 tpcc_warehouse_count=
-max_log_records_to_discard=3
+max_log_records_to_discard=7
+
+force_stats_dir=0
+force_no_stats_dir=0
+load_only=0
+run_only=0
+description=0
 
 original_args=("$@")
 
+# TODO(mfd) : Add a usage() method and --help
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device)
             device="$2"
             shift 2
             ;;
-        --trim_device)
-            trim="$2"
-            shift 2
+        --trim)
+            trim=1
+            shift 1
             ;;
         --vanilla)
-            vanilla="$2"
-            shift 2
+            vanilla=1
+            shift 1
             ;;
         --benchmark)
             benchmark="$2"
@@ -74,12 +86,52 @@ while [[ $# -gt 0 ]]; do
             prefix="$2"
             shift 2
             ;;
+        --dry_run)
+            FLAGS_FILE="$DRY_RUN_FLAGS_FILE"
+            dry_run=1
+            shift 1
+            ;;
+        --debug)
+            gdb=1
+            shift 1
+            ;;
+        --no_stats_dir)
+           stats_dir=0
+           force_no_stats_dir=1
+           shift 1
+           ;;
+        --stats_dir)
+           stats_dir=1
+           force_stats_dir=1
+           shift 1
+           ;;
+        --load_only)
+           load_only=1
+           shift 1
+           ;;
+        --run_only)
+           run_only=1
+           shift 1
+           ;;
+        --description)
+           description=1
+           shift 1
+           ;;
         *)
             echo "Unknown argument: $1"
             exit 1
             ;;
     esac
 done
+
+if (( dry_run )); then
+   trim=0
+   if (( force_stats_dir == 1)); then
+      stats_dir=1
+   else
+      stats_dir=0
+   fi
+fi
 
 missing=0
 
@@ -88,10 +140,10 @@ if [[ -z "${device:-}" ]]; then
     missing=1
 fi
 
-if [[ -z "${trim:-}" ]]; then
-    echo "Error: --trim_device is required"
-    missing=1
-fi
+# if [[ -z "${trim:-}" ]]; then
+#    echo "Error: --trim is required"
+#    missing=1
+# fi
 
 
 if [[ -z "${benchmark:-}" ]]; then
@@ -115,12 +167,12 @@ else
    fi
 fi
 
-if [[ -z "${vanilla:-}" ]]; then
-    echo "Error: --vanilla is required"
-    missing=1
-fi
+# if [[ -z "${vanilla:-}" ]]; then
+#    echo "Error: --vanilla is required"
+#    missing=1
+# fi
 
-if [[ "$vanilla" == "false" ]]; then
+if (( vanilla == 0 )); then
    if [[ -z "${threshold:-}" ]]; then
        echo "Error: --threshold is required"
        missing=1
@@ -139,6 +191,30 @@ if (( missing )); then
     exit 1
 fi
 
+if (( dry_run == 0 && trim == 0 && run_only == 0)); then
+   echo "You are not doing a dry run but trim is disabled, have you forgotten the option --trim"
+   read -p "Continue? [Y/y], Trim device? [t], type anything else to abort: " answer
+   case "$answer" in
+        [Yy]* )
+            echo "Continuing..."
+            ;;
+        [t]* )
+            trim=1
+            echo "Will trim device, Continuing..."
+            ;;
+        * )
+            echo "Aborting."
+            exit 1
+            ;;
+   esac
+fi
+
+if (( run_only == 1 && trim == 1)); then
+   echo "You are requesting to trim the device and to run only without loading"
+   echo "You're probably wrong. Aborting..."
+   exit 1
+fi
+
 skew="${distribution}"
 
 if [[ "$distribution" == "zipfian" ]]; then
@@ -152,16 +228,16 @@ if [[ "$benchmark" == "ycsb" ]]; then
    tib_dec=$(( (database_size_gib * 10 / 1024) % 10 ))
    database_size_tib="${tib_int}.${tib_dec}"
    util="${database_size_tib}TiB"
-   dir_name="${dir_name}_${util}"
+   dir_name="${dir_name}_${skew}_${util}"
 else
    util="${tpcc_warehouse_count}whs"
    dir_name="${dir_name}_${util}"
 fi
 
 
-if [[ "$vanilla" == true ]]; then
+if (( vanilla == 1 )); then
    dir_name="${dir_name}_vanilla"
-else 
+else
    dir_name="${dir_name}_${threshold}_discard${max_log_records_to_discard}_epsilondb"
 fi
 
@@ -177,7 +253,9 @@ fi
 
 #TODO(mfd) : Either run for a period of time or until a fixed number of media writes
 
-if [[ -d "$dir_name" ]]; then
+
+# if (( 0 )); then
+if [[ -d "$dir_name" && "$stats_dir" -eq 1 ]]; then
     echo "Directory Already Exists. Are you sure, you want to override those results ?"
     read -p "Override previous results [y/N]: " answer
 
@@ -193,7 +271,15 @@ if [[ -d "$dir_name" ]]; then
 fi
 
 # echo "$dir_name"
-mkdir -p "$dir_name"
+if (( stats_dir == 1)); then
+    mkdir -p "$dir_name"
+    echo "Creating Directory ${dir_name}"
+    if (( description == 1)); then
+       echo "Please write a description that will go into the stats folder (additional remarks)"
+       read -p "> " text_desc
+       echo "${text_desc}" > "${dir_name}/description.txt"
+    fi
+fi
 
 passwd=""
 waf() {
@@ -226,9 +312,10 @@ fi
    echo "--persist"
    echo "--run_for_seconds=0"
    echo "--noenable_discarding"
+   echo "--nowal"
    echo "--nowal_pwrite"
-   echo "--wal_partition_by=page"
-   
+   # echo "--wal_partition_by=page"
+
    if [[ "$benchmark" == "ycsb" ]]; then
       echo "--target_gib=${database_size_gib}"
    else
@@ -240,11 +327,13 @@ fi
 {
    echo "--ssd_path=${device}"
    echo "--recover"
-   echo "--run_for_seconds=18000" # 8 hours
+   echo "--clean_recover"
+   # echo "--run_for_seconds=36000" # 8 hours
+   echo "--run_for_seconds=57600" # 16 hours
    echo "--wal_pwrite"
-   if [[ "$vanilla" == "true" ]]; then
+   if (( vanilla == 1 )); then
       echo "--noenable_discarding"
-      echo "--wal_partition_by=page"
+      echo "--wal_partition_by=ru_epoch"
    else
       echo "--enable_discarding"
       echo "--ru_gc_threads=4"
@@ -299,9 +388,10 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # TODO(mfd) : Take the controller name from the device name
-if [[ "$trim" == "true" ]]; then
+if (( trim == 1)); then
    echo "Trimmimg the device"
-   bash /home/mfd4/fdp/reset-single-ns.sh --dev /dev/nvme0
+   # bash /home/mfd4/fdp/reset-single-ns.sh --dev /dev/nvme0
+   bash ${DEVICE_RESET_SCRIPT} --dev /dev/nvme0
 fi
 
 make -j 10
@@ -310,34 +400,47 @@ make -j 10
 sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$load_flags")
 sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$run_flags")
 
-# Use a flags file
-# Generate from it the load and run flag files
-
-# sudo gdb --ex run --args ./frontend/ycsb --flagfile="$load_flags"
-
 
 # sudo ${BENCHMARK_BINARY} --flagfile="$load_flags"
-sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$load_flags")
+if (( run_only == 0 )); then
+   sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$load_flags") | tee load_log.txt
+fi
+
+if (( load_only == 1 )); then
+   exit 0
+fi
 
 # lauch the WAF calculator in the background
-waf > "${dir_name}/waf" &
-waf_pid=$!
+if (( stats_dir == 1 )); then
+   waf > "${dir_name}/waf" &
+   waf_pid=$!
+fi
 
 shutdown() {
     echo "stopping background waf calculator job..."
 
-    cp log_bm.csv ${dir_name}
-    cp log_cr.csv ${dir_name}
-    kill "$waf_pid" 2>/dev/null
-    wait "$waf_pid"
+    if (( stats_dir == 1)); then
+       cp log_bm.csv ${dir_name}
+       cp log_cr.csv ${dir_name}
+       kill "$waf_pid" 2>/dev/null
+       wait "$waf_pid"
+    fi
+    # if dry run remove the stats dir.
+    # if (( dry_run )); then
+    #    rm -r "$dir_name"
+    # fi
     exit 0
 }
 
 trap shutdown INT
 trap shutdown EXIT
 
-# sudo ${BENCHMARK_BINARY} --flagfile="$run_flags"
-sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
+PREFIX=
+if (( gdb == 1 )); then
+    PREFIX="gdb --ex run --args "
+fi
+
+sudo ${PREFIX}${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
 # while true; do
 #   sleep 10
 #    echo "G"
