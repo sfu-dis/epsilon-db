@@ -15,7 +15,13 @@ namespace leanstore
 namespace profiling
 {
 // -------------------------------------------------------------------------------------
-BMTable::BMTable(BufferManager& bm) : ProfilingTable(), bm(bm) {}
+BMTable::BMTable(BufferManager& bm) : ProfilingTable(), bm(bm)
+{
+   absorption_histogram_file.open("absorbed_writes_histogram.txt",  std::ios::out | std::ios::trunc);
+   if (!absorption_histogram_file.is_open()) {
+      throw std::runtime_error("Failed to open absorbed_writes_histogram.txt");
+   }
+}
 // -------------------------------------------------------------------------------------
 std::string BMTable::getName()
 {
@@ -248,6 +254,17 @@ void BMTable::next()
             wc.txIncWaitHist.resetData();
          }
       }
+      // -------------------------------------------------------------------------------------
+   }
+   if (WorkerCounters::worker_counters.begin()->seconds % (1*60) == 0) {
+      for (u8 i = 1; i < 64; ++i) {
+         absorption_histogram_file << sum(PPCounters::pp_counters, &PPCounters::absorbed_writes_histogram, i) << ",";
+      }
+      absorption_histogram_file << std::endl;
+      for (u8 i = 1; i < 64; ++i) {
+         absorption_histogram_file << sum(GCCounters::gc_counters, &GCCounters::absorbed_writes_histogram, i) << ",";
+      }
+      absorption_histogram_file << std::endl;
    }
    // -------------------------------------------------------------------------------------
    for (auto& c : columns) {

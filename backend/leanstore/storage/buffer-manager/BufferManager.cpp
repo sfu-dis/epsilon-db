@@ -662,6 +662,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             last_gsn = dte->gsn;
             if (FLAGS_per_page_logging) {
                bf.ppl.insertLogRecord(dte->payload, lrec_size);
+               bf.header.absorbed_writes += 1;
             } else if (i == (nb_log_records - 1)) {
                bf.ppl.insertWALPrefix(dte->payload, lrec_size, dte->payload, 0);
             }
@@ -673,6 +674,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             ensure_equal(ppl->header.dt_id, bf.page.dt_id);
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
             bf.ppl.insertPPL(*ppl);
+            bf.header.absorbed_writes += ppl->absorbed_writes;
             last_gsn = ppl->header.gsn;
          }
       }
@@ -828,6 +830,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
          // ensure(!FLAGS_per_page_logging || (nb_log_records == 1));
+         ensure(bf.header.absorbed_writes > 0);
          if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);

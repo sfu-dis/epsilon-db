@@ -25,6 +25,7 @@ class BMTable : public ProfilingTable
    Hist<int, uint64_t> ioWriteHist;
    Hist<int, uint64_t> txHist;
    Hist<int, uint64_t> txIncWaitHist;
+   std::ofstream absorption_histogram_file;
   public:
    BMTable(BufferManager& bm);
    // -------------------------------------------------------------------------------------

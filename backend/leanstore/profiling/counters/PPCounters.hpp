@@ -26,6 +26,8 @@ struct PPCounters {
    atomic<u64> flushed_pages_counter = 0;
    atomic<u64> unswizzled_pages_counter = 0;
    // -------------------------------------------------------------------------------------
+   atomic<u64> absorbed_writes_histogram[64] = {0};
+   // -------------------------------------------------------------------------------------
    static tbb::enumerable_thread_specific<PPCounters> pp_counters;
    static tbb::enumerable_thread_specific<PPCounters>::reference myCounters() { return pp_counters.local(); }
 };

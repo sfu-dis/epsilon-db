@@ -227,7 +227,8 @@ class HybridPageGuard
       // FIXME(mfd) : In case of abort the page last written lsn should be recovered to the previous one.
       logging.active_dt_entry->prev_lsn = first_entry_in_log ? INVALID_LSN : bf->page.last_written_lsn;
       logging.mutex.unlock();
-
+      // -------------------------------------------------------------------------------------
+      bf->header.absorbed_writes++;
       if (FLAGS_wal_pwrite) {
          bf->page.last_written_lsn = handler.lsn;
          bf->page.log_id = logging.log_id;

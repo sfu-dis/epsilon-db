@@ -37,6 +37,7 @@ bool BufferFrame::submitPPLEntry()
    }
    ppl.header.pid = header.pid;
    ppl.header.dt_id = page.dt_id;
+   ppl.absorbed_writes = header.absorbed_writes;
    ensure_lte(page.GSN, logging.getCurrentGSN());
    const LID ppl_lsn = logging.reservePPLEntry(ppl);
    page.last_written_lsn = ppl_lsn;

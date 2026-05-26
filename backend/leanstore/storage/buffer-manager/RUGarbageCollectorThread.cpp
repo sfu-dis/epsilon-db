@@ -171,16 +171,26 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
 
       if (to_apply_log_records > 0) {
+         [[maybe_unused]] u32 absorbed_writes = 0;
          for (u64 i = to_apply_log_records; i != 0; --i) {
             if (to_apply_log_records_stack[i-1]->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
                auto* ppl = reinterpret_cast<BufferFrame::PPL*>(to_apply_log_records_stack[i-1]);
                DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
+               absorbed_writes += ppl->absorbed_writes;
             } else {
                auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i-1]);
                DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload, 1, dte->size - sizeof(cr::WALDTEntry));
+               absorbed_writes += 1;
             }
          }
+
+         COUNTERS_BLOCK(absorbed_writes_histogram)
+         {
+            absorbed_writes = std::min<u32>(absorbed_writes, 63);
+            GCCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
+         }
       }
+
 
       ++actually_fixed;
       page->PLSN += to_apply_log_records;
