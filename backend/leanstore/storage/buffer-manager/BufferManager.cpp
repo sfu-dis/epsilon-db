@@ -428,6 +428,7 @@ BufferFrame& BufferManager::allocatePage()
    free_bf.header.latch->fetch_add(LATCH_EXCLUSIVE_BIT);
    free_bf.header.pid = free_pid;
    free_bf.header.state = BufferFrame::STATE::HOT;
+   free_bf.header.not_yet_persisted = true;
    // A newly created page cannot be discarded.
    ensure(!free_bf.header.discardable.load());
    free_bf.header.last_written_plsn = 0;
@@ -809,6 +810,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       bf.header.pid = pid;
       bf.header.last_written_plsn = bf.page.PLSN;
       bf.header.discardable.store(true, std::memory_order_release);
+      bf.header.not_yet_persisted = false;
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }

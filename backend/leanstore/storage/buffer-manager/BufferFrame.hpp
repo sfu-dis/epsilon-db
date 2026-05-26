@@ -36,6 +36,7 @@ struct BufferFrame {
       STATE state = STATE::FREE;  // INIT:
       std::atomic<bool> is_being_written_back = false;
       bool keep_in_memory = false;
+      bool not_yet_persisted = true;
       PID pid = 9999;         // INIT:
       HybridLatch latch = 0;  // INIT: // ATTENTION: NEVER DECREMENT
       // -------------------------------------------------------------------------------------

@@ -152,12 +152,16 @@ Logging& LogManager::getLog(s64 ru_epoch, PID page_id)
 }
 
 Logging& LogManager::getLog(storage::BufferFrame *bf)
-{ 
+{
    s32 log_id = -1;
    if (global->isPartitionedByWorker()) {
       log_id = Worker::my().worker_id;
    } else if (global->isPartitionedByRUepoch()) {
-      return getLog(bf->page.ru_epoch, bf->header.pid);
+      if (bf->header.not_yet_persisted || !bf->isDiscardable()) {
+         log_id = bf->header.pid % FLAGS_wal_sink_logs;
+      } else {
+         return getLog(bf->page.ru_epoch, bf->header.pid);
+      }
    } else {
       log_id = bf->header.pid % global->log_count;
    }
