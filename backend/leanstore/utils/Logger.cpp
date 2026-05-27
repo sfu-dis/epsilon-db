@@ -7,7 +7,7 @@ namespace utils
 // -------------------------------------------------------------------------------------
 Logger::Logger(const std::string& filename)
 {
-   file_.open(filename, std::ios::app);
+   file_.open(filename, std::ios::trunc);
    if (!file_.is_open()) {
       throw std::runtime_error("Logger: failed to open file: " + filename);
    }

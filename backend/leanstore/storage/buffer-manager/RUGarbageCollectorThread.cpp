@@ -135,7 +135,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
          bool ok = logRecordSanityCheck(entry, *page, lsn);
          ensure(ok);
-         
+
          if (to_fix_pids[idx].lsn_list[i] == lsn) {
             i--;
             to_apply_log_records_stack.push_back(entry);
@@ -379,7 +379,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                // Even if the page id is reused we can later find out by checking whether the RU epoch
                // stored in the page is the same as the RU epoch we're currentlty reclaiming.
                // There is a case when the page is reclaimed and the RU is the same, which is after the
-               // pid is allocated and before the page is written to storage, in that case the page is 
+               // pid is allocated and before the page is written to storage, in that case the page is
                // in HOT state and we should handle it separately.
                if (page_state.isFree()) {
                   continue;

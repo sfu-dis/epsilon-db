@@ -68,7 +68,7 @@ void BMTable::open()
       col << (local_read_operations_counter * PAGE_SIZE / 1024.0 / 1024.0);
    });
    columns.emplace("dirty_pct", [&](Column& col) {
-      col << 
+      col <<
       (sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_read_operations_counter) * 100.0 / local_read_operations_counter);   });
    columns.emplace("order_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::order_deletions)); });
    columns.emplace("history_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::history_deletions)); });
@@ -165,19 +165,19 @@ void BMTable::open()
    });
    // -------------------------------------------------------------------------------------
    columns.emplace("discard_state_peak_mem_usage", [&](Column& col) {
-      col << BMC::global_bf->bm_stats.discard_state_peak_mem_usage.load(std::memory_order_acquire) / 1073741824.0;
+      col << bm.bm_stats.discard_state_peak_mem_usage.load(std::memory_order_acquire) / 1073741824.0;
    });
    columns.emplace("total_in_use_ru", [&](Column& col) {
-      s64 newest_active_ru = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-      s64 reclaimed_ru = BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire);
+      s64 newest_active_ru = bm.ru_epoch.load(std::memory_order_acquire);
+      s64 reclaimed_ru = bm.reclaimed_ru_epoch.load(std::memory_order_acquire);
       col << newest_active_ru - reclaimed_ru;
    });
    columns.emplace("estimated_gc_writes", [&](Column& col) {
       // PAGE_SIZE = 4KiB
-      col << BMC::global_bf->bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
+      col << bm.bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
    });
    columns.emplace("forced_gc_count", [](Column& col) {
-      col << BMC::global_bf->bm_stats.forced_gc_count.load(std::memory_order_acquire);
+      col << bm.bm_stats.forced_gc_count.load(std::memory_order_acquire);
    });
    // -------------------------------------------------------------------------------------
    for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
@@ -221,7 +221,7 @@ void BMTable::next()
    for (u8 i = 0; i <= FLAGS_max_log_records_to_discard; ++i) {
       local_io_phase_us[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::io_phase_us, i);
       local_agg_io_phase_us += local_io_phase_us[i];
-      local_read_operations_histogram[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_histogram, i); 
+      local_read_operations_histogram[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_histogram, i);
    }
    // -------------------------------------------------------------------------------------
    // worker io read latency histogram, every N seconds
@@ -256,7 +256,7 @@ void BMTable::next()
       }
       // -------------------------------------------------------------------------------------
    }
-   if (WorkerCounters::worker_counters.begin()->seconds % (1*60) == 0) {
+   if (WorkerCounters::worker_counters.begin()->seconds % (30*60) == 0) {
       for (u8 i = 1; i < 64; ++i) {
          absorption_histogram_file << sum(PPCounters::pp_counters, &PPCounters::absorbed_writes_histogram, i) << ",";
       }

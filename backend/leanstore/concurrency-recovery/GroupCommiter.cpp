@@ -76,7 +76,7 @@ void CRManager::groupCommiter()
             ensure_equal(worker.precommitted_queue_rfa.size(), 0);
          }
          LID worker_gsn = worker.gct_visible_worker_gsn_clock.load(std::memory_order_acquire);
-         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker_gsn); 
+         min_all_workers_gsn = std::min<LID>(min_all_workers_gsn, worker_gsn);
          if (worker_gsn  == per_worker_last_seen_gsn[w_i]) {
             ++nb_straggler_workers;
          } else {
@@ -87,8 +87,8 @@ void CRManager::groupCommiter()
       ensure_lte(prev_min_all_workers_gsn, min_all_workers_gsn);
       WARN_IF_SUSPECT_CONDITION_STUCK(prev_min_all_workers_gsn == min_all_workers_gsn);
       // -------------------------------------------------------------------------------------
-      // The min durable gsn is the minimum gsn of all logs that have new entries and of that 
-      //  of all workers. This is because any new log record that will appear in the future 
+      // The min durable gsn is the minimum gsn of all logs that have new entries and of that
+      //  of all workers. This is because any new log record that will appear in the future
       //   in those logs will have at least the gsn of the worker with smallest gsn.
       min_durable_gsn = std::numeric_limits<LID>::max();
       min_all_active_logs_gsn = std::numeric_limits<LID>::max();
@@ -199,7 +199,7 @@ void CRManager::groupCommiter()
       ensure_lt(min_durable_gsn, std::numeric_limits<LID>::max());
       // Phase 2, commit
       u64 committed_tx = 0;
-      for (WORKERID w_i = 0; w_i < workers_count; w_i++) { 
+      for (WORKERID w_i = 0; w_i < workers_count; w_i++) {
          Worker& worker = *workers[w_i];
          worker.hardened_commit_ts.store(per_worker_hardened_precommit_ts[w_i], std::memory_order_release);
          TXID signaled_up_to = std::numeric_limits<TXID>::max();

@@ -365,12 +365,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                assert(success);
                partition.ht_mutex.unlock();
             }
-            /**
-            XXX(mfd) : Quite often we have a lot of RU epoch where the potential invalid exceeds 
-            the threshold and can be Garbage collected. It may be harmful to WAF to stop discarding
-            those pages. => Only write back pages in reclaimed epochs or from the RU epoch that is 
-            currently being reclaimed.
-            */
+            // -------------------------------------------------------------------------------------
             if (cooled_bf->isDirty()) {
                if (FLAGS_enable_discarding
                   && cooled_bf->isDiscardable()
@@ -425,7 +420,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                WorkerCounters::myCounters().ioWriteHistLock.unlock();
             }
          }
-         
+
          async_write_buffer.getWrittenBfs(
              [&](BufferFrame& written_bf, u64 written_plsn, ru_epoch_t written_ru_epoch) {
                 while (true) {

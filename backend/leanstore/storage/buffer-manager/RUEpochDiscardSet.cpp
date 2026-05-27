@@ -118,7 +118,7 @@ BufferManager::RUEpochDiscardSet *BufferManager::RUEpochsState::getSetLockedCanF
 BufferManager::PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) :
    max_open_ru_epochs(max_open_ru_epochs) {}
 // -------------------------------------------------------------------------------------
-void BufferManager::PersistantRUState::loadFromPersistantStorage() 
+void BufferManager::PersistantRUState::loadFromPersistantStorage()
 {
    u64 sz = utils::upAlign(getSize(), 4096);
    s64 ret = pread(BMC::global_bf->ssd_fd, this, sz, BMC::global_bf->persistant_ru_state_offset);

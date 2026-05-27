@@ -196,7 +196,7 @@ void BufferManager::startBackgroundThreads()
                last_seen[pp] = per_pp_iostats[pp].io_counter.load();
                tot_page_written += last_seen[pp];
             }
-         } 
+         }
          if (FLAGS_use_fdp_rumaw) {
             prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
             rmb = prev_rmb;
@@ -269,7 +269,7 @@ void BufferManager::startBackgroundThreads()
          // Wake up all grabage collection threads so that they could exit normally
          if (FLAGS_enable_discarding) {
             std::lock_guard _l(gc_m);
-            gc_cv.notify_all(); 
+            gc_cv.notify_all();
          }
          while(pp_threads_counter) {}
          while(gc_threads_counter) {}
@@ -327,7 +327,7 @@ void BufferManager::writeAllBufferFrames()
 
    const s32 ru_size = RU_SIZE;
    ensure(ru_discard_set[ru_epoch.load()].total.load() < ru_size);
-   
+
    utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
       BufferFrame::Page page;
       for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
@@ -767,7 +767,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       COUNTERS_BLOCK(buffer_miss_io_latency)
       {
          end_io = std::chrono::high_resolution_clock::now();
-         WorkerCounters::myCounters().io_phase_us[wait_for_io-1] += 
+         WorkerCounters::myCounters().io_phase_us[wait_for_io-1] +=
              (std::chrono::duration_cast<std::chrono::microseconds>(end_io - start_io).count());
          ensure(wait_for_io > 0 && wait_for_io <= (FLAGS_max_log_records_to_discard + 1));
          WorkerCounters::myCounters().read_operations_histogram[wait_for_io-1]++;

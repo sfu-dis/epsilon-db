@@ -42,7 +42,7 @@ struct BufferFrame {
       // -------------------------------------------------------------------------------------
       BufferFrame* next_free_bf = nullptr;
       // -------------------------------------------------------------------------------------
-      cr::Logging *logging = nullptr;
+      cr::Logging* logging = nullptr;
       bool flush_sink_log = false;
       LID fixed_at_plsn = 0;  // TODO(mfd) : jsut for debugging, remove later
       u8 absorbed_writes = 0;
@@ -128,32 +128,32 @@ struct BufferFrame {
       void insertWALPrefix(u8* prefix, u16 prefix_len, u8* key, u16 key_len);
    };
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);
-   static_assert(log_records_offset == 59, "");
+   static_assert(log_records_offset == 60, "");
    // -------------------------------------------------------------------------------------
    struct alignas(PAGE_ALIGNEMENT) Page {
       LID PLSN = 0;
       LID GSN = 0;
-      DTID dt_id = 9999;                                                                               // INIT: datastructure id
-      u64 magic_debugging_number;                                                                      // ATTENTION
-      u32 fdp_plid = -1; // TODO(mfd) : Obsolete, remove
-      u32 nbfixed = 0; // TODO(mfd) : Used just for debugging, remove later
-      ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH; // TODO(mfd) : Used just for debugging, remove later
+      DTID dt_id = 9999;                             // INIT: datastructure id
+      u64 magic_debugging_number;                    // ATTENTION
+      u32 fdp_plid = -1;                             // TODO(mfd) : Obsolete, remove
+      u32 nbfixed = 0;                               // TODO(mfd) : Used just for debugging, remove later
+      ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH;  // TODO(mfd) : Used just for debugging, remove later
       ru_epoch_t ru_epoch = UNMAPPED_RU_EPOCH;
       LID last_written_lsn = INVALID_LSN;
-      s32 prev_log_id = -1; // TODO(mfd) : Used just for debugging, remove later
-      s32 log_id = -1; // TODO(mfd) : Used just for debugging, remove later
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number)
-             - sizeof(fdp_plid) - sizeof(nbfixed) - 2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - 2*sizeof(log_id)];  // Datastruture BE CAREFUL HERE !!!!!
+      s32 prev_log_id = -1;  // TODO(mfd) : Used just for debugging, remove later
+      s32 log_id = -1;       // TODO(mfd) : Used just for debugging, remove later
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) - sizeof(fdp_plid) - sizeof(nbfixed) -
+            2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - 2 * sizeof(log_id)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
       void reset()
       {
-          PLSN = 0;
-          GSN = 0;
-          ru_epoch = UNMAPPED_RU_EPOCH;
-          prev_ru_epoch = UNMAPPED_RU_EPOCH;
-          last_written_lsn = INVALID_LSN;
+         PLSN = 0;
+         GSN = 0;
+         ru_epoch = UNMAPPED_RU_EPOCH;
+         prev_ru_epoch = UNMAPPED_RU_EPOCH;
+         last_written_lsn = INVALID_LSN;
       }
       void dump();
    };
@@ -208,7 +208,8 @@ struct BufferFrame {
    std::optional<WT*> reservePPLEntry(u32 payload_size, bool overrides_previous = false)
    {
       ensure(FLAGS_per_page_logging);
-      if (!isDiscardable()) return std::nullopt;
+      if (!isDiscardable())
+         return std::nullopt;
       if (overrides_previous) {
          ensure(lastLogRecord() != nullptr);
          ensure(ppl.last_entry_offset != -1);

@@ -167,19 +167,19 @@ public:
       s64 reclaimed_ru_epoch;
       u64 total_host_writes;
       u64 expected_extra_gc_writes;
-      // XXX(mfd) : Persisting only totals is enough for now, we assume 
-      //  invalid count is always 0. In other words, we assume we're 
+      // XXX(mfd) : Persisting only totals is enough for now, we assume
+      //  invalid count is always 0. In other words, we assume we're
       //   recovering from a load only workload.
       u32 totals[0];
 
-      PersistantRUState(u32 max_open_ru_epochs); 
+      PersistantRUState(u32 max_open_ru_epochs);
       u64 getSize() const {
          return sizeof(PersistantRUState) + max_open_ru_epochs * sizeof(u32);
       }
-      void loadFromPersistantStorage(); 
-      void writetoPersistantStorage(); 
+      void loadFromPersistantStorage();
+      void writetoPersistantStorage();
    };
-   PersistantRUState *persistant_ru_state; 
+   PersistantRUState *persistant_ru_state;
    struct RUEpochsState {
       u32 size;
       std::unique_ptr<RUEpochDiscardSet[]> data;

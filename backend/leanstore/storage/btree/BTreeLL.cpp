@@ -675,13 +675,13 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
             s16 pos = node->lowerBound<true>(key, key_length, &found);
             ensure(pos != -1);
             auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
-            BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos), 
+            BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos),
                                    update_entry->payload + update_entry->key_length + update_descriptor->size());
             offset += (sizeof(WALUpdate) + update_entry->key_length + update_entry->delta_length);
             break;
          }
          case WAL_LOG_TYPE::WALInsert: {
-            const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(wal_entry); 
+            const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(wal_entry);
             const u8* key = insert_entry->payload;
             const u8* value = key + insert_entry->key_length;
             node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
@@ -689,7 +689,7 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
             break;
          }
          case WAL_LOG_TYPE::WALRemove: {
-            const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(wal_entry); 
+            const WALRemove *remove_entry = reinterpret_cast<const WALRemove*>(wal_entry);
             const u8* key = remove_entry->payload;
             bool ok = node->remove(key, remove_entry->key_length);
             ensure(ok);

@@ -28,14 +28,20 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    all_logs = new Logging[nb_logs];
    ensure(all_logs != nullptr);
    // -------------------------------------------------------------------------------------
+   logger = std::make_unique<utils::Logger>("log_manager_journal.txt");
+   // -------------------------------------------------------------------------------------
    meta_size = log_start_offset = utils::upAlign(sizeof(meta_block) + nb_logs * sizeof(per_worker_log_segment), LOG_DEV_BLK_SIZE);
    u8* meta_block_buffer = (u8*)aligned_alloc(4096, meta_size);
    ensure(meta_block_buffer != nullptr);
    memset(meta_block_buffer, 0, meta_size);
    meta = (struct meta_block*)meta_block_buffer;
-   log_segment_size = utils::downAlign((log_dev_size - meta_size) / nb_logs, LOG_DEV_BLK_SIZE);
-   // -------------------------------------------------------------------------------------
-   logger = std::make_unique<utils::Logger>("log_manager_journal.txt");
+   log_segment_size = utils::downAlign((log_dev_size - log_start_offset) / nb_logs, LOG_DEV_BLK_SIZE);
+   ensure(log_segment_size > 2 * FLAGS_wal_buffer_size);
+   ensure((FLAGS_wal_buffer_size % 4096) == 0);
+   // we simplify log segment wrap around logic, by enforcing each
+   // log file size to be an integer multiple of the log buffer size.
+   log_segment_size = log_segment_size - (log_segment_size % FLAGS_wal_buffer_size);
+   LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size/1073741824.0);
    // -------------------------------------------------------------------------------------
    const bool recover_wal = FLAGS_recover && !FLAGS_clean_recover;
    if (recover_wal) {
@@ -108,7 +114,7 @@ u32 LogManager::LSN2LogID(LID lsn)
 {
    if ((lsn == INVALID_LSN) || (lsn == NON_PERSISTED_LSN)) return -1;
    LID aligned_lsn = utils::downAlign(lsn, LOG_DEV_BLK_SIZE);
-   u32 log_id = (aligned_lsn - meta_size) / log_segment_size;
+   u32 log_id = (aligned_lsn - log_start_offset) / log_segment_size;
    {
       ensure_lt(log_id, global->log_count);
       ensure_equal(global->all_logs[log_id].log_id, log_id);
@@ -130,7 +136,7 @@ s32 LogManager::getLogID(ru_epoch_t ru_epoch, PID page_id)
       || (ru_epoch <= storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire))) {
       log_id = page_id % FLAGS_wal_sink_logs;
    } else {
-      log_id = getLogID(ru_epoch); 
+      log_id = getLogID(ru_epoch);
       if (global->all_logs[log_id].redirect_to_sink_log.load(std::memory_order_acquire)) {
          log_id = page_id % FLAGS_wal_sink_logs;
       }
