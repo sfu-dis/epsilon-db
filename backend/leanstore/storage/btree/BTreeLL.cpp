@@ -400,26 +400,6 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          const u16 payload_size = key.length() + delta_length;
          const u16 wal_entry_size = sizeof(WALUpdate) + payload_size;
          auto* bf = iterator.leaf.bf;
-         bool entry_overrides_previous = false;
-         WALUpdate wal_prefix;
-         wal_prefix.type = WAL_LOG_TYPE::WALUpdate;
-         wal_prefix.magic_debugging_number = WAL_BTREE_MAGIC;
-         wal_prefix.key_length = key.length();
-         wal_prefix.delta_length = delta_length;
-         if (config.discardable && bf->isDiscardable()
-             && bf->canMergeWithLastRecord(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, o_key_length, update_descriptor))
-         {
-            ensure(bf->header.pending_lsn_count >= 1);
-            entry_overrides_previous = true;
-            WorkerCounters::myCounters().consecutive_same_key_in_page++;
-         }
-         auto inplace_merge_with_previous_record = [&] (WALUpdate& wal_entry) {
-            u8* wal_ptr = wal_entry.payload + prefix_length;
-            // Rollback the previous log record
-            generateXORDiff(update_descriptor, wal_ptr, current_value.data());
-            callback(current_value.data(), current_value.length());
-            generateXORDiff(update_descriptor, wal_ptr, current_value.data());
-         };
          auto populate_wal_update_entry = [&](WALUpdate& wal_entry) {
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
@@ -435,46 +415,32 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             callback(current_value.data(), current_value.length());
             generateXORDiff(update_descriptor, wal_ptr, current_value.data());
          };
-         bool ppl_success = false;
-         WALUpdate* ppl_wal_entry = nullptr;
-         if (config.discardable && FLAGS_per_page_logging) {
-            auto wal_entry = iterator.leaf.bf->reservePPLEntry<WALUpdate>(payload_size, entry_overrides_previous);
-            if (wal_entry) {
-               ppl_success = true;
-               ppl_wal_entry = wal_entry.value();
-               if (entry_overrides_previous) {
-                  inplace_merge_with_previous_record(*ppl_wal_entry);
-               } else {
-                  populate_wal_update_entry(*ppl_wal_entry);
-               }
-            }
-         }
          auto wal_entry = iterator.leaf.reserveWALEntry<WALUpdate>(payload_size, !config.discardable);
-         if (ppl_success) {
-            assert(FLAGS_per_page_logging);
-            std::memcpy(wal_entry.entry, ppl_wal_entry, wal_entry_size);
-         } else {
-            ensure(!entry_overrides_previous);
-            populate_wal_update_entry(*wal_entry);
+         populate_wal_update_entry(*wal_entry);
+         if (config.discardable && bf->isDiscardable() && FLAGS_per_page_logging) {
+            bool entry_overrides_previous = false;
+            if (FLAGS_opportunistic_log_compaction && bf->lastLogRecord() != nullptr) {
+               entry_overrides_previous = (std::memcmp(bf->lastLogRecord(), wal_entry.entry, prefix_length) == 0);
+            }
+            auto ppl_wal_entry = bf->reservePPLEntry<WALUpdate>(payload_size, entry_overrides_previous);
+            if (ppl_wal_entry) {
+               if (entry_overrides_previous) {
+                  u8* dst = ppl_wal_entry.value()->payload + prefix_length;
+                  u8* src = wal_entry->payload + prefix_length;
+                  // byte by byte bitwise XOR.
+                  for (u32 i = 0; i < update_descriptor.diffLength(); ++i) {
+                     dst[i] ^= src[i];
+                  }
+                  WorkerCounters::myCounters().consecutive_same_key_in_page++;
+               } else {
+                  std::memcpy(ppl_wal_entry.value(), wal_entry.entry, wal_entry_size);
+               }
+            } else {
+               ensure(!bf->isDiscardable());
+            }
          }
+         // after copying the log record to the PPL, it is safe to unlock the hole.
          wal_entry.submit();
-         if (config.discardable && bf->isDiscardable() && ppl_success) {
-            if (entry_overrides_previous) {
-               ensure_lte(2, bf->header.pending_lsn_count);
-               ensure(bf->lastLogRecord() != nullptr);
-               // Good news, Previous WAL entry no longer needed.
-               u8 n = bf->header.pending_lsn_count;
-               bf->header.pending_lsn[n-2] = bf->header.pending_lsn[n-1];
-               bf->header.pending_lsn_count--;
-               bf->page.PLSN--;
-            }
-#if 0
-            if (!FLAGS_per_page_logging) {
-               // use the ppl space to store the last entry prefix.
-               bf->ppl.insertWALPrefix(reinterpret_cast<u8*>(&wal_prefix), sizeof(WALUpdate), o_key, prefix_length);
-            }
-#endif
-         }
       } else {
          callback(current_value.data(), current_value.length());
          iterator.markAsDirty();

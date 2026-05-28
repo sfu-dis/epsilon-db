@@ -639,7 +639,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       cr::WALDTEntry* dte = nullptr;
       LID last_lsn = INVALID_LSN;
       LID last_gsn = 0;
-      // TODO(mfd) : Sanity check that prev lsn field in the log recods agrees with the list.
+      bool reconstruct_ppl = FLAGS_per_page_logging;
       for (u8 i = 0; i < nb_log_records; ++i) {
          last_lsn = lsn_list[i];
          ensure(last_lsn != INVALID_LSN);
@@ -660,15 +660,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             ensure_lt(sizeof(cr::WALDTEntry), entry->size);
             const u16 lrec_size = entry->size - sizeof(cr::WALDTEntry);
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload, 1, lrec_size);
-            last_gsn = dte->gsn;
-            if (FLAGS_per_page_logging) {
-               bf.ppl.insertLogRecord(dte->payload, lrec_size);
-               bf.header.absorbed_writes += 1;
-            } else if (i == (nb_log_records - 1)) {
-               bf.ppl.insertWALPrefix(dte->payload, lrec_size, dte->payload, 0);
+            if (reconstruct_ppl) {
+               const bool canFitIntoPPL = bf.ppl.insertLogRecord(dte->payload, lrec_size);
+               if (!canFitIntoPPL) {
+                  reconstruct_ppl = false;
+                  bf.markUnDiscardable();
+               }
             }
-         } else { // cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC
+            bf.header.absorbed_writes += 1;
+            last_gsn = dte->gsn;
+         } else {
+            assert(entry->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC);
             ensure(FLAGS_per_page_logging);
+            // For now I expect always the PPL entry to be the first one to apply.
+            ensure_equal(i, 0);
             auto* ppl = reinterpret_cast<BufferFrame::PPL*>(entry);
             // some sanity checks
             ensure_equal(ppl->header.pid, bf.page.magic_debugging_number);

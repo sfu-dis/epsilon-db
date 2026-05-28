@@ -70,6 +70,9 @@ LeanStore::LeanStore()
          SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
       }
    }
+   if (FLAGS_opportunistic_log_compaction && !FLAGS_per_page_logging) {
+      SetupFailed("Opportunistic Log Compaction is only implemented when PPL is enabled");
+   }
    if (FLAGS_per_page_logging && !FLAGS_enable_discarding) {
       // per page logging is only relevant when discarding is enabled, silently turn it off.
       FLAGS_per_page_logging = false;

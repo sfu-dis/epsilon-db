@@ -22,7 +22,7 @@ namespace storage
 {
 namespace btree
 {
-struct WALEntry;
+struct WALEntry;  // Forward Declaration
 }  // namespace btree
 // -------------------------------------------------------------------------------------
 const u64 PAGE_SIZE = 4 * 1024;
@@ -122,10 +122,10 @@ struct BufferFrame {
          last_entry_offset = -1;
          std::memset(log_records, 0xff, space_for_log_records);
       }
+      bool hasSpaceFor(u32 log_record_size) { return wal_entry.size + log_record_size <= sizeof(PPL); }
       u16 payload_size() const { return wal_entry.size - offsetof(PPL, log_records); }
-      void insertLogRecord(u8* log_record_buf, u32 log_record_size);
+      [[nodiscard]] bool insertLogRecord(u8* log_record_buf, u32 log_record_size);
       void insertPPL(const PPL& other);
-      void insertWALPrefix(u8* prefix, u16 prefix_len, u8* key, u16 key_len);
    };
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);
    static_assert(log_records_offset == 60, "");
@@ -210,15 +210,15 @@ struct BufferFrame {
       ensure(FLAGS_per_page_logging);
       if (!isDiscardable())
          return std::nullopt;
+      const u32 total_entry_size = sizeof(WT) + payload_size;
+      if (!ppl.hasSpaceFor(total_entry_size)) {
+         this->markUnDiscardable();
+         return std::nullopt;
+      }
       if (overrides_previous) {
          ensure(lastLogRecord() != nullptr);
          ensure(ppl.last_entry_offset != -1);
          return reinterpret_cast<WT*>(lastLogRecord());
-      }
-      u32 total_entry_size = sizeof(WT) + payload_size;
-      if (ppl.wal_entry.size + total_entry_size > sizeof(PPL)) {
-         this->markUnDiscardable();
-         return std::nullopt;
       }
       const u32 offset = ppl.wal_entry.size - log_records_offset;
       ppl.wal_entry.size += total_entry_size;
@@ -230,24 +230,12 @@ struct BufferFrame {
    // -------------------------------------------------------------------------------------
    u8* lastLogRecord()
    {
+      ensure(FLAGS_per_page_logging);
+      ensure(FLAGS_opportunistic_log_compaction);
       if (ppl.last_entry_offset == u16(-1)) {
          return nullptr;
       }
-      u16 offset = FLAGS_per_page_logging ? ppl.last_entry_offset : 0;
-      return &ppl.log_records[offset];
-   }
-   // -------------------------------------------------------------------------------------
-   bool canMergeWithLastRecord(u8* header, u16 header_len, u8* key, u16 key_len, UpdateSameSizeInPlaceDescriptor& update_descriptor)
-   {
-      // For now, merging is only implemented with PPL enabled.
-      if (!FLAGS_per_page_logging) {
-         return false;
-      }
-      u8* last_entry_ptr = lastLogRecord();
-      return last_entry_ptr != nullptr
-         && std::memcmp(last_entry_ptr, header, header_len) == 0
-         && std::memcmp(last_entry_ptr + header_len, key, key_len) == 0
-         && std::memcmp(last_entry_ptr + header_len + key_len, reinterpret_cast<u8*>(&update_descriptor), update_descriptor.size()) == 0;
+      return &ppl.log_records[ppl.last_entry_offset];
    }
    // -------------------------------------------------------------------------------------
    bool submitPPLEntry();
