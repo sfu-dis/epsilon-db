@@ -164,19 +164,19 @@ void BMTable::open()
       col << sum(GCCounters::gc_counters, &GCCounters::hot_fixed);
    });
    // -------------------------------------------------------------------------------------
-   columns.emplace("discard_state_peak_mem_usage", [&](Column& col) {
+   columns.emplace("discard_state_peak_mem_usage", [this](Column& col) {
       col << bm.bm_stats.discard_state_peak_mem_usage.load(std::memory_order_acquire) / 1073741824.0;
    });
-   columns.emplace("total_in_use_ru", [&](Column& col) {
+   columns.emplace("total_in_use_ru", [this](Column& col) {
       s64 newest_active_ru = bm.ru_epoch.load(std::memory_order_acquire);
       s64 reclaimed_ru = bm.reclaimed_ru_epoch.load(std::memory_order_acquire);
       col << newest_active_ru - reclaimed_ru;
    });
-   columns.emplace("estimated_gc_writes", [&](Column& col) {
+   columns.emplace("estimated_gc_writes", [this](Column& col) {
       // PAGE_SIZE = 4KiB
       col << bm.bm_stats.estimated_gc_writes.load(std::memory_order_acquire) * 4 / 1048576.0;
    });
-   columns.emplace("forced_gc_count", [](Column& col) {
+   columns.emplace("forced_gc_count", [this](Column& col) {
       col << bm.bm_stats.forced_gc_count.load(std::memory_order_acquire);
    });
    // -------------------------------------------------------------------------------------

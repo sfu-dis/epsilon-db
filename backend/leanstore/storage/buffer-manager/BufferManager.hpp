@@ -30,10 +30,10 @@ namespace profiling
 {
 class BMTable;  // Forward declaration
 }
-namespace cr 
+namespace cr
 {
-struct WALEntry; // 
-struct WALDTEntry;
+struct WALEntry;  // Forward declaration
+struct WALDTEntry;  // Forward declaration
 }
 namespace storage
 {

@@ -80,7 +80,7 @@ struct LogManager {
    void add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full);
 
    void submitAndWait();
-   
+
    void persistMetaBlock();
 
    bool isPartitionedByWorker() { return partition_by == PARTITION_BY::WORKER; }

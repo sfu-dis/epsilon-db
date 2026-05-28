@@ -377,9 +377,16 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      BMExclusiveGuard ex_guard(o_guard);
                      paranoid(!cooled_bf->header.is_being_written_back);
                      cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
+                     COUNTERS_BLOCK(absorbed_writes_histogram)
+                     {
+                        u8 absorbed_writes = std::min<u8>(cooled_bf->header.absorbed_writes, 63);
+                        PPCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
+                     }
                      /// We directly update the header information because we need this information
                      /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
+                     cooled_bf->header.not_yet_persisted = false;
                      cooled_bf->header.logging = nullptr;
+                     cooled_bf->header.absorbed_writes = 0;
                      cooled_bf->header.pending_lsn_count = 0;
                      cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
                      cooled_bf->page.prev_ru_epoch = cooled_bf->page.ru_epoch;
