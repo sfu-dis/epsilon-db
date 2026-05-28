@@ -197,39 +197,21 @@ void BufferManager::startBackgroundThreads()
                tot_page_written += last_seen[pp];
             }
          }
-         if (FLAGS_use_fdp_rumaw) {
-            prev_rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
-            rmb = prev_rmb;
-            if (rmb != RU_SIZE) {
-               fdp_reset_free_ru(ssd_fd, /* default plid*/ 0);
-            }
-            ensure(fdp_get_remaining_bytes_in_ru(ssd_fd, 0) == s64(RU_SIZE));
-            prev_rmb = RU_SIZE;
-         }
          auto check_for_new_ru_epoch = [&]() {
             bool open_new_ru_epoch = false;
-            if (FLAGS_use_fdp_rumaw) {
-               rmb = fdp_get_remaining_bytes_in_ru(ssd_fd, 0);
-               // XXX(mfd) Ugly heuristic to avoid fluctuations
-               if (prev_rmb < rmb && rmb > (RU_SIZE - 200000)) {
-                  open_new_ru_epoch = true;
-               }
-               prev_rmb = rmb;
-            } else {
-               for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-                  u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::acquire);
-                  ensure(new_value >= last_seen[pp_id]);
-                  u64 diff = new_value - last_seen[pp_id];
-                  tot_page_written += diff;
-                  last_seen[pp_id] = new_value;
-               }
-               u64 seen = tot_gc_writes.load(std::memory_order_acquire);
-               tot_page_written += (seen - last_seen_tot_gc_writes);
-               last_seen_tot_gc_writes = seen;
-               if (tot_page_written >= RU_SIZE) {
-                  open_new_ru_epoch = true;
-                  tot_page_written = tot_page_written - RU_SIZE;
-               }
+            for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
+               u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::acquire);
+               ensure(new_value >= last_seen[pp_id]);
+               u64 diff = new_value - last_seen[pp_id];
+               tot_page_written += diff;
+               last_seen[pp_id] = new_value;
+            }
+            u64 seen = tot_gc_writes.load(std::memory_order_acquire);
+            tot_page_written += (seen - last_seen_tot_gc_writes);
+            last_seen_tot_gc_writes = seen;
+            if (tot_page_written >= RU_SIZE) {
+               open_new_ru_epoch = true;
+               tot_page_written = tot_page_written - RU_SIZE;
             }
             if (open_new_ru_epoch) {
                ru_epoch_t new_ru_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
@@ -584,7 +566,6 @@ fail:
    cout << "log_gsn_clock : " << log.log_gsn_clock << endl;
    cout << "log_segment_start : " << log.log_segment_start << endl;
    cout << "RU epoch : " << page.ru_epoch << endl;
-   cout << "Fixed ? " << page.nbfixed << endl;
    cout << "TYPE = "  << (int)btree_entry->type << endl;
    cout << "Log ID = " << cr::LogManager::global->LSN2LogID(lsn) << endl;
    leanstore::print_backtrace();

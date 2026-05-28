@@ -112,7 +112,7 @@ int main(int argc, char** argv)
       order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc");
       item = LeanStoreAdapter<item_t>(db, "item");
       stock = LeanStoreAdapter<stock_t>(db, "stock");
-      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", false, 0);
+      orderline = LeanStoreAdapter<orderline_t>(db, "orderline", false);
    });
    // -------------------------------------------------------------------------------------
    db.registerConfigEntry("tpcc_warehouse_count", FLAGS_tpcc_warehouse_count);

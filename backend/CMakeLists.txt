@@ -10,7 +10,7 @@ set(COUNTERS_HEADER ${CMAKE_SOURCE_DIR}/shared-headers/counters_config.hpp)
 add_custom_command(
    OUTPUT ${COUNTERS_HEADER}
    COMMAND ${CMAKE_COMMAND} -E echo "Generating counters_config.h from counters.ini"
-   COMMAND python3 ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py 
+   COMMAND python3 ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py
            ${COUNTERS_INI} ${COUNTERS_HEADER}
    DEPENDS ${COUNTERS_INI} ${CMAKE_SOURCE_DIR}/shared-headers/config_parser.py
    COMMENT "Generating counters config header file from counters.ini"
@@ -51,7 +51,7 @@ IF(SANI)
 ENDIF(SANI)
 
 add_dependencies(leanstore gen_header)
-target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson yaml-cpp fdp uring ${Boost_LIBRARIES}) #tbb
+target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson yaml-cpp uring ${Boost_LIBRARIES}) #tbb
 
 # ---------------------------------------------------------------------------
 OPTION(PARANOID "Enable sanity checks in release mode" OFF)

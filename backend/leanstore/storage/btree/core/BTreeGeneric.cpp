@@ -22,10 +22,9 @@ void BTreeGeneric::create(DTID dtid, Config config)
    Guard guard(meta_node_bf.asBufferFrame().header.latch, GUARD_STATE::EXCLUSIVE);
    meta_node_bf.asBufferFrame().header.keep_in_memory = true;
    meta_node_bf.asBufferFrame().page.dt_id = dtid;
-   meta_node_bf.asBufferFrame().page.fdp_plid = config.fdp_plid;
    guard.unlock();
    // -------------------------------------------------------------------------------------
-   auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, config.fdp_plid, true);
+   auto root_write_guard_h = HybridPageGuard<BTreeNode>(dtid, true);
    auto root_write_guard = ExclusivePageGuard<BTreeNode>(std::move(root_write_guard_h));
    root_write_guard.init(true);
    // -------------------------------------------------------------------------------------
@@ -78,9 +77,9 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       // create new root
       // root node is created with keepAlive == false because the split may fail if allocating
       // a new left node fails.
-      auto new_root_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, false);
+      auto new_root_h = HybridPageGuard<BTreeNode>(dt_id, false);
       auto new_root = ExclusivePageGuard<BTreeNode>(std::move(new_root_h));
-      auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, true);
+      auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
       auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
       // -------------------------------------------------------------------------------------
       c_x_guard.bf()->markUnDiscardable();
@@ -156,7 +155,7 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          assert(&meta_node_bf.asBufferFrame() != p_x_guard.bf());
          assert(!p_x_guard->is_leaf);
          // -------------------------------------------------------------------------------------
-         auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, config.fdp_plid, true);
+         auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
          auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
          // -------------------------------------------------------------------------------------
          p_x_guard.bf()->markUnDiscardable();

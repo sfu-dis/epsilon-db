@@ -18,9 +18,9 @@ struct LeanStoreAdapter : Adapter<Record> {
    {
       // hack
    }
-   LeanStoreAdapter(LeanStore& db, string name, bool discardable = true, u8 plid = 0) : name(name)
+   LeanStoreAdapter(LeanStore& db, string name, bool discardable = true) : name(name)
    {
-      btree::BTreeGeneric::Config config = {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .discardable = discardable, .fdp_plid = plid};
+      btree::BTreeGeneric::Config config = {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .discardable = discardable};
       if (FLAGS_vi) {
          if (FLAGS_recover) {
             btree = &db.retrieveBTreeVI(name, config);

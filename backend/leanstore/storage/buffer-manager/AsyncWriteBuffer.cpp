@@ -91,10 +91,9 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    // in the page frame.
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
-   // u16 plid = bf.page.fdp_plid;
    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   fdp_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, 0);
+   io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid);
    io_uring_sqe_set_data(sqe, write_buffer_slot_ptr);
 /*
    io_prep_pwrite(&iocbs[slot], fd, write_buffer_slot_ptr, page_size, page_size * pid);
@@ -161,13 +160,13 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, LID, ru_ep
    io_uring_for_each_cqe(&ring, head, cqe) {
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;
       // -------------------------------------------------------------------------------------
-      ensure(cqe->res == 0);
+      ensure_equal(cqe->res, static_cast<s32>(page_size));
       auto written_plsn = write_buffer[slot].PLSN;
       u64 written_ru_epoch = write_buffer[slot].ru_epoch;
       callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);
       ++i;
    }
-   assert(i == n_events);
+   ensure_equal(i, n_events);
    io_uring_cq_advance(&ring, n_events);
 }
 AsyncWriteBuffer::IOTracing::IOTracing()

@@ -127,7 +127,6 @@ DEFINE_string(recover_file, "./leanstore.json", "Where should the recover config
 DEFINE_bool(io_trace, false, "");
 DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");
 // -------------------------------------------------------------------------------------
-DEFINE_bool(use_fdp_rumaw, false, "use RU remaining media writes feature availabe of fdp capable NVMe devices.");
 DEFINE_bool(enable_discarding, true, "Discard dirty pages upon evictions");
 DEFINE_bool(fake_log_reapply, false, "Just for Testing, use only with update-only workloads");
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");

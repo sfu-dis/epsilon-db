@@ -62,7 +62,7 @@ int main(int argc, char** argv)
    crm.scheduleJobSync(0, [&]() {
       for (u64 t_id = 0; t_id < ycsb_n_tables; t_id++) {
          std::string table_name = "YCSB" + std::to_string(t_id);
-         tables.emplace_back(db, table_name);
+         tables.emplace_back(db, table_name, FLAGS_enable_discarding);
       }
    });
    db.registerConfigEntry("ycsb_read_ratio", FLAGS_ycsb_read_ratio);

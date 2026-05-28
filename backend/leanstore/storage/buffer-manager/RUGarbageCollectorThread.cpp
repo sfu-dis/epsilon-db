@@ -198,7 +198,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[0])->gsn;
       page->prev_ru_epoch = page->ru_epoch;
       page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-      page->nbfixed++;  // Just for debugging
       total_fixed++;    // Just for debugging
 
       goto success;

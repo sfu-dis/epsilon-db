@@ -53,7 +53,7 @@ class HybridPageGuard
    HybridPageGuard(HybridPageGuard&& other) = delete;  // Move constructor
    // -------------------------------------------------------------------------------------
    // I: Allocate a new page
-   HybridPageGuard(DTID dt_id, u8 fdp_plid, bool keep_alive)
+   HybridPageGuard(DTID dt_id, bool keep_alive)
        : bf(&BMC::global_bf->allocatePage()), guard(bf->header.latch, GUARD_STATE::EXCLUSIVE), keep_alive(keep_alive)
    {
       assert(BMC::global_bf != nullptr);
@@ -62,7 +62,6 @@ class HybridPageGuard
       // This will give us more flexibility on when to increment the GSN.
       bf->header.keep_in_memory = true;
       bf->page.dt_id = dt_id;
-      bf->page.fdp_plid = fdp_plid;
       jumpmu_registerDestructor();
    }
    // -------------------------------------------------------------------------------------

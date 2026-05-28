@@ -135,14 +135,12 @@ struct BufferFrame {
       LID GSN = 0;
       DTID dt_id = 9999;                             // INIT: datastructure id
       u64 magic_debugging_number;                    // ATTENTION
-      u32 fdp_plid = -1;                             // TODO(mfd) : Obsolete, remove
-      u32 nbfixed = 0;                               // TODO(mfd) : Used just for debugging, remove later
       ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH;  // TODO(mfd) : Used just for debugging, remove later
       ru_epoch_t ru_epoch = UNMAPPED_RU_EPOCH;
       LID last_written_lsn = INVALID_LSN;
       s32 prev_log_id = -1;  // TODO(mfd) : Used just for debugging, remove later
       s32 log_id = -1;       // TODO(mfd) : Used just for debugging, remove later
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) - sizeof(fdp_plid) - sizeof(nbfixed) -
+      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) -
             2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - 2 * sizeof(log_id)];  // Datastruture BE CAREFUL HERE !!!!!
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }

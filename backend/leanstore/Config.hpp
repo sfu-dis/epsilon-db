@@ -122,7 +122,6 @@ DECLARE_string(recover_file);
 DECLARE_bool(io_trace);
 DECLARE_string(io_trace_file);
 // -------------------------------------------------------------------------------------
-DECLARE_bool(use_fdp_rumaw);
 DECLARE_bool(enable_discarding);
 DECLARE_bool(fake_log_reapply);
 DECLARE_int32(ru_gc_threads);

@@ -136,8 +136,6 @@ void BufferFrame::Page::dump()
         << "  dt_id: " << dt_id << "\n"
         << "  dt_name: " << DTRegistry::global_dt_registry.getDTName(dt_id) << "\n"
         << "  magic_debugging_number: " << magic_debugging_number << "\n"
-        << "  fdp_plid: " << fdp_plid << "\n"
-        << "  nbfixed: " << nbfixed << "\n"
         << "  prev_ru_epoch: " << prev_ru_epoch << "\n"
         << "  ru_epoch: " << ru_epoch << "\n"
         << "  last_written_lsn: " << last_written_lsn << "\n"
