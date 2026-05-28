@@ -189,7 +189,6 @@ void BufferManager::startBackgroundThreads()
          bg_threads_counter++;
          u64 last_seen_tot_gc_writes = 0;
          u64 tot_page_written = 0;
-         u64 prev_rmb, rmb;
          std::vector<u64> last_seen(FLAGS_pp_threads, 0);
          if (FLAGS_recover) {
             for (u32 pp = 0; pp < FLAGS_pp_threads; ++pp) {
@@ -741,7 +740,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
       io_uring_sqe_set_data64(sqe, pid | (1UL << 63));
       s32 s = io_uring_submit_and_wait(&cr::Worker::my().ring, wait_for_io);
-      ensure_equal(s, wait_for_io);
+      ensure_equal(s, static_cast<s32>(wait_for_io));
       COUNTERS_BLOCK(read_operations_counter)
       {
          WorkerCounters::myCounters().read_operations_counter++;

@@ -72,9 +72,6 @@ struct BTreeNodeHeader {
 
    static const u16 hint_count = 16;
    u32 hint[hint_count];
-   // u32 update_freq = 0;
-   // u16 update_freq_old = 65535;
-   u16 update_freq = 0;
    // -------------------------------------------------------------------------------------
    // Needed for GC
    bool has_garbage = false;

@@ -21,22 +21,9 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
 {
    write_buffer = make_unique<BufferFrame::Page[]>(batch_max_size);
    write_buffer_commands = make_unique<WriteCommand[]>(batch_max_size);
-/*
-   iocbs = make_unique<struct iocb[]>(batch_max_size);
-   iocbs_ptr = make_unique<struct iocb*[]>(batch_max_size);
-   events = make_unique<struct io_event[]>(batch_max_size);
-   // -------------------------------------------------------------------------------------
-   memset(&aio_context, 0, sizeof(aio_context));
-   const int ret = io_setup(batch_max_size, &aio_context);
-   if (ret != 0) {
-      throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
-   }
-*/
 
    events = make_unique<struct io_uring_cqe*[]>(batch_max_size);
-   unsigned flags = 0;
-   flags |= (IORING_SETUP_SQE128 | IORING_SETUP_CQE32);
-   flags |= (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+   unsigned flags = (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
    int rc = io_uring_queue_init(2 * FLAGS_replacement_chunk_size, &ring, flags);
    if (rc != 0) {
       throw ex::GenericException("io_uring_queue_init failed, ret code = " + std::to_string(rc));
@@ -60,7 +47,10 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    assert(!full());
    assert(u64(&bf.page) % 512 == 0);
    assert(pending_requests <= batch_max_size);
-   COUNTERS_BLOCK() { WorkerCounters::myCounters().dt_page_writes[bf.page.dt_id]++; }
+   COUNTERS_BLOCK()
+   {
+      WorkerCounters::myCounters().dt_page_writes[bf.page.dt_id]++;
+   }
    // -------------------------------------------------------------------------------------
    PARANOID_BLOCK()
    {
@@ -78,28 +68,21 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
    if (bf.page.ru_epoch == UNMAPPED_RU_EPOCH) {
+      ensure(bf.header.not_yet_persisted);
       bf.page.magic_debugging_number = pid;
    } else {
       ensure_equal(bf.page.magic_debugging_number, pid);
    }
-   // TODO(mfd) : remove the update frequency
-   auto node = reinterpret_cast<btree::BTreeNode*>(bf.page.dt);
-   node->update_freq++;
    // XXX(mfd) : Tentitavely update the RU epoch without waiting for the
    // write to return. This is to allow correct mapping to logs when the
    // page is being written back. Consider storing the tentative ru_epoch
    // in the page frame.
    std::memcpy(&write_buffer[slot], bf.page, page_size);
    void* write_buffer_slot_ptr = &write_buffer[slot];
-   struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+   struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
    io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid);
    io_uring_sqe_set_data(sqe, write_buffer_slot_ptr);
-/*
-   io_prep_pwrite(&iocbs[slot], fd, write_buffer_slot_ptr, page_size, page_size * pid);
-   iocbs[slot].data = write_buffer_slot_ptr;
-   iocbs_ptr[slot] = &iocbs[slot];
-*/
    if (FLAGS_io_trace) {
       // add to trace, use tsc as timesamp
       // TODO(mfd) : Use RU epochs instead of rdtsc
@@ -110,7 +93,6 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
 u64 AsyncWriteBuffer::submit()
 {
    if (pending_requests > 0) {
-      // int ret_code = io_submit(aio_context, pending_requests, iocbs_ptr.get());
       int ret_code = io_uring_submit(&ring);
       ensure(ret_code == s32(pending_requests));
       return pending_requests;
@@ -126,13 +108,10 @@ u64 AsyncWriteBuffer::pollEventsSync()
 {
    u64 ret = 0;
    if (pending_requests > 0) {
-      // const int done_requests = io_getevents(aio_context, pending_requests, pending_requests, events.get(), NULL);
-      // if (u32(done_requests) != pending_requests) {
-      ret = pending_requests;;
+      ret = pending_requests;
       const int rc = io_uring_wait_cqe_nr(&ring, events.get(), pending_requests);
       if (rc != 0) {
          cerr << rc << endl;
-         // cerr << done_requests << endl;
          raise(SIGTRAP);
          ensure(false);
       }
@@ -144,20 +123,11 @@ u64 AsyncWriteBuffer::pollEventsSync()
 // -------------------------------------------------------------------------------------
 void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events)
 {
-/*
-   for (u64 i = 0; i < n_events; i++) {
-      const auto slot = (u64(events[i].data) - u64(write_buffer.get())) / page_size;
-      // -------------------------------------------------------------------------------------
-      ensure(events[i].res == page_size);
-      explainIfNot(events[i].res2 == 0);
-      auto written_lsn = write_buffer[slot].PLSN;
-      callback(*write_buffer_commands[slot].bf, written_lsn, write_buffer_commands[slot].pid);
-   }
-*/
-   struct io_uring_cqe *cqe;
+   struct io_uring_cqe* cqe;
    unsigned head;
    u64 i = 0;
-   io_uring_for_each_cqe(&ring, head, cqe) {
+   io_uring_for_each_cqe(&ring, head, cqe)
+   {
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;
       // -------------------------------------------------------------------------------------
       ensure_equal(cqe->res, static_cast<s32>(page_size));
