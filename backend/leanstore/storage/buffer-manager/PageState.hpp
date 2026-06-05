@@ -35,7 +35,12 @@ struct PageState {
    static constexpr u64 max_log_records_bits = 3;
    static constexpr u64 nb_log_records_shift = state_shift - max_log_records_bits;
    static constexpr u64 nb_log_records_mask = u64(7) << nb_log_records_shift;
-   static constexpr u64 lsn_mask = (u64(1) << nb_log_records_shift) - 1;
+   static constexpr u64 max_log_id_bits = 10; // up to 1024 log_ids
+   static constexpr u64 max_log_id = (u64(1) << max_log_id_bits) - 1;
+   static constexpr u64 log_id_shift = nb_log_records_shift - max_log_id_bits;
+   static constexpr u64 log_id_mask = max_log_id << log_id_shift;
+   // static constexpr u64 lsn_mask = (u64(1) << nb_log_records_shift) - 1;
+   static constexpr u64 lsn_mask = (u64(1) <<log_id_shift) - 1;
    static_assert(latch_bit == 0x8000000000000000, "");
    static_assert(state_mask == 0x6000000000000000, "");
    static_assert(latch_mask == 0x7FFFFFFFFFFFFFFF, "");
@@ -43,7 +48,9 @@ struct PageState {
    static_assert(state_discarded_mask == 0x2000000000000000, "");
    static_assert(state_clean_mask == 0x4000000000000000, "");
    static_assert(state_hot_mask == 0x6000000000000000, "");
-   static_assert(lsn_mask == 0x03FFFFFFFFFFFFFF, "");
+   static_assert(max_log_id == 0x3FF);
+   static_assert(log_id_mask == 0x003FF000000000000);
+   static_assert(lsn_mask == 0x0000FFFFFFFFFFFF, "");
 
    atomic<u64> raw;
 
@@ -69,7 +76,7 @@ struct PageState {
    std::pair<u64, u8> getLocked();
    // -------------------------------------------------------------------------------------
    template <bool keep_locked>
-   bool tryDiscard(LID* pending_lsn, u64 pending_lsn_count)
+   bool tryDiscard(LID* pending_lsn, u64 pending_lsn_count, u64 log_id)
    {
       u64 v1 = raw.load(std::memory_order_acquire);
       if ((v1 & latch_bit) || ((v1 & state_hot_mask) != state_hot_mask)) {
@@ -79,7 +86,8 @@ struct PageState {
          return false;
       }
       ensure(isHot());
-      u64 new_value = state_discarded_mask | (pending_lsn_count << nb_log_records_shift);
+      ensure_lt(log_id, max_log_id);
+      u64 new_value = state_discarded_mask | (pending_lsn_count << nb_log_records_shift) | (log_id << log_id_shift);
       if (pending_lsn_count == 1) {
          new_value |= pending_lsn[0];
       } else {
@@ -92,12 +100,22 @@ struct PageState {
       }
       return true;
    }
-   void unlockClean(LID lsn) {
+   u32 getLogID()
+   {
+      // for now only accessed when the page is in discarded state
+      ensure(isDiscarded());
+      return (raw.load(std::memory_order_acquire) & log_id_mask) >> log_id_shift;
+   }
+   void unlockClean(LID lsn, u64 log_id) {
       ensure(lsn != INVALID_LSN);
       ensure((lsn & ~lsn_mask) == 0);
-      raw.store(lsn | state_clean_mask, std::memory_order_release);
+      ensure_lt(log_id, max_log_id);
+      raw.store(lsn | state_clean_mask | (log_id << log_id_shift), std::memory_order_release);
    }
-   void unlockBF(BufferFrame* bf) { raw.store(reinterpret_cast<u64>(bf) | state_hot_mask, std::memory_order_release); }
+   void unlockBF(BufferFrame* bf)
+   {
+      raw.store(reinterpret_cast<u64>(bf) | state_hot_mask, std::memory_order_release);
+   }
    void unlock()
    {
       ensure(isLocked());
@@ -105,6 +123,7 @@ struct PageState {
       raw.store(unlocked, std::memory_order_release);
    }
    void free() { raw.store(0, std::memory_order_release); }
+   LID asLSN() { return raw.load(std::memory_order_acquire) & lsn_mask; }
    // BufferFrame& asBufferFrame() { return *reinterpret_cast<BufferFrame*>(raw); }
    // -------------------------------------------------------------------------------------
    static std::string to_string(PAGE_STATE s);

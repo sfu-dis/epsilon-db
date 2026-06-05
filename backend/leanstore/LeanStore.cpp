@@ -125,6 +125,9 @@ LeanStore::LeanStore()
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "ru_epoch") {
       FLAGS_wal_partitions_count = max_open_ru_epochs + FLAGS_wal_sink_logs;
+      if (FLAGS_wal_partitions_count > 1023) {
+         SetupFailed("Too many RUs, please verify the size of the RU epoch");
+      }
       cout << "[INFO] number of Log partitions : " << FLAGS_wal_partitions_count << endl;
    }
    // -------------------------------------------------------------------------------------

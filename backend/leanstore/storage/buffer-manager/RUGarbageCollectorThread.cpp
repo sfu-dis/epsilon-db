@@ -236,7 +236,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       BufferFrame::Page* page = &buf_pages[idx];
       ensure_equal(page->magic_debugging_number, pid);
 
-      discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn);
+      discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page->ru_epoch));
 
       /// TODO(mfd) : Probably consider, considering the batch as happening always in
       /// the same ru epoch to reduce the number of atomic fetch add.
@@ -281,10 +281,10 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       for (ru_epoch_t gc_ru_epoch = tls_min_uncollected_ru_epoch; gc_ru_epoch < tls_max_collected_ru_epoch; gc_ru_epoch++) {
          if (!bg_threads_keep_running) break;
          current_gc_epoch = gc_ru_epoch;
-         s64 prev_gc_ru_epoch = current_gc_epoch - 1;
+         ru_epoch_t prev_gc_ru_epoch = current_gc_epoch - 1;
          auto& set = ru_discard_set[gc_ru_epoch];
          auto& logging = cr::LogManager::getLog(gc_ru_epoch);
-         u32 ru_usage_before_gc;
+         u32 currently_reclaiming_log_id = logging.log_id;
          set.m.lock();
          if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
             logging.mutex.lock();
@@ -304,9 +304,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             logging.mutex.unlock();
 
             ensure_equal(set.offset_batch.load(), 0);
-            ru_usage_before_gc = set.ReclaimUnitUsage();
             set.m.unlock();
-            const double threshold = ru_usage_before_gc * 100.0 / set.total.load(std::memory_order_relaxed);
+            const double threshold = set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed);
             LOG_INFO(logger, "Garbage collecting RU epoch %lu with threshold %.2f", gc_ru_epoch, threshold);
          } else {
             set.m.unlock();
@@ -403,6 +402,9 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   if (!discard_state[pid].isDiscarded()) {
                      // TODO(mfd) : It could be that the page now contains a buffer frame
                      // And I need to handle this case, seperately.
+                     continue;
+                  }
+                  if (discard_state[pid].getLogID() != currently_reclaiming_log_id) {
                      continue;
                   }
                   IOFrame& io_frame = partition.io_ht.insert(pid);
@@ -527,7 +529,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             if (FLAGS_wal && FLAGS_wal_pwrite) {
                cr::LogManager::global->resetLogSegment(current_gc_epoch);
             }
-            LOG_INFO(logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u -> %u", gc_ru_epoch, duration.count(), fixed_pages_in_ru, ru_usage_before_gc, ru_usage);
+            LOG_INFO(logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", gc_ru_epoch, duration.count(), fixed_pages_in_ru, ru_usage);
          }
          total_fixed = 0;
          while (set.done_gc.load() != FLAGS_ru_gc_threads) {

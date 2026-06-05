@@ -290,11 +290,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
             }
             bool success = false;
+            const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
             if (submitted_ppl) {
                to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.ppl.header.gsn, bf.page.last_written_lsn);
-               success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count);
+               success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count, log_id);
             } else {
-               success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count);
+               success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count, log_id);
             }
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
@@ -312,9 +313,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          } else {
             parent_handler.swip.evict(evicted_pid);
             if (FLAGS_enable_discarding) {
+               const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
                discard_state[evicted_pid].getLocked();
                ensure(discard_state[evicted_pid].isHot());
-               discard_state[evicted_pid].unlockClean(last_write_lsn);
+               discard_state[evicted_pid].unlockClean(last_write_lsn, log_id);
             }
          }
          // -------------------------------------------------------------------------------------
