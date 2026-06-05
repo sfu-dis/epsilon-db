@@ -341,20 +341,13 @@ void BufferManager::writeAllBufferFrames()
          bf.header.latch.mutex.unlock();
       }
    });
-   u64 e = ru_epoch.load(std::memory_order_acquire);
-   LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[e].total.load());
-   fprintf(stdout, "%lu\n", e);
+   ru_epoch_t newest_ru_epoch = ru_epoch.load(std::memory_order_acquire);
+   LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[newest_ru_epoch].total.load());
    ensure_equal(oldest_uncollected_ru_epoch, 0);
    ensure_equal(reclaimed_ru_epoch, -1);
-   persistant_ru_state->ru_epoch = e;
+   persistant_ru_state->ru_epoch = newest_ru_epoch;
    persistant_ru_state->oldest_active_ru_epoch = 0;
    persistant_ru_state->reclaimed_ru_epoch = -1;
-   for (u32 i = 0; i <= e; ++i) {
-      auto &set = ru_discard_set[i];
-      fprintf(stdout, "(%lu,%u,%u),", set.size(), set.invalid.load(), set.total.load());
-      persistant_ru_state->totals[i] = set.total.load();
-   }
-   fprintf(stdout, "\n");
    persistant_ru_state->writetoPersistantStorage();
 }
 // -------------------------------------------------------------------------------------

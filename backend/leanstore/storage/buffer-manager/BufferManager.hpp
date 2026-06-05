@@ -132,7 +132,6 @@ public:
    struct RUEpochDiscardSet {
       u32 id;
       instrumented_mutex m{"ru_discard_set"};
-      std::unordered_map<PID, LID> pids;
       void* mmaped_log = nullptr;
       u64 log_segment_start = -1;
       u64 log_segment_size = -1;
@@ -141,7 +140,7 @@ public:
       // -------------------------------------------------------------------------------------
       alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> deleted{0};
-      alignas(CACHE_LINE_SIZE) atomic<bool> is_garbage_collected{false};
+      alignas(CACHE_LINE_SIZE) atomic<bool> is_currently_being_garbage_collected{false};
       alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
       alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
@@ -152,12 +151,9 @@ public:
 
       void open(ru_epoch_t new_ru_epoch);
       void reset();
-      // Fails only when the RU epoch is being garbage collected
-      bool insert(PID pid, LID lsn);
-      LID erase(PID pid);
       u32 ReclaimUnitUsage();
       bool shouldGC();
-      u64 size();
+      void dump();
    };
    u64 persistant_ru_state_offset;
    struct alignas(4096) PersistantRUState {
@@ -195,13 +191,6 @@ public:
          ensure_equal(data[index % size].cur_ru_epoch, s64(index));
          return data[index % size];
       }
-      /**
-      This is used to avoid the case where the set being reclaimed while we are
-      accessing it. If this is the case, we return nullptr so that method that rely
-      on optimistically assuming the ru_epoch is active need to retry.
-      If this is not the case, then use the overloaded bracket operator above.
-      */
-      RUEpochDiscardSet *getSetLockedCanFail(s64 ru_epoch, bool try_lock_or_fail);
    };
    RUEpochsState ru_discard_set;
    // -------------------------------------------------------------------------------------

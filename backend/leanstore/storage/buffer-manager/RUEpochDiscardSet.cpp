@@ -1,7 +1,6 @@
 #include "BufferManager.hpp"
 #include "leanstore/utils/Misc.hpp"
 
-
 namespace leanstore
 {
 namespace storage
@@ -15,16 +14,17 @@ void BufferManager::RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
    cur_ru_epoch = new_ru_epoch;
    active.store(true);
 }
+// -------------------------------------------------------------------------------------
+// Responsability of the caller to acquire the set lock
 void BufferManager::RUEpochDiscardSet::reset()
 {
-   ensure_equal(pids.size(), 0);
-   ensure(FLAGS_enable_discarding || is_garbage_collected == true);
+   ensure(FLAGS_enable_discarding || is_currently_being_garbage_collected.load() == true);
    ensure_equal(done_gc, 0);
    ensure(force_gc == false);
    offset_batch = 0;
    inserted = 0;
    deleted = 0;
-   is_garbage_collected = false;
+   is_currently_being_garbage_collected = false;
    total = 0;
    invalid = 0;
    done_gc = FLAGS_ru_gc_threads;
@@ -36,32 +36,32 @@ void BufferManager::RUEpochDiscardSet::reset()
    BMC::global_bf->reclaimed_ru_epoch.fetch_add(1);
 }
 // -------------------------------------------------------------------------------------
-u64 BufferManager::RUEpochDiscardSet::size()
+void BufferManager::RUEpochDiscardSet::dump()
 {
-   std::lock_guard<instrumented_mutex> _l(m);
-   return pids.size();
-}
-// -------------------------------------------------------------------------------------
-// Responsability of the caller to acquire the set lock
-bool BufferManager::RUEpochDiscardSet::insert(PID pid, LID lsn)
-{
-   if (cur_ru_epoch <= BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire)) {
-      return false;
-   }
-   bool ok = pids.insert({pid, lsn}).second;
-   ensure(ok);
-   inserted.fetch_add(1, std::memory_order_relaxed);
-   return true;
-}
-// -------------------------------------------------------------------------------------
-// Responsability of the caller to acquire the set lock
-LID BufferManager::RUEpochDiscardSet::erase(PID pid)
-{
-   if (pids.count(pid) == 0) return INEXISTANT_LSN;
-   LID lsn = pids[pid];
-   pids.erase(pid);
-   deleted.fetch_add(1, std::memory_order_relaxed);
-   return lsn;
+   cout << "===== RUEpochDiscardSet =====" << endl;
+   cout << "id: " << id << endl;
+
+   cout << "mmaped_log: " << mmaped_log << endl;
+   cout << "log_segment_start: " << log_segment_start << endl;
+   cout << "log_segment_size: " << log_segment_size << endl;
+
+   cout << "force_gc: " << (force_gc ? "true" : "false") << endl;
+
+   cout << "offset_batch: " << offset_batch.load() << endl;
+
+   cout << "inserted: " << inserted.load() << endl;
+   cout << "deleted: " << deleted.load() << endl;
+   cout << "is_currently_being_garbage_collected: " << (is_currently_being_garbage_collected.load() ? "true" : "false") << endl;
+
+   cout << "total: " << total.load() << endl;
+   cout << "invalid: " << invalid.load() << endl;
+   cout << "done_gc: " << done_gc.load() << endl;
+   cout << "total_fixed: " << total_fixed.load() << endl;
+
+   cout << "cur_ru_epoch: " << cur_ru_epoch << endl;
+   cout << "active: " << (active.load() ? "true" : "false") << endl;
+
+   cout << "=============================" << endl;
 }
 // -------------------------------------------------------------------------------------
 u32 BufferManager::RUEpochDiscardSet::ReclaimUnitUsage()
@@ -81,12 +81,12 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
    s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
    s32 i = invalid.load(std::memory_order_acquire);
    s32 tot = total.load(std::memory_order_acquire);
-   double per = (i+d) * 1.0f / tot;
+   double per = (i + d) * 1.0f / tot;
    bool ok = false;
    if (force_gc) {
       printf("[WARN] Forcing GC \n");
       force_gc = false;
-      ok =  true;
+      ok = true;
    } else {
       ok = per > FLAGS_ru_gc_threshold;
    }
@@ -96,27 +96,7 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
    return ok;
 }
 // -------------------------------------------------------------------------------------
-BufferManager::RUEpochDiscardSet *BufferManager::RUEpochsState::getSetLockedCanFail(s64 ru_epoch, bool try_lock_or_fail)
-{
-   ensure(ru_epoch != -1);
-   auto* set = &data[ru_epoch % size];
-   if (try_lock_or_fail) {
-      if (!set->m.try_lock()) {
-         return nullptr;
-      }
-   } else {
-      set->m.lock();
-   }
-   if (set->cur_ru_epoch != ru_epoch
-       || ru_epoch <= BMC::global_bf->reclaimed_ru_epoch.load(std::memory_order_acquire)) {
-      set->m.unlock();
-      return nullptr;
-   }
-   return set;
-}
-// -------------------------------------------------------------------------------------
-BufferManager::PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) :
-   max_open_ru_epochs(max_open_ru_epochs) {}
+BufferManager::PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) : max_open_ru_epochs(max_open_ru_epochs) {}
 // -------------------------------------------------------------------------------------
 void BufferManager::PersistantRUState::loadFromPersistantStorage()
 {
@@ -132,5 +112,5 @@ void BufferManager::PersistantRUState::writetoPersistantStorage()
    ensure_equal(ret, s64(sz));
 }
 // -------------------------------------------------------------------------------------
-} // namespace storage
-} // namespace leanstore
+}  // namespace storage
+}  // namespace leanstore

@@ -286,13 +286,11 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          auto& logging = cr::LogManager::getLog(gc_ru_epoch);
          u32 currently_reclaiming_log_id = logging.log_id;
          set.m.lock();
-         if (!set.is_garbage_collected.exchange(true, std::memory_order_release)) {
+         if (!set.is_currently_being_garbage_collected.exchange(true, std::memory_order_release)) {
             logging.mutex.lock();
             // makes sure not log records will appear in this log in the future.
             bool ok = reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, current_gc_epoch);
             ensure(ok);
-            u64 to_gc_pages = set.pids.size();
-            ensure_equal(set.pids.size(), 0);
 
             set.mmaped_log = mmap(nullptr, logging.wal_lsn_counter, PROT_READ, MAP_PRIVATE, log_fd, logging.log_segment_start);
             if (set.mmaped_log == MAP_FAILED) {
