@@ -352,6 +352,10 @@ void BufferManager::writeAllBufferFrames()
    persistant_ru_state->ru_epoch = newest_ru_epoch;
    persistant_ru_state->oldest_active_ru_epoch = 0;
    persistant_ru_state->reclaimed_ru_epoch = -1;
+   for (ru_epoch_t e = 0; e <= newest_ru_epoch; ++e) {
+      auto &set = ru_discard_set[e];
+      persistant_ru_state->totals[e] = set.total.load();
+   }
    persistant_ru_state->writetoPersistantStorage();
 }
 // -------------------------------------------------------------------------------------
