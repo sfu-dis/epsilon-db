@@ -36,6 +36,7 @@ force_no_stats_dir=0
 load_only=0
 run_only=0
 description=0
+override_stats_dir=0
 
 original_args=("$@")
 
@@ -115,6 +116,10 @@ while [[ $# -gt 0 ]]; do
            ;;
         --description)
            description=1
+           shift 1
+           ;;
+        --override_stats_dir)
+           override_stats_dir=1
            shift 1
            ;;
         *)
@@ -255,13 +260,14 @@ fi
 
 
 # if (( 0 )); then
-if [[ -d "$dir_name" && "$stats_dir" -eq 1 ]]; then
+if [[ -d "$dir_name" && "$stats_dir" -eq 1 && "$override_stats_dir" -eq 0 ]]; then
     echo "Directory Already Exists. Are you sure, you want to override those results ?"
     read -p "Override previous results [y/N]: " answer
 
     case "$answer" in
         [Yy]* )
             echo "Overriding existing results..."
+            rm -rf "${dir_name}"
             ;;
         * )
             echo "Aborting."
@@ -282,15 +288,20 @@ if (( stats_dir == 1)); then
 fi
 
 passwd=""
+fdp=0
 waf() {
    # echo "Background WAF sampling process: starting"
-   while true; do
-      wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
-      echo "${wafstr}"
-      echo "${wafstr}" | awk '/(HBMW)/ {hbmw = $7} /(MBMW)/ {mbmw = $7} END {if (hbmw == 0) print 0; else print mbmw / hbmw}'
-      echo "${wafstr}" | awk '/(HBMW)/ {hbmw= $7} /(MBMW)/ {mbmw = $7} END {print mbmw-hbmw}'
-      sleep 600s
-   done;
+   if (( fdp == 1 )); then
+      while true; do
+         wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
+         echo "${wafstr}"
+         echo "${wafstr}" | awk '/(HBMW)/ {hbmw = $7} /(MBMW)/ {mbmw = $7} END {if (hbmw == 0) print 0; else print mbmw / hbmw}'
+         echo "${wafstr}" | awk '/(HBMW)/ {hbmw= $7} /(MBMW)/ {mbmw = $7} END {print mbmw-hbmw}'
+         sleep 600s
+      done;
+   else
+     sudo bash ${SRC_DIR}/scripts/calcssdwaf.sh ${dir_name}/detailed_waf "${device}"
+   fi
 }
 
 load_flags="load.gflag"
@@ -387,11 +398,22 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo bash "$0" "$original_args"
 fi
 
-# TODO(mfd) : Take the controller name from the device name
+# Get controller device by removing 'n' and digits after it
+controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
+
+sanitize_nvme() {
+    echo "sanitize"
+    sudo nvme sanitize --sanact=2 "${device}"
+    sleep 1m
+    sudo nvme sanitize-log "${controller}"
+    sleep 1m
+    sudo blkdiscard -v "${device}"
+    sleep 1m
+}
+
 if (( trim == 1)); then
    echo "Trimmimg the device"
-   # bash /home/mfd4/fdp/reset-single-ns.sh --dev /dev/nvme0
-   bash ${DEVICE_RESET_SCRIPT} --dev /dev/nvme0
+   sanitize_nvme
 fi
 
 make -j 10
@@ -418,22 +440,22 @@ fi
 
 shutdown() {
     echo "stopping background waf calculator job..."
+    set +x
 
     if (( stats_dir == 1)); then
        cp log_bm.csv ${dir_name}
        cp log_cr.csv ${dir_name}
-       kill "$waf_pid" 2>/dev/null
+       cp absorbed_writes_histogram.txt ${dir_name}
+       pkill -TERM -P "$waf_pid" 2>/dev/null
+       kill $waf_pid 2>/dev/null
        wait "$waf_pid"
     fi
-    # if dry run remove the stats dir.
-    # if (( dry_run )); then
-    #    rm -r "$dir_name"
-    # fi
     exit 0
 }
 
 trap shutdown INT
 trap shutdown EXIT
+trap shutdown TERM
 
 PREFIX=
 if (( gdb == 1 )); then
