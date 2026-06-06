@@ -56,6 +56,10 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
       madvise(bfs, dram_total_size, MADV_HUGEPAGE);
       madvise(bfs, dram_total_size,
               MADV_DONTFORK);  // O_DIRECT does not work with forking.
+      if (mlock(big_memory_chunk, dram_total_size) == -1) {
+         perror("mlock");
+         SetupFailed("Cannot prefault the buffer pool, do you have enough memory?");
+      }
       // -------------------------------------------------------------------------------------
       if (FLAGS_enable_discarding) {
          void *entries_p = mmap(nullptr, total_blocks_in_ssd * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
