@@ -389,6 +389,7 @@ LeanStore::~LeanStore()
       }
    }
    // -------------------------------------------------------------------------------------
+   buffer_manager->stopBackgroundThreads();
    bg_threads_keep_running = false;
    while (bg_threads_counter) {
    }

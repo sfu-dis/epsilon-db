@@ -973,13 +973,24 @@ Partition& BufferManager::getPartition(PID pid)
 void BufferManager::stopBackgroundThreads()
 {
    bg_threads_keep_running = false;
+   LOG_INFO(logger, "Shutting down...");
+   while (pp_threads_counter) {
+   }
+   LOG_INFO(logger, "All page provider threads shutted down successfully.");
+   while (gc_threads_counter) {
+   }
+   LOG_INFO(logger, "All background page fixer threads shutted down successfully.");
    while (bg_threads_counter) {
    }
+   LOG_INFO(logger, "All background threads shutted down successfully.");
 }
 // -------------------------------------------------------------------------------------
 BufferManager::~BufferManager()
 {
-   stopBackgroundThreads();
+   ensure_equal(bg_threads_keep_running.load(), false);
+   ensure_equal(pp_threads_counter.load(), 0);
+   ensure_equal(gc_threads_counter.load(), 0);
+   ensure_equal(bg_threads_counter.load(), 0);
    // -------------------------------------------------------------------------------------
    const u64 dram_total_size = sizeof(BufferFrame) * (dram_pool_size + safety_pages);
    munmap(bfs, dram_total_size);
