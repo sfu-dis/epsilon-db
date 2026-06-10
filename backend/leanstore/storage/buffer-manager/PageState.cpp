@@ -13,8 +13,9 @@ u64 PageState::lock()
 retry:
    // if (attempts++ > 16) sched_yield();
    if ((++attempts % 1073741824) == 0) {
-      printf("[WARN] suspect deadlock, stuck in lock() for %lu iterations, locked(%lu)\n", attempts, locked);
+      printf("\n[WARN] suspect deadlock, stuck in lock() for %lu iterations, locked(%lu)\n", attempts, locked);
       dump();
+      print_backtrace();
       __asm__ volatile("int3");
    }
    u64 v1 = raw.load(std::memory_order_acquire);

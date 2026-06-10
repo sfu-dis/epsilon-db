@@ -288,9 +288,23 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          set.m.lock();
          if (!set.is_currently_being_garbage_collected.exchange(true, std::memory_order_release)) {
             logging.mutex.lock();
-            // makes sure not log records will appear in this log in the future.
+            // makes sure not log records or holes will appear in this log in the future.
             bool ok = reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, current_gc_epoch);
             ensure(ok);
+
+            // wait until all holes in the log buffer are filled.
+            logging.drain_holes();
+
+            // wait until the Group Committed thread persists the new log records.
+            u64 stuck_counter = 0;
+            while (logging.wal_gct_cursor.load(std::memory_order_acquire) != logging.wal_log_cursor) {
+               _mm_pause();
+               if (++stuck_counter == 16ull * 1073741824ull) {
+                  LOG_ERROR(logger, "Log buffer was not persisted by the GCT, something is wrong\n");
+                  print_backtrace();
+                  ensure(false);
+               }
+            }
 
             set.mmaped_log = mmap(nullptr, logging.wal_lsn_counter, PROT_READ, MAP_PRIVATE, log_fd, logging.log_segment_start);
             if (set.mmaped_log == MAP_FAILED) {

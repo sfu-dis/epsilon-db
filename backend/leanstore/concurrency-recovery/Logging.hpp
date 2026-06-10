@@ -109,6 +109,34 @@ struct Logging {
       wt_to_lw.pushSync(wt2gct);
    }
    // -------------------------------------------------------------------------------------
+   // log buffer mutex is held during this call and no new holes can appear.
+   // This will wait for all holes in the log buffer to be filled.
+   void drain_holes()
+   {
+      if (holes.empty()) {
+         LOG_INFO(LogManager::global->logger, "Log buffer does not contain any hole");
+         return;
+      }
+      u64 stuck_counter = 0;
+      u64 drained_holes_count = 0;
+      auto wt2gct = wt_to_lw.getNoSync();
+      for (auto it = holes.begin(); it != holes.end(); ++it) {
+         while (it->isLocked()) {
+            _mm_pause();
+            if (++stuck_counter == 1073741824) {
+               LOG_ERROR(LogManager::global->logger, "Deadlock detected in drain_holes");
+               print_backtrace();
+               ensure(false);
+            }
+         }
+         wt2gct.wal_written_offset = it->log_buffer_offset.load(std::memory_order_relaxed);
+         wt2gct.last_gsn = it->gsn;
+         ++drained_holes_count;
+      }
+      wt_to_lw.pushSync(wt2gct);
+      LOG_INFO(LogManager::global->logger, "Done, drained %lu holes", drained_holes_count);
+   }
+   // -------------------------------------------------------------------------------------
    template <typename T>
    class WALEntryHandler
    {
@@ -206,10 +234,18 @@ struct Logging {
          wal_lsn_counter += requested_size;
       }
       ensure(walContiguousFreeSpace() >= requested_size);
+      // XXX(mfd): This is an "unwanted" byproduct of static partitioning the log device into
+      //  a fixed set of log segments. If more traffic goes to a single log segment than we
+      //   close it and disable discarding of the corresponding ru epoch.
+      //    All previous WAL traffic is now redirected to the sink logs.
       if (!is_sink_log && (logSegmentFreeSpace() <= FLAGS_wal_buffer_size)) {
          redirect_to_sink_log.store(true, std::memory_order_release);
+         // need to drain all holes here.
+         drain_holes();
+         // After draining all holes, no more log records will appear in this log until it is reclaimed.
          // TODO(mfd) : Optinally just garbage collect the corresponding RU epoch.
-         printf("[INFO] Log %u is full, disable discarding for it and redirect the log entries to sink logs\n", log_id);
+         LOG_WARN(LogManager::global->logger, "Log %u is full, disable discarding for it and redirect the log entries to sink logs", log_id);
+
       }
       return lsn;
    }
