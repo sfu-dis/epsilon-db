@@ -6,7 +6,14 @@
 // -------------------------------------------------------------------------------------
 #include "leanstore/profiling/counters/GCCounters.hpp"
 // -------------------------------------------------------------------------------------
+#include "leanstore/utils/CrashLogger.hpp"
+// -------------------------------------------------------------------------------------
 #include <liburing.h>
+// -------------------------------------------------------------------------------------
+/** Used as a sanity check. It traverses the log records of a page from the last LSN applied
+ to a page following a prev_lsn pointer. The prev_lsn of the log record that first made
+ the page dirty is a special NULL lsn (INVALID_LSN). */
+#define DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE 0
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -45,17 +52,12 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    pthread_setname_np(pthread_self(), gc_thread_name.c_str());
    // FIXME(mfd): Temporely set it large enough
    const u32 batch_size = 256;
-   void* buf;
-   s64 current_gc_epoch = -1;
+   ru_epoch_t current_gc_epoch = -1;
 
    gc_threads_counter++;
    bg_threads_counter++;
-   if (posix_memalign(&buf, 4096, batch_size * PAGE_SIZE) != 0) {
-      printf("posix_memalign failed !!");
-      raise(SIGTRAP);
-   }
 
-   BufferFrame::Page* buf_pages = reinterpret_cast<BufferFrame::Page*>(buf);
+   BufferFrame::Page buf_pages[batch_size];
 
    u8* log_records = nullptr;
    u64 cur_log_segment_start = -1;
@@ -77,6 +79,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
    u64 actually_fixed = 0;
    u64 total_fixed = 0;
+   [[maybe_unused]] u32 absorbed_writes = 0;
 
    auto fix_page_cb = [&](struct io_uring_cqe* cqe) {
       ensure_equal(cqe->res, PAGE_SIZE);
@@ -91,8 +94,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       if (page->ru_epoch != current_gc_epoch) {
          // This means that the page was written back in a new RU epoch
          // and got discarded. Unlock and leave state as is.
-         // XXX(mfd) : This may cause workers to block unnecessarily.
-         // Measure how frequent is that.
          ensure_lt(current_gc_epoch, page->ru_epoch);
          discard_state[fixed_pid].unlock();
          // Clear up the IO Frame and unlock it so that the workers could retry
@@ -122,30 +123,27 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       }
 
       LID lsn = last_lsn;
-      std::vector<cr::WALEntry*> to_apply_log_records_stack;
+      std::vector<cr::WALEntry*> to_apply_log_records;
       ensure(lsn != INVALID_LSN);
 
-      int i = to_fix_pids[idx].nb_log_records - 1;
-      ensure(to_fix_pids[idx].nb_log_records > 0);
+     const auto& page_to_fix_info = to_fix_pids[idx];
+
+#if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
+      ensure(page_to_fix_info.nb_log_records > 0);
       while (lsn != INVALID_LSN) {
          ensure_lte(cur_log_segment_start, lsn);
          u64 off = lsn - cur_log_segment_start;
          auto* entry = reinterpret_cast<cr::WALEntry*>(&log_records[off]);
-         auto* dte = reinterpret_cast<cr::WALDTEntry*>(entry);
 
          bool ok = logRecordSanityCheck(entry, *page, lsn);
          ensure(ok);
 
-         if (to_fix_pids[idx].lsn_list[i] == lsn) {
-            i--;
-            to_apply_log_records_stack.push_back(entry);
-            if (i < 0) break;
-         }
+         to_apply_log_records.push_back(entry);
 
-         if (to_apply_log_records_stack.size() > FLAGS_max_log_records_to_discard) {
-            printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
+         if (to_apply_log_records.size() > FLAGS_max_log_records_to_discard) {
+            printf("[ERR] Number of logs to apply in the global state : %u\n", page_to_fix_info.nb_log_records);
             printf("[ERR] curr lsn = %lu, prev lsn = %lu, lseg start lsn %lu\n", lsn, entry->prev_lsn, cur_log_segment_start);
-            for (const auto& e : to_apply_log_records_stack) {
+            for (const auto& e : to_apply_log_records) {
                reinterpret_cast<cr::WALDTEntry*>(e)->dump();
             }
             page->dump();
@@ -153,68 +151,79 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             printf("[ERR] Total Fixed %lu \n", total_fixed);
          }
 
-         ensure(to_apply_log_records_stack.size() <= FLAGS_max_log_records_to_discard);
+         ensure(to_apply_log_records.size() <= FLAGS_max_log_records_to_discard);
          lsn = entry->prev_lsn;
       }
-      // ensure_equal_goto_fail(i, u8(-1));
-
-      u64 to_apply_log_records = to_apply_log_records_stack.size();
-
-      ensure(to_apply_log_records != 0);
+      std::reverse(to_apply_log_records.begin(), to_apply_log_records.end());
       // Sanity checks.
-      ensure_equal_goto_fail(to_apply_log_records, to_fix_pids[idx].nb_log_records);
-      for (u64 i = 0; i < to_apply_log_records; ++i) {
-         ensure_equal_goto_fail(to_apply_log_records_stack[i]->lsn, to_fix_pids[idx].lsn_list[to_apply_log_records - 1 - i]);
+      ensure(!to_apply_log_records.empty());
+      ensure_equal_goto_fail(to_apply_log_records.size(), to_fix_pids[idx].nb_log_records);
+      for (u8 i = 0; i < to_apply_log_records.size(); ++i) {
+         ensure_equal_goto_fail(to_apply_log_records[i]->lsn, page_to_fix_info.lsn_list[i]);
       }
 
-      if (to_apply_log_records > 1)
-         randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records);
+#else
+      for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
+         LID lsn = page_to_fix_info.lsn_list[i];
+         u64 off = lsn - cur_log_segment_start;
+         auto* entry = reinterpret_cast<cr::WALEntry*>(&log_records[off]);
 
-      if (to_apply_log_records > 0) {
-         [[maybe_unused]] u32 absorbed_writes = 0;
-         for (u64 i = to_apply_log_records; i != 0; --i) {
-            if (to_apply_log_records_stack[i-1]->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
-               auto* ppl = reinterpret_cast<BufferFrame::PPL*>(to_apply_log_records_stack[i-1]);
-               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
-               absorbed_writes += ppl->absorbed_writes;
-            } else {
-               auto* dte = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[i-1]);
-               DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload, 1, dte->size - sizeof(cr::WALDTEntry));
-               absorbed_writes += 1;
-            }
-         }
+         bool ok = logRecordSanityCheck(entry, *page, lsn);
+         ensure(ok);
 
-         COUNTERS_BLOCK(absorbed_writes_histogram)
-         {
-            absorbed_writes = std::min<u32>(absorbed_writes, 63);
-            GCCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
+         to_apply_log_records.push_back(entry);
+      }
+#endif
+
+
+      for (const auto& log_record: to_apply_log_records) {
+         if (log_record->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
+            auto* ppl = reinterpret_cast<BufferFrame::PPL*>(log_record);
+            DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, ppl->log_records, ppl->nb_log_records, ppl->payload_size());
+            absorbed_writes += ppl->absorbed_writes;
+         } else {
+            auto* dte = reinterpret_cast<cr::WALDTEntry*>(log_record);
+            DTRegistry::global_dt_registry.redo(page->dt_id, page->dt, dte->payload, 1, dte->size - sizeof(cr::WALDTEntry));
+            absorbed_writes += 1;
          }
       }
 
+      COUNTERS_BLOCK(absorbed_writes_histogram)
+      {
+         absorbed_writes = std::min<u32>(absorbed_writes, 63);
+         GCCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
+      }
 
-      ++actually_fixed;
-      page->PLSN += to_apply_log_records;
+      page->PLSN += to_apply_log_records.size();
       page->last_written_lsn = last_lsn;
-      page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records_stack[0])->gsn;
+      page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records.back())->gsn;
       page->prev_ru_epoch = page->ru_epoch;
       page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
-      total_fixed++;    // Just for debugging
 
+      // Just for debugging
+      ++total_fixed;
+      ++actually_fixed;
+
+      if (to_apply_log_records.size() > 1)
+         randomAllocator().free(to_fix_pids[idx].lsn_list, to_apply_log_records.size());
+
+#if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
       goto success;
 
    fail:
-      printf("[ERR] Number of logs to apply in the global state : %u\n", to_fix_pids[idx].nb_log_records);
-      // printf("[ERR] curr lsn = %lu, prev lsn = %lu, lseg start lsn %lu\n", lsn, entry->prev_lsn, cur_log_segment_start);
-      for (const auto& e : to_apply_log_records_stack) {
+      printf("[ERR] Number of logs to apply in the global state : %u\n", page_to_fix_info.nb_log_records);
+      for (const auto& e : to_apply_log_records) {
          reinterpret_cast<cr::WALDTEntry*>(e)->dump();
       }
       page->dump();
       discard_state[fixed_pid].dump();
       printf("[ERR] Total Fixed %lu \n", total_fixed);
-      to_fix_pids[idx].dump();
+      page_to_fix_info.dump();
       __asm__ volatile("int3");
 
    success:
+
+#endif
       struct io_uring_sqe* sqe = io_uring_get_sqe(&w_ring);
       ensure(sqe != nullptr);
       io_uring_prep_write(sqe, ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE);
@@ -224,11 +233,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       ensure(s == 1);
    };
 
-   auto ack_fixed_page = [this, buf_pages, &to_fix_pids](struct io_uring_cqe* cqe) {
-      // get the frame and the pid of the fixed page
-      // make sure the write has succesfully completed.
-      // For now just assert it.
-      // If the write fails, I think it is safe to just return it to the set.
+   auto ack_fixed_page = [this, &buf_pages, &to_fix_pids](struct io_uring_cqe* cqe) {
       ensure(cqe->res == PAGE_SIZE);
       u64 data = io_uring_cqe_get_data64(cqe);
       PID pid = data & 0x0000FFFFFFFFFFFF;
@@ -238,9 +243,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
       discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page->ru_epoch));
 
-      /// TODO(mfd) : Probably consider, considering the batch as happening always in
-      /// the same ru epoch to reduce the number of atomic fetch add.
-      /// Do we need to update the invalid count of the previous epoch ?
       ru_discard_set[page->ru_epoch].total.fetch_add(1, std::memory_order_acq_rel);
 
       Partition& partition = getPartition(pid);
@@ -299,11 +301,13 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             u64 stuck_counter = 0;
             while (logging.wal_gct_cursor.load(std::memory_order_acquire) != logging.wal_log_cursor) {
                _mm_pause();
-               if (++stuck_counter == 16ull * 1073741824ull) {
+               if (++stuck_counter == u64(65536)) {
                   LOG_ERROR(logger, "Log buffer was not persisted by the GCT, something is wrong\n");
                   print_backtrace();
                   ensure(false);
                }
+               // We're waiting for a single write IO to the log device.
+               std::this_thread::sleep_for(std::chrono::microseconds(100));
             }
 
             set.mmaped_log = mmap(nullptr, logging.wal_lsn_counter, PROT_READ, MAP_PRIVATE, log_fd, logging.log_segment_start);
@@ -318,7 +322,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             ensure_equal(set.offset_batch.load(), 0);
             set.m.unlock();
             const double threshold = set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed);
-            LOG_INFO(logger, "Garbage collecting RU epoch %lu with threshold %.2f", gc_ru_epoch, threshold);
+            const s32 discarded_pages = set.inserted.load(std::memory_order_relaxed) - set.deleted.load(std::memory_order_relaxed);
+            LOG_INFO(logger, "Garbage collecting RU epoch %lu with threshold %.2f: upper bound on pages to fix %d, log size to scan %lu", current_gc_epoch, threshold, discarded_pages, set.log_segment_size);
          } else {
             set.m.unlock();
          }
@@ -329,14 +334,17 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          cur_log_segment_start = set.log_segment_start;
          u64 cur_log_segment_size = set.log_segment_size;
 
-         while (offset < cur_log_segment_size) {
+         cr::WALEntry *last_entry = nullptr;
+
+         while (offset + sizeof(cr::WALEntry) < cur_log_segment_size) {
             u64 pages_to_fix = 0;
             u64 submitted = 0;
             actually_fixed = 0;
             offset = set.offset_batch.fetch_add(4096);
             u64 fix_up_to = std::min<u64>(offset + 4096, cur_log_segment_size);
-            while (offset < fix_up_to) {
+            while (offset + sizeof(cr::WALEntry) < fix_up_to) {
                cr::WALEntry& entry = *reinterpret_cast<cr::WALEntry*>(&log_records[offset]);
+               last_entry = &entry;
 
                if (entry.type == cr::WALDTEntry::TYPE::SKIP) {
                   offset = utils::upAlign(offset, 4096);
@@ -349,8 +357,41 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   continue;
                }
 
+               if (!((entry.type == cr::WALDTEntry::TYPE::DT_SPECIFIC)
+                      || (entry.type == cr::WALDTEntry::TYPE::PER_PAGE_DT_SPECIFIC))) {
+                   /******************* CRASH Debugging *********************/
+                   auto crash_logger = utils::CrashLogger("crash.log." + to_string(gc_id));
+                   cerr << "type : " << +static_cast<u8>(entry.type) << endl;
+                   cerr << "offset : " << offset-entry.size << endl;
+                   cerr << "next offset : " << offset << endl;
+                   cerr << "Cur Log ID : " << currently_reclaiming_log_id << endl;
+                   cerr << "cureent log segment size : " << cur_log_segment_size << endl;
+                   if (last_entry != nullptr) {
+                      if ((last_entry->type == cr::WALDTEntry::TYPE::DT_SPECIFIC)
+                          || (last_entry->type == cr::WALDTEntry::TYPE::PER_PAGE_DT_SPECIFIC)) {
+                         reinterpret_cast<cr::WALDTEntry*>(last_entry)->dump();
+                      } else {
+                         last_entry->dump();
+                      }
+
+                   } else {
+                      cerr << "First Entry" << endl;
+                   }
+                   u64 off = offset - (offset % 4096);
+                   off = std::min(off, off - 4096);
+                   while (off < offset) {
+                     cr::WALEntry& dentry = *reinterpret_cast<cr::WALEntry*>(&log_records[off]);
+                     dentry.dump();
+                     if (dentry.type == cr::WALDTEntry::TYPE::SKIP) {
+                        off = utils::upAlign(off, 4096);
+                        continue;
+                     }
+                     off += dentry.size;
+                   }
+               }
                ensure((entry.type == cr::WALDTEntry::TYPE::DT_SPECIFIC)
-                      || (entry.type == cr::WALDTEntry::TYPE::PER_PAGE_DT_SPECIFIC));
+                     || (entry.type == cr::WALDTEntry::TYPE::PER_PAGE_DT_SPECIFIC));
+
                // Hacky to interpret the PPL as a WALDTEntry
                auto& dte = *reinterpret_cast<cr::WALDTEntry*>(&entry);
 
@@ -359,16 +400,20 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   continue;
                }
 
-               PID pid = dte.pid;
+               const PID pid = dte.pid;
                auto& page_state = discard_state[pid];
 
+               // It is safe to continue if the page is clean. In fact, from a clean state the page
+               // can only concurrently move to a cached state (in the buffer pool). It cannot get
+               // concurrently discarded again because pages that are belonging to an ru_epoch older
+               // or equal to the currently reclaiming ru do not get evicted.
+               // It is also possible that the page is clean but in a newer RU. In that case the page
+               // can get discarded and we will double check for that after acquiring the latching the page state.
                if (page_state.isClean()) {
-                  COUNTERS_BLOCK(gc)
-                  {
-                     GCCounters::myCounters().clean++;
-                  }
+                  COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
                   continue;
                }
+
                // if state is a buffer frame, Issue the write to that page.
                // Make sure the page in the same RU epoch that we're garbage collecting.
                // Keep this step synchronous for now.
@@ -422,6 +467,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   IOFrame& io_frame = partition.io_ht.insert(pid);
                   io_frame.readers_counter = 1;
                   io_frame.state = IOFrame::STATE::READING;
+                  io_frame.inserted_by_bg_page_fixer = true;
 
                   bool ok = io_frame.mutex.try_lock();
                   ensure(ok);
@@ -465,10 +511,12 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             ensure_equal(submitted, pages_to_fix);
             ensure_equal(pages_to_fix, to_fix_pids.size());
             if (pages_to_fix > 0) {
+               COUNTERS_BLOCK(gc) { GCCounters::myCounters().pages_read += pages_to_fix; }
                u32 ready = io_uring_peek_batch_cqe(&r_ring, cqes.get(), pages_to_fix);
                for (u32 i = 0; i < ready; ++i) {
                   fix_page_cb(cqes[i]);
                }
+               // Submit to the w_ring
                if (ready > 0)
                   io_uring_cq_advance(&r_ring, ready);
                // Wait for the remaining part, and do the same thing.
@@ -524,15 +572,15 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
          set.total_fixed.fetch_add(total_fixed);
          if (set.done_gc.fetch_sub(1) == 1) {
-            s64 old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
-            s64 new_re = old_re + 1;
+            ru_epoch_t old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
+            ru_epoch_t new_re = old_re + 1;
             ensure_equal(new_re, current_gc_epoch);
             auto& logging = cr::LogManager::getLog(current_gc_epoch);
-            u32 ru_usage = set.ReclaimUnitUsage();
+            const u32 ru_usage = set.ReclaimUnitUsage();
             bm_stats.estimated_gc_writes.fetch_add(set.total.load() - ru_usage);
-            u64 fixed_pages_in_ru = set.total_fixed.load();
+            const u64 fixed_pages_in_ru = set.total_fixed.load();
             set.m.lock();
-            int rc = munmap(set.mmaped_log, cur_log_segment_size);
+            const int rc = munmap(set.mmaped_log, cur_log_segment_size);
             ensure_equal(rc, 0);
             set.mmaped_log = nullptr;
             set.reset();
@@ -541,7 +589,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             if (FLAGS_wal && FLAGS_wal_pwrite) {
                cr::LogManager::global->resetLogSegment(current_gc_epoch);
             }
-            LOG_INFO(logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", gc_ru_epoch, duration.count(), fixed_pages_in_ru, ru_usage);
+            LOG_INFO(logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", current_gc_epoch, duration.count(), fixed_pages_in_ru, ru_usage);
          }
          total_fixed = 0;
          while (set.done_gc.load() != FLAGS_ru_gc_threads) {

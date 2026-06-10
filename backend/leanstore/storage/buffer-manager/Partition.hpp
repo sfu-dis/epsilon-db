@@ -26,6 +26,7 @@ struct IOFrame {
    std::mutex mutex;
    STATE state = STATE::UNDEFINED;
    BufferFrame* bf = nullptr;
+   bool inserted_by_bg_page_fixer = false;
    // -------------------------------------------------------------------------------------
    // Everything in CIOFrame is protected by partition lock
    // except the following counter which is decremented outside to determine

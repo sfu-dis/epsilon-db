@@ -154,6 +154,9 @@ void BMTable::open()
    columns.emplace("gc_fixed_mib", [&](Column& col) {
       col << (sum(GCCounters::gc_counters, &GCCounters::total_fixed) * PAGE_SIZE / 1024.0 / 1024.0);
    });
+   columns.emplace("gc_read_mib", [&](Column& col) {
+      col << (sum(GCCounters::gc_counters, &GCCounters::pages_read) * PAGE_SIZE / 1024.0 / 1024.0);
+   });
    columns.emplace("fasle_dirty", [&](Column& col) {
       col << sum(GCCounters::gc_counters, &GCCounters::dirty_in_other_ru_epoch);
    });
