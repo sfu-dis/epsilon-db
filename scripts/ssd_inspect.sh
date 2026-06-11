@@ -1,12 +1,12 @@
 #!/bin/bash
 
-DEVICES=("/dev/nvme2n1" )  # List of SSD devices
+DEVICES=("/dev/nvme1n1" )  # List of SSD devices
 TEST_SIZE=$((700 * 1024 * 1024 * 1024))  # 128GB test size
 NUMJOBS=1  # Number of parallel threads
 RUNTIME=60  # Test runtime in seconds
 # BLOCK_SIZES=(4096 8192)  # 0.5 KiB to 8 KiB
 BLOCK_SIZES=(4096)  # 0.5 KiB to 8 KiB
-
+read_ratio=100
 
 
 # Ensure the script runs as root
@@ -16,10 +16,14 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 run_only=0
+QD=32
 
 while [[ $# -gt 0 ]]; do
    case "$1" in
       --run_only) run_only=1; shift 1;;
+      --read_ratio) read_ratio="$2"; shift 2;;
+      --QD) QD="$2"; shift 2;;
+      --threads) NUMJOBS="$2"; shift 2;;
       *) echo "Unknown argument: $1"; exit 1;;
     esac
 done
@@ -64,10 +68,10 @@ if (( 1 )); then
             --direct=1 \
             --ioengine=libaio \
             --rw=randrw \
-            --rwmixread=100 \
+            --rwmixread=${read_ratio} \
             --bs=${BS} \
             --size=$TEST_SIZE \
-            --iodepth=1 \
+            --iodepth=${QD} \
             --numjobs=$NUMJOBS \
             --time_based \
             --runtime=$RUNTIME \
