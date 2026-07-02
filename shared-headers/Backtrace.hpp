@@ -11,24 +11,6 @@
 namespace leanstore
 {
 
-inline std::string resolve_addr(void* addr) {
-    std::ostringstream cmd;
-    cmd << "addr2line -f -C -e /proc/self/exe " << addr;
-
-    FILE* fp = popen(cmd.str().c_str(), "r");
-    if (!fp) return "??";
-
-    char buffer[512];
-    std::string out;
-
-    while (fgets(buffer, sizeof(buffer), fp)) {
-        out += buffer;
-    }
-
-    pclose(fp);
-    return out;
-}
-
 inline std::string demangle(const char* name)
 {
    int status = 0;
@@ -58,7 +40,6 @@ inline void print_backtrace()
       }
 
       std::cout << "  #" << i << " " << s << "\n";
-      std::cout << resolve_addr(frames[i]) << std::endl;
    }
 
    free(symbols);

@@ -12,8 +12,9 @@
 #define Generic_Exception(name)                                                                                        \
    struct name : public std::exception {                                                                               \
       const std::string msg;                                                                                           \
-      explicit name() : msg(#name) { printf("Throwing exception: %s\n", #name); }                                      \
-      explicit name(const std::string& msg) : msg(msg) { printf("Throwing exception: %s(%s)\n", #name, msg.c_str()); } \
+      explicit name() : msg(#name) { printf("Throwing exception: %s\n", #name); leanstore::print_backtrace(); }        \
+      explicit name(const std::string& msg) : msg(msg) {                                                               \
+          printf("Throwing exception: %s(%s)\n", #name, msg.c_str()); leanstore::print_backtrace(); }                  \
       ~name() = default;                                                                                               \
       virtual const char* what() const noexcept { return msg.c_str(); }                                                \
    };                                                                                                                  \
@@ -121,6 +122,10 @@ Generic_Exception(TODO);
 // -------------------------------------------------------------------------------------
 #define TODOException() throw leanstore::ex::TODO(std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
 #define SetupFailed(msg) throw leanstore::ex::GenericException(msg + std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
+#define NotImplementedWithDiscarding()                 \
+   if (FLAGS_enable_discarding) {                      \
+      SetupFailed("Not Implemented With Discarding");  \
+   }
 // -------------------------------------------------------------------------------------
 #define explainIfNot(e) \
    if (!(e)) {          \
