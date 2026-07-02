@@ -79,7 +79,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 
    u64 actually_fixed = 0;
    u64 total_fixed = 0;
-   [[maybe_unused]] u32 absorbed_writes = 0;
 
    auto fix_page_cb = [&](struct io_uring_cqe* cqe) {
       ensure_equal(cqe->res, PAGE_SIZE);
@@ -126,7 +125,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       std::vector<cr::WALEntry*> to_apply_log_records;
       ensure(lsn != INVALID_LSN);
 
-     const auto& page_to_fix_info = to_fix_pids[idx];
+      const auto& page_to_fix_info = to_fix_pids[idx];
 
 #if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
       ensure(page_to_fix_info.nb_log_records > 0);
@@ -175,7 +174,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       }
 #endif
 
-
+      u32 absorbed_writes = 0;
       for (const auto& log_record: to_apply_log_records) {
          if (log_record->type == cr::WALEntry::TYPE::PER_PAGE_DT_SPECIFIC) {
             auto* ppl = reinterpret_cast<BufferFrame::PPL*>(log_record);

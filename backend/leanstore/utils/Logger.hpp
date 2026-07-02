@@ -69,7 +69,7 @@ static constexpr int LOG_LEVEL = LOG_LEVEL_INFO;
 class Logger
 {
   public:
-   explicit Logger(const std::string& filename);
+   Logger(const std::string& filename, const bool duplicate_to_stdout = false);
    ~Logger();
 
    Logger(const Logger&) = delete;
@@ -79,6 +79,8 @@ class Logger
 
   private:
    std::ofstream file_;
+   bool duplicate_to_stdout_;
+   const char* typeStr(int level);
    void OutputLogHeader(const char* file, int line, const char* func, int level);
 };
 

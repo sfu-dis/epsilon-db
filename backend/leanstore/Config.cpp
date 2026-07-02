@@ -132,11 +132,14 @@ DEFINE_bool(fake_log_reapply, false, "Just for Testing, use only with update-onl
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");
 DEFINE_uint32(max_log_records_to_discard, 3, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
-DEFINE_uint32(overprovisioning_ru_epochs, 8, "Force GC if the number of active RU epochs is less than max open by this value");
-DEFINE_uint32(ru_size, 3193344, "Unit of garbage collection in database pages (4 KiB)");
+DEFINE_uint32(overprovisioning_ru_epochs, 0, "Force GC if the number of active RU epochs is less than max open by this value");
+DEFINE_double(overprovisioning_ratio, 0.05, "");
+DEFINE_uint32(ru_size, 0, "Unit of garbage collection in database pages (4 KiB)");
 DEFINE_bool(per_page_logging, false, "Group log records per page");
 DEFINE_uint32(ppl_merge_threshold, 3, "Threshold after which we merge the log records of a page");
 DEFINE_bool(opportunistic_log_compaction, false, "Merge consecutive log records that target same record whenever possible");
+DEFINE_uint32(background_page_fixer_variant, 1, "Only 1 supported for now");
+DEFINE_bool(log_same_device_fdp, false, "Isolate the WAL traffic to a diffrent RUH.");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------

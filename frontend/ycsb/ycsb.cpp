@@ -256,10 +256,14 @@ int main(int argc, char** argv)
             u64 now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
             COUNTERS_BLOCK(txHist)
             {
-               auto elapsed = now - start;
-               if (WorkerCounters::myCounters().txHistLock.try_lock()) {
-                  WorkerCounters::myCounters().txHist.increaseSlot(elapsed / 1000);
-                  WorkerCounters::myCounters().txHistLock.unlock();
+               if (WorkerCounters::myCounters().experienced_buffer_miss) {
+                  auto elapsed = now - start;
+                  if (WorkerCounters::myCounters().txHistLock.try_lock()) {
+                     WorkerCounters::myCounters().txHist.increaseSlot(elapsed / 1000);
+                     WorkerCounters::myCounters().txHistLock.unlock();
+                  }
+                  WorkerCounters::myCounters().experienced_buffer_miss = false;
+                  ++WorkerCounters::myCounters().txns_experienced_buffer_miss;
                }
             }
             if (FLAGS_tx_rate > 0) {

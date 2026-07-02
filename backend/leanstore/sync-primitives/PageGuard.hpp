@@ -230,7 +230,6 @@ class HybridPageGuard
       bf->header.absorbed_writes++;
       if (FLAGS_wal_pwrite) {
          bf->page.last_written_lsn = handler.lsn;
-         bf->page.log_id = logging.log_id;
       } else {
          // Write a special marker for debugging if something went wrong
          // when recovering from the case where wal_pwrite was off.

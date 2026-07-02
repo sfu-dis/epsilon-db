@@ -28,6 +28,7 @@ class BTreeGeneric
    // -------------------------------------------------------------------------------------
    Swip<BufferFrame> meta_node_bf;  // kept in memory
    atomic<u64> height = 1;
+   atomic<u64> node_count = 0;
    DTID dt_id;
    struct Config {
       bool enable_wal = true;

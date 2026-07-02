@@ -140,7 +140,7 @@ void BufferFrame::Page::dump()
         << "  ru_epoch: " << ru_epoch << "\n"
         << "  last_written_lsn: " << last_written_lsn << "\n"
         << "  belonging to log : " << cr::LogManager::global->LSN2LogID(last_written_lsn) << "\n"
-        << "  log_id: " << log_id << "\n";
+        << "  eviction count: " << eviction_count << "\n";
 }
 // -------------------------------------------------------------------------------------
 }  // namespace storage

@@ -128,10 +128,13 @@ DECLARE_int32(ru_gc_threads);
 DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
 DECLARE_uint32(overprovisioning_ru_epochs);
+DECLARE_double(overprovisioning_ratio);
 DECLARE_uint32(ru_size);
 DECLARE_bool(per_page_logging);
 DECLARE_uint32(ppl_merge_threshold);
 DECLARE_bool(opportunistic_log_compaction);
+DECLARE_uint32(background_page_fixer_variant);
+DECLARE_bool(log_same_device_fdp);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------

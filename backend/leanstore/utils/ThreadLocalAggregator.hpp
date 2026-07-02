@@ -40,12 +40,32 @@ T sum(tbb::enumerable_thread_specific<CountersClass>& counters, CounterType Coun
    return local_c;
 }
 // -------------------------------------------------------------------------------------
+template <class CountersClass, class CounterType, typename T = s64>
+T sum2(tbb::enumerable_thread_specific<CountersClass>& counters, CounterType CountersClass::*c, u64 row, u64 col)
+{
+   T local_c = 0;
+   for (typename tbb::enumerable_thread_specific<CountersClass>::iterator i = counters.begin(); i != counters.end(); ++i) {
+      local_c += ((*i).*c)[row][col].load();
+   }
+   return local_c;
+}
+// -------------------------------------------------------------------------------------
 template <class CountersClass, class CounterType, typename T = u64>
 T max(tbb::enumerable_thread_specific<CountersClass>& counters, CounterType CountersClass::*c, u64 row)
 {
    T local_c = 0;
    for (typename tbb::enumerable_thread_specific<CountersClass>::iterator i = counters.begin(); i != counters.end(); ++i) {
       local_c = std::max<T>(((*i).*c)[row].exchange(0), local_c);
+   }
+   return local_c;
+}
+// -------------------------------------------------------------------------------------
+template <class CountersClass, class CounterType, typename T = u64>
+T max(tbb::enumerable_thread_specific<CountersClass>& counters, CounterType CountersClass::*c)
+{
+   T local_c = 0;
+   for (typename tbb::enumerable_thread_specific<CountersClass>::iterator i = counters.begin(); i != counters.end(); ++i) {
+      local_c = std::max<T>(((*i).*c).exchange(0), local_c);
    }
    return local_c;
 }

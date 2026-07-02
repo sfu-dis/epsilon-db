@@ -1,11 +1,12 @@
 #include "Logger.hpp"
+#include <iostream>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace utils
 {
 // -------------------------------------------------------------------------------------
-Logger::Logger(const std::string& filename)
+Logger::Logger(const std::string& filename, const bool duplicate_to_stdout) : duplicate_to_stdout_(duplicate_to_stdout)
 {
    file_.open(filename, std::ios::trunc);
    if (!file_.is_open()) {
@@ -20,6 +21,30 @@ Logger::~Logger()
    }
 }
 // -------------------------------------------------------------------------------------
+const char* Logger::typeStr(int level) {
+   const char* type;
+   switch (level) {
+      case LOG_LEVEL_ERROR:
+         type = "ERROR";
+         break;
+      case LOG_LEVEL_WARN:
+         type = "WARN ";
+         break;
+      case LOG_LEVEL_INFO:
+         type = "INFO ";
+         break;
+      case LOG_LEVEL_DEBUG:
+         type = "DEBUG";
+         break;
+      case LOG_LEVEL_TRACE:
+         type = "TRACE";
+         break;
+      default:
+         type = "UNKNOWN";
+   }
+   return type;
+}
+// -------------------------------------------------------------------------------------
 void Logger::log(const char* file, int line, const char* func, int level, const char* fmt, ...)
 {
    OutputLogHeader(file, line, func, level);
@@ -29,6 +54,10 @@ void Logger::log(const char* file, int line, const char* func, int level, const 
    va_start(args, fmt);
    ::vsnprintf(buf, sizeof(buf), fmt, args);
    va_end(args);
+
+   if (duplicate_to_stdout_) {
+      std::cout << "[INFO] " << buf << std::endl;
+   }
 
    file_ << buf << "\n";
    file_.flush();

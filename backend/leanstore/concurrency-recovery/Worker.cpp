@@ -211,12 +211,17 @@ void Worker::abortTX()
    ensure(active_tx.state == Transaction::STATE::STARTED);
    const u64 tx_id = active_tx.startTS();
    std::vector<const WALEntry*> entries;
-   auto& logging = myLog();
-   logging.iterateOverCurrentTXEntries([&](const WALEntry& entry) {
-      if (entry.type == WALEntry::TYPE::DT_SPECIFIC) {
-         entries.push_back(&entry);
-      }
-   });
+   if (LogManager::global->isPartitionedByWorker()) {
+      auto& logging = myLog();
+      logging.iterateOverCurrentTXEntries([&](const WALEntry& entry) {
+         if (entry.type == WALEntry::TYPE::DT_SPECIFIC) {
+            entries.push_back(&entry);
+         }
+      });
+   } else {
+      // Currently we do not support undo of transactions in page based logging.
+      TODOException();
+   }
    std::for_each(entries.rbegin(), entries.rend(), [&](const WALEntry* entry) {
       const auto& dt_entry = *reinterpret_cast<const WALDTEntry*>(entry);
       leanstore::storage::DTRegistry::global_dt_registry.undo(dt_entry.dt_id, dt_entry.payload, tx_id);
@@ -225,6 +230,7 @@ void Worker::abortTX()
    cc.history_tree.purgeVersions(worker_id, active_tx.startTS(), active_tx.startTS(), [&](const TXID, const DTID, const u8*, u64, const bool) {});
    // -------------------------------------------------------------------------------------
    if (LogManager::global->isPartitionedByWorker()) {
+      auto& logging = myLog();
       WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
       logging.submitWALMetaEntry(active_tx.start_ts);
    }

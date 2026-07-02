@@ -80,6 +80,8 @@ struct Worker {
    std::atomic<TXID>  last_precommitted_tx_commit_ts = 0;
    std::atomic<TXID> hardened_commit_ts = 0, signaled_commit_ts = 0;  // W: LW, R: WT
    // -------------------------------------------------------------------------------------
+   u64 consecutive_failed_try_pop = 0;
+   // -------------------------------------------------------------------------------------
    struct io_uring ring; // for reading the log records
    u8 *log_record_buf;
    // -------------------------------------------------------------------------------------

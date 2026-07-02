@@ -15,7 +15,7 @@ struct FreeList {
    BufferFrame* head = nullptr;
    std::atomic<u64> counter = 0;
    // -------------------------------------------------------------------------------------
-   BufferFrame& tryPop();
+   BufferFrame& tryPop(bool can_yield = true);
    void batchPush(BufferFrame* head, BufferFrame* tail, u64 counter);
    void push(BufferFrame& bf);
 };

@@ -14,6 +14,7 @@ struct GCCounters {
    atomic<u64> hot_fixed;
    atomic<u64> clean;
    atomic<u64> dirty_in_other_ru_epoch;
+   atomic<u64> pages_read;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
    // -------------------------------------------------------------------------------------

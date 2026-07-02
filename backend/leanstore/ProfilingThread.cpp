@@ -137,6 +137,8 @@ void LeanStore::profilingThread()
                stats_row.push_back(cr_table.get("0", key));
             } else if (table == "bm") {
                stats_row.push_back(bm_table.get("0", key));
+            } else if (table == "dt") {
+               stats_row.push_back(dt_table.get("0", key));
             } else {
                stats_row.push_back("N/A");  // No need to fail
             }

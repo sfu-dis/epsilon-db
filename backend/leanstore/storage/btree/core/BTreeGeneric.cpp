@@ -141,7 +141,7 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       new_left_node.unPin();
       // -------------------------------------------------------------------------------------
       height++;
-      COUNTERS_BLOCK() { WorkerCounters::myCounters().dt_split[dt_id]++; }
+      COUNTERS_BLOCK(dt_splits) { WorkerCounters::myCounters().dt_split[dt_id]++; }
       return;
    } else {
       // Parent is not root
@@ -212,7 +212,8 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
             exec();
          }
          new_left_node.unPin();
-         COUNTERS_BLOCK() { WorkerCounters::myCounters().dt_split[dt_id]++; }
+         node_count++;
+         COUNTERS_BLOCK(dt_splits) { WorkerCounters::myCounters().dt_split[dt_id]++; }
       } else {
          p_guard.unlock();
          c_guard.unlock();
@@ -530,7 +531,11 @@ BTreeGeneric::XMergeReturnCode BTreeGeneric::XMerge(HybridPageGuard<BTreeNode>& 
    return ret_code;
 }
 // -------------------------------------------------------------------------------------
-BTreeGeneric::~BTreeGeneric() {}
+BTreeGeneric::~BTreeGeneric() {
+   if (FLAGS_persist) {
+      printf("\ndt_id %lu : %s size is %.3f GiB\n", dt_id , DTRegistry::global_dt_registry.getDTName(dt_id).c_str() , node_count.load() * 4.0 / 1048576.0);
+   }
+}
 // -------------------------------------------------------------------------------------
 // Called by buffer manager before eviction
 // Returns true if the buffer manager has to restart and pick another buffer frame for eviction

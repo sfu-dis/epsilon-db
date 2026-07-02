@@ -121,11 +121,12 @@ u64 AsyncWriteBuffer::pollEventsSync()
    return 0;
 }
 // -------------------------------------------------------------------------------------
-void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events)
+void AsyncWriteBuffer::getWrittenBfs(std::function<bool(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events)
 {
    struct io_uring_cqe* cqe;
    unsigned head;
    u64 i = 0;
+   std::vector<u64> retry_slots;
    io_uring_for_each_cqe(&ring, head, cqe)
    {
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;
@@ -133,11 +134,26 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<void(BufferFrame&, LID, ru_ep
       ensure_equal(cqe->res, static_cast<s32>(page_size));
       auto written_plsn = write_buffer[slot].PLSN;
       u64 written_ru_epoch = write_buffer[slot].ru_epoch;
-      callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);
+      bool success = callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);
+      if (!success) {
+         retry_slots.push_back(slot);
+      }
       ++i;
    }
    ensure_equal(i, n_events);
    io_uring_cq_advance(&ring, n_events);
+   while (!retry_slots.empty()) {
+      std::vector<u64> next;
+      for (const auto& slot : retry_slots) {
+         auto written_plsn = write_buffer[slot].PLSN;
+         u64 written_ru_epoch = write_buffer[slot].ru_epoch;
+         bool success = callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);
+         if (!success) {
+            next.push_back(slot);
+         }
+      }
+      retry_slots = next;
+   }
 }
 AsyncWriteBuffer::IOTracing::IOTracing()
 {

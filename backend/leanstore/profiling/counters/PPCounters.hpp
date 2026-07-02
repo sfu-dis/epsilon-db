@@ -11,6 +11,7 @@ namespace leanstore
 struct PPCounters {
    // ATTENTION: These counters should be only used by page provider threads or slow path worker code
    atomic<s64> phase_1_ms = 0, phase_2_ms = 0, phase_3_ms = 0, poll_ms = 0;
+   atomic<u64> io_phase_us = 0;
    // Phase 1 detailed
    atomic<u64> find_parent_ms = 0, iterate_children_ms = 0;
    // Phase 3 detailed
@@ -27,6 +28,7 @@ struct PPCounters {
    atomic<u64> unswizzled_pages_counter = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
+   atomic<s64> eviction_count_histogram[1000][64] = {0};
    // -------------------------------------------------------------------------------------
    static tbb::enumerable_thread_specific<PPCounters> pp_counters;
    static tbb::enumerable_thread_specific<PPCounters>::reference myCounters() { return pp_counters.local(); }

@@ -32,6 +32,7 @@ struct WALEntry {
    void dump() const {
       std::cout << "WALEntry Dump:" << std::endl;
       std::cout << "  type = " << typeToString(type) << std::endl;
+      if (type == TYPE::SKIP) return;
       std::cout << "  size = " << size << std::endl;
       std::cout << "  magic_debugging_number = " << magic_debugging_number << std::endl;
       std::cout << "  lsn = " << lsn.load() << std::endl;
@@ -64,7 +65,7 @@ struct WALDTEntry : WALEntry {
    PID pid;
    s64 ru_epoch; // TODO(mfd) : just for debugging, remove later
    u8 payload[];
-   
+
    void dump()
    {
        std::cout << "WALDTEntry dump:\n";

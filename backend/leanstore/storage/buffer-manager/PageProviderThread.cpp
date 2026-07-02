@@ -454,7 +454,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       o_guard.guard.unlock();
                       jumpmu_break;
                    }
-                   jumpmuCatch() {}
+                   jumpmuCatch() { return false; }
                 }
                 // -------------------------------------------------------------------------------------
                 {
@@ -467,6 +467,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                    }
                    jumpmuCatch() {}
                 }
+                return true;
              },
              polled_events);
       }

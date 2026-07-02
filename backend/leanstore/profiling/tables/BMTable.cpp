@@ -10,6 +10,8 @@
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 using leanstore::utils::threadlocal::sum;
+using leanstore::utils::threadlocal::sum2;
+using leanstore::utils::threadlocal::max;
 namespace leanstore
 {
 namespace profiling
@@ -54,7 +56,9 @@ void BMTable::open()
    columns.emplace("evicted_mib",
                    [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::evicted_pages) * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0); });
    columns.emplace("discarded_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::discarded_pages) * PAGE_SIZE / 1048576.0); });
-   columns.emplace("rounds", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::pp_thread_rounds)); });
+   // columns.emplace("rounds", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::pp_thread_rounds)); });
+   columns.emplace("pp_write_latency", [&](Column& col) {
+      col << (sum(PPCounters::pp_counters, &PPCounters::io_phase_us) * 1.0 / (sum(PPCounters::pp_counters, &PPCounters::pp_thread_rounds))); });
    columns.emplace("touches", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::touched_bfs_counter)); });
    columns.emplace("unswizzled", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::unswizzled_pages_counter)); });
    columns.emplace("submit_ms", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::submit_ms) * 100.0 / total); });
@@ -78,6 +82,8 @@ void BMTable::open()
    columns.emplace("tpcc_debug2", [&](Column& col) { col << (std::accumulate(WorkerCounters::worker_counters.begin(), WorkerCounters::worker_counters.end(), 0, [](uint64_t sum, const WorkerCounters& wc){ return sum + wc.tpcc_order_erase;})); });
    columns.emplace("tpcc_debug3", [&](Column& col) { col << (std::accumulate(WorkerCounters::worker_counters.begin(), WorkerCounters::worker_counters.end(), 0, [](uint64_t sum, const WorkerCounters& wc){ return sum + wc.tpcc_order_erase_skipped_new_order;})); });
    columns.emplace("osskip", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::tpcc_order_status_skip)); });
+
+   columns.emplace("rcnt", [&](Column& col) { col << (ioReadHist.getCounter()); });
    columns.emplace("rmin", [&](Column& col) { col << (ioReadHist.getMin()); });
    columns.emplace("ravg", [&](Column& col) { col << (ioReadHist.getAvg()); });
    columns.emplace("r10p", [&](Column& col) { col << (ioReadHist.getPercentile(10)); });
@@ -95,6 +101,28 @@ void BMTable::open()
    columns.emplace("r99p99", [&](Column& col) { col << (ioReadHist.getPercentile(99.99)); });
    columns.emplace("r99p999", [&](Column& col) { col << (ioReadHist.getPercentile(99.999)); });
    columns.emplace("rmax", [&](Column& col) { col << (ioReadHist.getMax()); });
+
+#if 1
+   columns.emplace("redocnt", [&](Column& col) { col << (redoHist.getCounter()); });
+   columns.emplace("redomin", [&](Column& col) { col << (redoHist.getMin()); });
+   columns.emplace("redoavg", [&](Column& col) { col << (redoHist.getAvg()); });
+   columns.emplace("redo10p", [&](Column& col) { col << (redoHist.getPercentile(10)); });
+   columns.emplace("redo20p", [&](Column& col) { col << (redoHist.getPercentile(20)); });
+   columns.emplace("redo30p", [&](Column& col) { col << (redoHist.getPercentile(30)); });
+   columns.emplace("redo40p", [&](Column& col) { col << (redoHist.getPercentile(40)); });
+   columns.emplace("redo50p", [&](Column& col) { col << (redoHist.getPercentile(50)); });
+   columns.emplace("redo60p", [&](Column& col) { col << (redoHist.getPercentile(60)); });
+   columns.emplace("redo70p", [&](Column& col) { col << (redoHist.getPercentile(70)); });
+   columns.emplace("redo80p", [&](Column& col) { col << (redoHist.getPercentile(80)); });
+   columns.emplace("redo90p", [&](Column& col) { col << (redoHist.getPercentile(90)); });
+   columns.emplace("redo95p", [&](Column& col) { col << (redoHist.getPercentile(95)); });
+   columns.emplace("redo99p", [&](Column& col) { col << (redoHist.getPercentile(99)); });
+   columns.emplace("redo99p9", [&](Column& col) { col << (redoHist.getPercentile(99.9)); });
+   columns.emplace("redo99p99", [&](Column& col) { col << (redoHist.getPercentile(99.99)); });
+   columns.emplace("redo99p999", [&](Column& col) { col << (redoHist.getPercentile(99.999)); });
+   columns.emplace("redomax", [&](Column& col) { col << (redoHist.getMax()); });
+#endif
+
    columns.emplace("wmin", [&](Column& col) { col << (ioWriteHist.getMin()); });
    columns.emplace("wavg", [&](Column& col) { col << (ioWriteHist.getAvg()); });
    columns.emplace("w10p", [&](Column& col) { col << (ioWriteHist.getPercentile(10)); });
@@ -112,6 +140,8 @@ void BMTable::open()
    columns.emplace("w99p99", [&](Column& col) { col << (ioWriteHist.getPercentile(99.99)); });
    columns.emplace("w99p999", [&](Column& col) { col << (ioWriteHist.getPercentile(99.999)); });
    columns.emplace("wmax", [&](Column& col) { col << (ioWriteHist.getMax()); });
+
+   columns.emplace("txcnt", [&](Column& col) { col << (txHist.getCounter()); });
    columns.emplace("txmin", [&](Column& col) { col << (txHist.getMin()); });
    columns.emplace("txavg", [&](Column& col) { col << (txHist.getAvg()); });
    columns.emplace("tx10p", [&](Column& col) { col << (txHist.getPercentile(10)); });
@@ -148,6 +178,19 @@ void BMTable::open()
    columns.emplace("tximax", [&](Column& col) { col << (txIncWaitHist.getMax()); });
    columns.emplace("failed_try_pop", [&](Column& col) {
          col << (sum(WorkerCounters::worker_counters, &WorkerCounters::failed_try_pop) * 100.0 /sum(WorkerCounters::worker_counters, &WorkerCounters::total_try_pop));
+   });
+   columns.emplace("yielded_cpu_no_frame", [&](Column& col) {
+      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::yielded_cpu_no_frame));
+   });
+   // -------------------------------------------------------------------------------------
+   columns.emplace("wait_for_frame_us", [&](Column& col) {
+      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::blocked_on_frame_ns) / 1000.0);
+   });
+   columns.emplace("on_demand_redo_us", [&](Column& col) {
+      col << (sum(WorkerCounters::worker_counters, &WorkerCounters::on_demand_redo_ns) / 1000.0);
+   });
+   columns.emplace("max_on_demand_redo_ns", [&](Column& col) {
+      col << (max(WorkerCounters::worker_counters, &WorkerCounters::max_on_demand_redo_ns));
    });
    // -------------------------------------------------------------------------------------
    // GARBAGE COLLECTION STATS
@@ -203,6 +246,10 @@ void BMTable::open()
    columns.emplace("consecutive_same_key_in_page", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::consecutive_same_key_in_page);
    });
+   // -------------------------------------------------------------------------------------
+   columns.emplace("txns_experienced_buffer_miss", [this](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::txns_experienced_buffer_miss);
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()
@@ -232,17 +279,23 @@ void BMTable::next()
    if (WorkerCounters::worker_counters.begin()->seconds % (5*60) == 0) {
       // aggregate the histograms
       ioReadHist.resetData();
+      redoHist.resetData();
       ioWriteHist.resetData();
       txHist.resetData();
       txIncWaitHist.resetData();
       for (auto& wc : WorkerCounters::worker_counters) {
          ioReadHist += wc.ioReadHist;
+         redoHist += wc.redoHist;
          ioWriteHist += wc.ioWriteHist;
          txHist += wc.txHist;
          txIncWaitHist += wc.txIncWaitHist;
          {
             std::lock_guard<std::mutex> lock(wc.ioReadHistLock);
             wc.ioReadHist.resetData();
+         }
+         {
+            std::lock_guard<std::mutex> lock(wc.redoHistLock);
+            wc.redoHist.resetData();
          }
          {
             std::lock_guard<std::mutex> lock(wc.ioWriteHistLock);
@@ -259,7 +312,7 @@ void BMTable::next()
       }
       // -------------------------------------------------------------------------------------
    }
-   if (WorkerCounters::worker_counters.begin()->seconds % (30*60) == 0) {
+   if (WorkerCounters::worker_counters.begin()->seconds % (30 * 60) == 0) {
       for (u8 i = 1; i < 64; ++i) {
          absorption_histogram_file << sum(PPCounters::pp_counters, &PPCounters::absorbed_writes_histogram, i) << ",";
       }

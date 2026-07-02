@@ -69,6 +69,9 @@ LeanStore::LeanStore()
          SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
       }
    }
+   if (FLAGS_ru_size == 0) {
+      SetupFailed("Please specify an RU size in units of number of 4KiB pages");
+   }
    if (FLAGS_opportunistic_log_compaction && !FLAGS_per_page_logging) {
       SetupFailed("Opportunistic Log Compaction is only implemented when PPL is enabled");
    }
@@ -76,6 +79,8 @@ LeanStore::LeanStore()
       // per page logging is only relevant when discarding is enabled, silently turn it off.
       FLAGS_per_page_logging = false;
    }
+   // -------------------------------------------------------------------------------------
+   logger = std::make_unique<utils::Logger>("leanstore_log.txt", true);
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool
@@ -89,21 +94,11 @@ LeanStore::LeanStore()
       std::cout << "path: " << FLAGS_ssd_path << std::endl;
       SetupFailed("Could not open the file or the SSD block device");
    }
-   if (FLAGS_falloc > 0) {
-      const u64 gib_size = 1024ull * 1024ull * 1024ull;
-      auto dummy_data = (u8*)aligned_alloc(512, gib_size);
-      for (u64 i = 0; i < FLAGS_falloc; i++) {
-         const int ret = pwrite(ssd_fd, dummy_data, gib_size, gib_size * i);
-         posix_check(ret == gib_size);
-      }
-      free(dummy_data);
-      fsync(ssd_fd);
-   }
    ensure(fcntl(ssd_fd, F_GETFL) != -1);
    // -------------------------------------------------------------------------------------
    u64 ssd_size_in_bytes;
    if (ioctl(ssd_fd, BLKGETSIZE64, &ssd_size_in_bytes) == 0) {
-      std::cout << "[INFO] SSD size: " << ssd_size_in_bytes / 1073741824 << " GiB" << std::endl;
+      LOG_INFO(logger, "SSD size: %.2f GiB", ssd_size_in_bytes / 1073741824.0);
    } else {
       perror("ioctl");
    }
@@ -112,12 +107,25 @@ LeanStore::LeanStore()
    }
    u64 total_blocks_in_ssd = (FLAGS_ssd_gib * 1048576) / 4;
    BufferManager::RU_SIZE = FLAGS_ru_size;
-   u64 max_open_ru_epochs = total_blocks_in_ssd / BufferManager::RU_SIZE + FLAGS_overprovisioning_ru_epochs;
+   u64 max_open_ru_epochs = total_blocks_in_ssd / BufferManager::RU_SIZE;
+   if (FLAGS_overprovisioning_ru_epochs == 0) {
+      FLAGS_overprovisioning_ru_epochs = max_open_ru_epochs * FLAGS_overprovisioning_ratio;
+   }
+   max_open_ru_epochs += FLAGS_overprovisioning_ru_epochs;
+   LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
+   LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
+   if (FLAGS_background_page_fixer_variant == 2) {
+      const u64 ru_epoch_pids_size = utils::upAlign(sizeof(BufferManager::ru_epoch_pids) + 2 * FLAGS_ru_size * sizeof(PID), PAGE_SIZE);
+      const u64 space_for_ru_epoch_pids = ru_epoch_pids_size * max_open_ru_epochs;
+      total_blocks_in_ssd -= (space_for_ru_epoch_pids/4096);
+      // store the offset to pids array.
+      LOG_INFO(logger, "Per RU pids list size %.2f MiB, Total : %.2f GiB", ru_epoch_pids_size / 1048576.0, space_for_ru_epoch_pids / 1073741824.0);
+   }
    u64 persistant_state_blocks = utils::upAlign(sizeof(BufferManager::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
    total_blocks_in_ssd -= persistant_state_blocks;
    // Adjust ssd_gib
    FLAGS_ssd_gib = (total_blocks_in_ssd * 4) / 1048576;
-   std::cout << "[INFO] Space reserved for database pages: " << FLAGS_ssd_gib << " GiB" << std::endl;
+   LOG_INFO(logger, "Space reserved for database pages: %.2f GiB", FLAGS_ssd_gib);
    // -------------------------------------------------------------------------------------
    buffer_manager = make_unique<storage::BufferManager>(ssd_fd, total_blocks_in_ssd, max_open_ru_epochs);
    ensure_equal(BMC::global_bf, buffer_manager.get());
@@ -128,7 +136,7 @@ LeanStore::LeanStore()
       if (FLAGS_wal_partitions_count > 1023) {
          SetupFailed("Too many RUs, please verify the size of the RU epoch");
       }
-      cout << "[INFO] number of Log partitions : " << FLAGS_wal_partitions_count << endl;
+      LOG_INFO(logger, "Number of Log partitions : %lu", FLAGS_wal_partitions_count);
    }
    // -------------------------------------------------------------------------------------
    DTRegistry::global_dt_registry.registerDatastructureType(0, storage::btree::BTreeLL::getMeta());
@@ -149,13 +157,20 @@ LeanStore::LeanStore()
       if (FLAGS_log_dev_size_gib == 0) {
          if (ioctl(log_dev_fd, BLKGETSIZE64, &log_device_size) == 0) {
             log_device_size = utils::downAlign(log_device_size, 4096);
-            std::cout << "[INFO] Log device size: " << log_device_size << " bytes" << std::endl;
+            LOG_INFO(logger, "Log device size: %lu bytes", log_device_size);
             ensure((log_device_size % 4096) == 0);
          } else {
             perror("ioctl");
          }
       } else {
          log_device_size = FLAGS_log_dev_size_gib * 1073741824ul;
+      }
+      if (FLAGS_log_same_device_fdp) {
+         // ATTENTION : Not Portable, requires kernel patch with FDP support.
+         u64 hint = 1;
+         int ret = fcntl(log_dev_fd, F_SET_RW_HINT, &hint);
+         ensure_equal(ret, 0);
+         LOG_INFO(logger, "set the placement-id (%ld) to log file\n", hint);
       }
    }
    cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);

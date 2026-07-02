@@ -40,6 +40,8 @@ class LeanStore
    // -------------------------------------------------------------------------------------
    std::unique_ptr<cr::HistoryTree> history_tree;
    // -------------------------------------------------------------------------------------
+   std::unique_ptr<utils::Logger> logger;
+   // -------------------------------------------------------------------------------------
   private:
    static std::list<std::tuple<string, fLS::clstring*>> persisted_string_flags;
    static std::list<std::tuple<string, s64*>> persisted_s64_flags;

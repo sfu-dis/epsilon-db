@@ -157,8 +157,8 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
    {
       BTreeExclusiveIterator iterator(*static_cast<BTreeGeneric*>(this));
       OP_RESULT ret = iterator.insertKV(key, value);
-      ensure(ret == OP_RESULT::OK);
-      
+      ensure_equal(ret, OP_RESULT::OK);
+
       if (config.enable_wal) {
          const u16 payload_size = key.length() + value.length();
          const u16 wal_entry_size = sizeof(WALInsert) + payload_size;

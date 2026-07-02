@@ -518,7 +518,7 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    ensure(meta_swip.isEVICTED());
    ensure(!meta_swip.isDIRTY());
    PID meta_pid = meta_swip.asPageID();
-   BufferFrame& bf = randomPartition().dram_free_list.tryPop();
+   BufferFrame& bf = randomPartition().dram_free_list.tryPop(false);
    readPageSync(meta_pid, bf.page);
    if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);
    bf.header.last_written_plsn = bf.page.PLSN;
@@ -715,6 +715,8 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       g_guard->unlock();
       // -------------------------------------------------------------------------------------
+      WorkerCounters::myCounters().experienced_buffer_miss = true;
+      // -------------------------------------------------------------------------------------
       u32 wait_for_io = 1;
       using Time = decltype(std::chrono::high_resolution_clock::now());
       [[maybe_unused]] Time start_io, end_io;
@@ -750,13 +752,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       struct io_uring_cqe* cqes[1 + FLAGS_max_log_records_to_discard];
       u32 ready = io_uring_peek_batch_cqe(&cr::Worker::my().ring, cqes, wait_for_io);
       ensure_equal(ready, wait_for_io);
+      end_io = std::chrono::high_resolution_clock::now();
+      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end_io - start_io).count();
       COUNTERS_BLOCK(buffer_miss_io_latency)
       {
-         end_io = std::chrono::high_resolution_clock::now();
-         WorkerCounters::myCounters().io_phase_us[wait_for_io-1] +=
-             (std::chrono::duration_cast<std::chrono::microseconds>(end_io - start_io).count());
+         WorkerCounters::myCounters().io_phase_us[wait_for_io-1] += elapsed;
          ensure(wait_for_io > 0 && wait_for_io <= (FLAGS_max_log_records_to_discard + 1));
          WorkerCounters::myCounters().read_operations_histogram[wait_for_io-1]++;
+      }
+      COUNTERS_BLOCK(ioReadHist)
+      {
+         if (WorkerCounters::myCounters().ioReadHistLock.try_lock()) {
+            WorkerCounters::myCounters().ioReadHist.increaseSlot(elapsed);
+            WorkerCounters::myCounters().ioReadHistLock.unlock();
+         }
       }
       bool seen_page = false;
       for (u32 i = 0; i < wait_for_io; ++i) {
@@ -813,7 +822,21 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
          ensure_lte(nb_log_records, FLAGS_max_log_records_to_discard);
          ensure_equal(bf.header.pending_lsn_count, 0);
+         auto start_on_demand_redo = std::chrono::high_resolution_clock::now();
          fix_dirty_page(bf, lsn_list, nb_log_records);
+         auto end_on_demand_redo = std::chrono::high_resolution_clock::now();
+         u64 on_demand_redo_elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_on_demand_redo - start_on_demand_redo).count();
+         WorkerCounters::myCounters().on_demand_redo_ns += on_demand_redo_elapsed_ns;
+         if (on_demand_redo_elapsed_ns > WorkerCounters::myCounters().max_on_demand_redo_ns.load(std::memory_order_relaxed)) {
+            WorkerCounters::myCounters().max_on_demand_redo_ns = on_demand_redo_elapsed_ns;
+         }
+         COUNTERS_BLOCK(redoHist)
+         {
+            if (WorkerCounters::myCounters().redoHistLock.try_lock()) {
+               WorkerCounters::myCounters().redoHist.increaseSlot(on_demand_redo_elapsed_ns/1000.0);
+               WorkerCounters::myCounters().redoHistLock.unlock();
+            }
+         }
          ensure_equal(bf.header.pending_lsn_count, 0);
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;

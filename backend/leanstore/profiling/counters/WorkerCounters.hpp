@@ -31,6 +31,7 @@ struct WorkerCounters {
    atomic<u64> tpcc_order_erase = 0;
    atomic<u64> tpcc_order_erase_skipped_new_order = 0;
    atomic<u64> tpcc_order_status_skip = 0;
+   std::map<std::pair<int, int>, u64> tpcc_next_o_id_debug{};
    // -------------------------------------------------------------------------------------
    atomic<u64> seconds = 0;
    // -------------------------------------------------------------------------------------
@@ -130,12 +131,21 @@ struct WorkerCounters {
    // -------------------------------------------------------------------------------------
    std::mutex ioReadHistLock;
    Hist<int, u64> ioReadHist{1000, 0, 20000};
+   std::mutex redoHistLock;
+   Hist<int, u64> redoHist{1000, 0, 20000};
    std::mutex ioWriteHistLock;
    Hist<int, u64> ioWriteHist{2000, 0, 100000};
    std::mutex txHistLock;
    Hist<int, u64> txHist{10000, 0, 100000};
    std::mutex txIncWaitHistLock;
    Hist<int, u64> txIncWaitHist{20000, 0, 200000};
+   // -------------------------------------------------------------------------------------
+   bool waiting_for_frame = false;
+   decltype(std::chrono::high_resolution_clock::now()) start_frame_wait;
+   atomic<u64> blocked_on_frame_ns = 0;
+   // -------------------------------------------------------------------------------------
+   atomic<u64> on_demand_redo_ns = 0;
+   atomic<u64> max_on_demand_redo_ns = 0;
    // -------------------------------------------------------------------------------------
    static constexpr u32 max_instrumented_mutexes = 32;
    atomic<u64> total_lock_calls[max_instrumented_mutexes] = {0};
@@ -145,6 +155,7 @@ struct WorkerCounters {
    // -------------------------------------------------------------------------------------
    atomic<u64> total_try_pop = 0;
    atomic<u64> failed_try_pop = 0;
+   atomic<u64> yielded_cpu_no_frame = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> ppl_not_yet_persisted = 0;
    // -------------------------------------------------------------------------------------
@@ -155,6 +166,9 @@ struct WorkerCounters {
    u64 ready_success = 0;
    u64 cool_success = 0;
    u64 swizzled = 0;
+   // -------------------------------------------------------------------------------------
+   bool experienced_buffer_miss = false;
+   atomic<u64> txns_experienced_buffer_miss = 0;
    // -------------------------------------------------------------------------------------
    static atomic<u64> workers_counter;
    static tbb::enumerable_thread_specific<WorkerCounters> worker_counters;
