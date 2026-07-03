@@ -31,6 +31,8 @@ DEFINE_uint32(ycsb_ops_per_tx, 1, "");
 // DEFINE_uint32(ycsb_nb_tables, 1, "Use multiple tables");
 DEFINE_bool(ycsb_worker_per_table, false, "Each worker is assigned a table to work on, This will turn off CC");
 DEFINE_bool(ycsb_profiler_thread, true, "");
+DEFINE_uint32(ycsb_dead_tuple_ratio, 0, "fraction of the database that is never accessed, value in range [0,100]");
+DEFINE_bool(ycsb_tpcc_skew_function, false, "use the skew function from TPC-C spec, models stock table access");
 // -------------------------------------------------------------------------------------
 using namespace leanstore;
 // -------------------------------------------------------------------------------------
@@ -53,6 +55,24 @@ int main(int argc, char** argv)
    // -------------------------------------------------------------------------------------
    chrono::high_resolution_clock::time_point begin, end;
    // -------------------------------------------------------------------------------------
+   u64 ycsb_tuple_count = (FLAGS_ycsb_tuple_count)
+                                    ? FLAGS_ycsb_tuple_count
+                                    : FLAGS_target_gib * 1024 * 1024 * 1024 * 1.0 / 2.0 / (sizeof(YCSBKey) + sizeof(YCSBPayload));
+   // XXX(mfd) : divide by 2 if we have a table per worker because inserting sequentially into the BTree results always
+   //  in half full nodes.
+   if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = (ycsb_tuple_count / 2) / FLAGS_worker_threads;
+   auto rjzipf = RejectionInversionZipfSampler(ycsb_tuple_count, FLAGS_zipf_factor);
+   std::vector<u32> updatePattern;
+   if (FLAGS_zipf_factor != 0) {
+      updatePattern.resize(ycsb_tuple_count);
+      for (uint64_t i = 0; i < updatePattern.size(); i++) {
+         updatePattern[i] = i;
+      }
+      std::random_device rd;
+      std::mt19937_64 g(rd());
+      std::shuffle(updatePattern.begin(), updatePattern.end(), g);
+   }
+   // -------------------------------------------------------------------------------------
    // Always init with the maximum number of threads (FLAGS_worker_threads)
    LeanStore db;
    auto& crm = db.getCRManager();
@@ -73,16 +93,7 @@ int main(int argc, char** argv)
    if (FLAGS_ycsb_worker_per_table) isolation_level = TX_ISOLATION_LEVEL::READ_UNCOMMITTED;
    const TX_MODE tx_type = TX_MODE::OLTP;
    // -------------------------------------------------------------------------------------
-   u64 ycsb_tuple_count = (FLAGS_ycsb_tuple_count)
-                                    ? FLAGS_ycsb_tuple_count
-                                    : FLAGS_target_gib * 1024 * 1024 * 1024 * 1.0 / 2.0 / (sizeof(YCSBKey) + sizeof(YCSBPayload));
-   // XXX(mfd) : divide by 2 if we have a table per worker because inserting sequentially into the BTree results always
-   //  in half full nodes.
-   if (FLAGS_ycsb_worker_per_table && !FLAGS_ycsb_tuple_count) ycsb_tuple_count = (ycsb_tuple_count / 2) / FLAGS_worker_threads;
    const u64 n = ycsb_tuple_count;
-   if (FLAGS_ycsb_profiler_thread) {
-      db.startProfilingThread();
-   }
    // -------------------------------------------------------------------------------------
    if (FLAGS_tmp4) {
       // -------------------------------------------------------------------------------------
@@ -147,9 +158,8 @@ int main(int argc, char** argv)
       cout << "Inserting " << ycsb_tuple_count << " values" << endl;
       begin = chrono::high_resolution_clock::now();
       if (FLAGS_ycsb_worker_per_table) {
-              for (u64 t_i = 0; t_i < FLAGS_worker_threads; ++t_i) {
+          for (u64 t_i = 0; t_i < FLAGS_worker_threads; ++t_i) {
 				 crm.scheduleJobAsync(t_i, [&, t_i]() {
-                    // cout << table_id << "Inserting ..." << endl;
 					for (u64 i = 0; i < n; i++) {
 					   YCSBPayload payload;
 					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
@@ -167,7 +177,7 @@ int main(int argc, char** argv)
 					   YCSBPayload payload;
 					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
 					   YCSBKey key = i;
-					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION);
+					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::READ_COMMITTED);
 					   tables[0].insert({key}, {payload});
 					   cr::Worker::my().commitTX();
 					}
@@ -188,20 +198,11 @@ int main(int argc, char** argv)
       }
    }
    // -------------------------------------------------------------------------------------
-   auto zipf_random = std::make_unique<utils::ScrambledZipfGenerator>(0, ycsb_tuple_count, FLAGS_zipf_factor);
-   auto rjzipf = RejectionInversionZipfSampler(ycsb_tuple_count, FLAGS_zipf_factor);
-   std::vector<u32> updatePattern;
-   if (FLAGS_zipf_factor != 0) {
-      updatePattern.resize(ycsb_tuple_count);
-      for (uint64_t i = 0; i < updatePattern.size(); i++) {
-         updatePattern[i] = i;
-      }
-      std::random_device rd;
-      std::mt19937_64 g(rd());
-      std::shuffle(updatePattern.begin(), updatePattern.end(), g);
+   if (FLAGS_ycsb_profiler_thread) {
+      db.startProfilingThread();
    }
-   cout << setprecision(4);
    // -------------------------------------------------------------------------------------
+   cout << setprecision(4);
    cout << "~Transactions" << endl;
    atomic<bool> keep_running = true;
    atomic<u64> running_threads_counter = 0;
@@ -225,13 +226,20 @@ int main(int argc, char** argv)
                YCSBKey key;
                if (FLAGS_zipf_factor == 0) {
                   key = utils::RandomGenerator::getRandU64(0, ycsb_tuple_count);
+                  // key = ((key | utils::RandomGenerator::getRandU64(0, 8191)) + 42) % ycsb_tuple_count;
                } else {
                   s64 r = rjzipf.sample(gen) - 1;
                   if (!(r >= 0 && r < static_cast<s64>(updatePattern.size()))) {
-                     cerr << "Value " << r << "Out of Bounds [0," << updatePattern.size() << ")" << endl;
+                     cerr << "Value " << r << " Out of Bounds [0," << updatePattern.size() << ")" << endl;
                      raise(SIGINT);
                   }
                   key = updatePattern.at(r);
+               }
+               // TODO(mfd) : calculate the shift based on estimated number of log records per page.
+               // Also now the dead ratio is hardcoded as 25% (Using 2 bits)
+               if ((FLAGS_ycsb_dead_tuple_ratio > 0) && ((key & (0x3 << 8)) == 0)) {
+                  const u64 mask = utils::RandomGenerator::getRandU64(1, 4);
+                  key |= (mask << 8);
                }
                assert(key < ycsb_tuple_count);
                YCSBPayload result;

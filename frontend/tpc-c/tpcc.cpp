@@ -27,7 +27,7 @@ DEFINE_int64(tpcc_warehouse_count, 1, "");
 DEFINE_int32(tpcc_abort_pct, 0, "");
 DEFINE_uint64(run_until_tx, 0, "");
 DEFINE_bool(tpcc_verify, false, "");
-DEFINE_bool(tpcc_warehouse_affinity, false, "");
+DEFINE_bool(tpcc_warehouse_affinity, true, "");
 DEFINE_bool(tpcc_fast_load, false, "");
 DEFINE_bool(tpcc_remove, true, "");
 DEFINE_bool(order_wdc_index, true, "");
@@ -127,7 +127,11 @@ int main(int argc, char** argv)
    // -------------------------------------------------------------------------------------
    leanstore::TX_ISOLATION_LEVEL isolation_level = leanstore::parseIsolationLevel(FLAGS_isolation_level);
    // -------------------------------------------------------------------------------------
-   const bool should_tpcc_driver_handle_isolation_anomalies = isolation_level < leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION;
+   bool should_tpcc_driver_handle_isolation_anomalies = isolation_level < leanstore::TX_ISOLATION_LEVEL::SNAPSHOT_ISOLATION;
+   if (FLAGS_tpcc_warehouse_affinity) {
+      // There will be no anomalies
+      should_tpcc_driver_handle_isolation_anomalies = false;
+   }
    TPCCWorkload<LeanStoreAdapter> tpcc(warehouse, district, customer, customerwdl, history, neworder, order, order_wdc, orderline, item, stock,
                                        FLAGS_order_wdc_index, FLAGS_tpcc_warehouse_count, FLAGS_tpcc_remove,
                                        should_tpcc_driver_handle_isolation_anomalies, FLAGS_tpcc_warehouse_affinity);
@@ -141,9 +145,7 @@ int main(int argc, char** argv)
          cr::Worker::my().commitTX();
       });
       std::atomic<u32> g_w_id = 1;
-      // XXX(mfd) : Loading is CPU bound, do not oversubscribe
-      ensure(56 < FLAGS_worker_threads);
-      for (u32 t_i = 0; t_i < 56; t_i++) {
+      for (u32 t_i = 0; t_i < FLAGS_worker_threads; t_i++) {
          crm.scheduleJobAsync(t_i, [&]() {
             // cout << "rand seed: " << leanstore::utils::RandomGenerator::getRand(0, 1000000) << endl;
             while (true) {
@@ -189,7 +191,7 @@ int main(int argc, char** argv)
       }
    }
    // -------------------------------------------------------------------------------------
-   double gib = (db.getBufferManager().consumedPages() * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0 / 1024.0);
+   double gib = (db.getBufferManager().consumedPages() * PAGE_SIZE / 1024.0 / 1024.0 / 1024.0);
    cout << "TPC-C loaded - consumed space in GiB = " << gib << endl;
    //crm.scheduleJobSync(0, [&]() { cout << "Warehouse pages = " << warehouse.btree->countPages() << endl; });
    if (FLAGS_tpcc_stats) {
@@ -294,6 +296,9 @@ int main(int argc, char** argv)
             std::mt19937 gen(rd());
             std::exponential_distribution<> expDist(rate);
             auto this_expected_start_time = next_tx_start_time.load();
+            const Integer warehouses_per_worker = FLAGS_tpcc_warehouse_count / FLAGS_worker_threads;
+            const Integer my_warehouses_low = t_i * warehouses_per_worker + 1;
+            const Integer my_warehouses_high = (t_i == (exec_threads-1)) ? FLAGS_tpcc_warehouse_count : (t_i + 1) * warehouses_per_worker;
             while (keep_running) {
                utils::Timer timer(CRCounters::myCounters().cc_ms_oltp_tx);
                auto start = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -302,7 +307,7 @@ int main(int argc, char** argv)
                   cr::Worker::my().startTX(leanstore::TX_MODE::OLTP, isolation_level);
                   u32 w_id;
                   if (FLAGS_tpcc_warehouse_affinity) {
-                     w_id = t_i + 1;
+                     w_id = tpcc.urand(my_warehouses_low, my_warehouses_high);
                   } else {
                      w_id = tpcc.urand(1, FLAGS_tpcc_warehouse_count);
                   }

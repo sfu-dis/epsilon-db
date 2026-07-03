@@ -12,7 +12,11 @@
 // -------------------------------------------------------------------------------------
 #include <vector>
 using std::vector;
-DEFINE_bool(steady_tpcc, false, "");
+DEFINE_bool(steady_tpcc, true, "");
+DEFINE_bool(modified_tpcc_uniform, false, "Modified TPC-C with uniform access pattern");
+DEFINE_bool(customer_only_by_id, false, "Do not acces to the customer by name");
+#define HISTORY 1
+#define TPCC_NEXT_OID_DEBUG 0
 // -------------------------------------------------------------------------------------
 template <template <typename> class AdapterType>
 class TPCCWorkload
@@ -113,6 +117,7 @@ class TPCCWorkload
       // TPC-C random is [a,b] inclusive
       // in standard: NURand(A, x, y) = (((random(0, A) | random(x, y)) + C) % (y - x + 1)) + x
       // return (((rnd(a + 1) | rnd((y - x + 1) + x)) + 42) % (y - x + 1)) + x;
+      if (FLAGS_modified_tpcc_uniform) return urand(x, y);
       return (((urand(0, a) | urand(x, y)) + C) % (y - x + 1)) + x;
       // incorrect: return (((rnd(a) | rnd((y - x + 1) + x)) + 42) % (y - x + 1)) + x;
    }
@@ -167,6 +172,19 @@ class TPCCWorkload
           },
           district_update_descriptor);
 
+#if TPCC_NEXT_OID_DEBUG
+      // Assumes no aborts
+      if (warehouse_affinity)
+      {
+         auto p = std::make_pair(w_id, d_id);
+         auto& debug_o_id_map = WorkerCounters::myCounters().tpcc_next_o_id_debug;
+         if (debug_o_id_map.count(p) == 0) { debug_o_id_map[p] = 3001;}
+         Integer last_o_id = debug_o_id_map[p];
+         ensure_equal(last_o_id, o_id);
+         debug_o_id_map[p]++;
+      }
+#endif
+
       Numeric all_local = 1;
       for (Integer sw : supwares)
          if (sw != w_id)
@@ -177,9 +195,9 @@ class TPCCWorkload
       order.insert({w_id, d_id, o_id}, {c_id, timestamp, carrier_id, cnt, all_local});
       if (order_wdc_index) {
          ensure(c_id <= 3000 && c_id > 0);
-         order_wdc.insert({w_id, d_id, c_id, o_id}, {101});
+         order_wdc.insert({w_id, d_id, c_id, o_id}, {});
       }
-      neworder.insert({w_id, d_id, o_id}, {103});
+      neworder.insert({w_id, d_id, o_id}, {});
       leanstore::WorkerCounters::myCounters().tpcc_neworder_insert++;
 
       for (unsigned i = 0; i < lineNumbers.size(); i++) {
@@ -618,6 +636,7 @@ class TPCCWorkload
    // -------------------------------------------------------------------------------------
    void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last)
    {
+      ensure(!FLAGS_customer_only_by_id);
       vector<Integer> ids;
       customerwdl.scan(
           {w_id, d_id, c_last, {}},
@@ -683,14 +702,14 @@ class TPCCWorkload
    void orderStatusRnd(Integer w_id)
    {
       Integer d_id = urand(1, 10);
-      if (urand(1, 100) <= 40) {
+      if (FLAGS_customer_only_by_id || urand(1, 100) <= 40) {
          orderStatusId(w_id, d_id, getCustomerID());
       } else {
          orderStatusName(w_id, d_id, genName(getNonUniformRandomLastNameForRun()));
       }
    }
    // -------------------------------------------------------------------------------------
-   void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Integer c_id, Timestamp h_date, Numeric h_amount, Timestamp datetime)
+   void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Integer c_id, Timestamp h_date, Numeric h_amount, [[maybe_unused]] Timestamp datetime)
    {
       Varchar<10> w_name;
       Varchar<20> w_street_1;
@@ -780,10 +799,12 @@ class TPCCWorkload
              customer_update_descriptor);
       }
 
+#if HISTORY
       Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;
       Integer t_id = (Integer)leanstore::WorkerCounters::myCounters().t_id.load();
       Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
       history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data});
+#endif
    }
    // -------------------------------------------------------------------------------------
    void paymentByName(Integer w_id,
@@ -793,8 +814,9 @@ class TPCCWorkload
                       Varchar<16> c_last,
                       Timestamp h_date,
                       Numeric h_amount,
-                      Timestamp datetime)
+                      [[maybe_unused]] Timestamp datetime)
    {
+      ensure(!FLAGS_customer_only_by_id);
       Varchar<10> w_name;
       Varchar<20> w_street_1;
       Varchar<20> w_street_2;
@@ -903,11 +925,12 @@ class TPCCWorkload
              },
              customer_update_descriptor);
       }
-
+#if HISTORY
       Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;
       Integer t_id = Integer(leanstore::WorkerCounters::myCounters().t_id.load());
       Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
       history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data});
+#endif
    }
    // -------------------------------------------------------------------------------------
    void paymentRnd(Integer w_id)
@@ -922,7 +945,7 @@ class TPCCWorkload
       Numeric h_amount = randomNumeric(1.00, 5000.00);
       Timestamp h_date = currentTimestamp();
 
-      if (urand(1, 100) <= 60) {
+      if (!FLAGS_customer_only_by_id && urand(1, 100) <= 60) {
          paymentByName(w_id, d_id, c_w_id, c_d_id, genName(getNonUniformRandomLastNameForRun()), h_date, h_amount, currentTimestamp());
       } else {
          paymentById(w_id, d_id, c_w_id, c_d_id, getCustomerID(), h_date, h_amount, currentTimestamp());
@@ -974,6 +997,7 @@ class TPCCWorkload
    // -------------------------------------------------------------------------------------
    void prepare()
    {
+#if HISTORY
       Integer t_id = Integer(leanstore::WorkerCounters::myCounters().t_id.load());
       Integer h_id = 0;
       history.scanDesc(
@@ -984,6 +1008,7 @@ class TPCCWorkload
           },
           []() {});
       leanstore::WorkerCounters::myCounters().variable_for_workload = h_id;
+#endif
    }
    // -------------------------------------------------------------------------------------
    void loadStock(Integer w_id)
@@ -1026,10 +1051,14 @@ class TPCCWorkload
          customer.insert({w_id, d_id, i + 1}, {c_first, "OE", c_last, randomastring<20>(10, 20), randomastring<20>(10, 20), randomastring<20>(10, 20),
                                                randomastring<2>(2, 2), randomzip(), randomnstring(16, 16), now, c_credit, 50000.00,
                                                randomNumeric(0.0000, 0.5000), -10.00, 1, 0, 0, randomastring<500>(300, 500)});
-         customerwdl.insert({w_id, d_id, c_last, c_first}, {i + 1});
+         if (!FLAGS_customer_only_by_id) {
+            customerwdl.insert({w_id, d_id, c_last, c_first}, {i + 1});
+         }
+#if HISTORY
          Integer t_id = (Integer)leanstore::WorkerCounters::myCounters().t_id;
          Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
          history.insert({t_id, h_id}, {i + 1, d_id, w_id, d_id, w_id, now, 10.00, randomastring<24>(12, 24)});
+#endif
       }
    }
    // -------------------------------------------------------------------------------------
@@ -1117,7 +1146,7 @@ class TPCCWorkload
    {
       int max_weighted = 10000;
       if (FLAGS_steady_tpcc) {
-         max_weighted = 4300+400*3+50+4000; // neworder must be exactly 10x delivery 
+         max_weighted = 4300+400*3+50+4000; // neworder must be exactly 10x delivery
       }
       u64 rnd = leanstore::utils::RandomGenerator::getRand(0, max_weighted);
       if (rnd < 4300) {
@@ -1136,7 +1165,7 @@ class TPCCWorkload
       if (rnd < 400) {
          return {3, true}; // stocklevel
       }
-      rnd -= 400; 
+      rnd -= 400;
       if (FLAGS_steady_tpcc && rnd < 50 ) {
          return {5, false}; // truncateHist
       }
@@ -1235,6 +1264,7 @@ class TPCCWorkload
             }
             */
             // ok, delete entries
+#if 1
             bool orderWdcFound = false;
             order_wdc.scan( // this is not needed, but prevents anomalisies
                {w_id, d_id, o_c_id, o_id},
@@ -1248,6 +1278,9 @@ class TPCCWorkload
             if (orderWdcFound) {
                order_wdc.erase({w_id, d_id, o_c_id, o_id});
             }
+#else
+            order_wdc.erase({w_id, d_id, o_c_id, o_id});
+#endif
             vector<typename orderline_t::Key> orderlineKeys;
             orderline.scan(
                {w_id, d_id, o_id, minInteger},
@@ -1272,6 +1305,7 @@ class TPCCWorkload
       }
       // HISTORY
       // truncate history
+#if HISTORY
       const Integer maxHistoryPerThread = 30000 * warehouseCount / FLAGS_worker_threads;  // 30k per wearhouse
       Integer t_id = (Integer)leanstore::WorkerCounters::myCounters().t_id;
       Integer max_h_pk = 0;
@@ -1283,7 +1317,7 @@ class TPCCWorkload
                return false;
             },
             []() {});
-      // delete all h's belonging to this thread if thery are too old (maxHistoryPerThread) 
+      // delete all h's belonging to this thread if thery are too old (maxHistoryPerThread)
       Integer cutoff_h_pk = max_h_pk - maxHistoryPerThread;
       vector<typename history_t::Key> historyKeys;
       history.scan(
@@ -1303,6 +1337,7 @@ class TPCCWorkload
          COUNTERS_BLOCK() { leanstore::WorkerCounters::myCounters().history_deletions++; }
          //std::cout << "erase hist: " << h_key.id << " " << h_key.thread_id << " " << h_key.h_pk << std::endl;
       }
+#endif
    }
    // -------------------------------------------------------------------------------------
    template <typename Relation>
