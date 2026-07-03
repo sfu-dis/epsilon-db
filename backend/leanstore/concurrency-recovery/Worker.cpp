@@ -177,21 +177,22 @@ void Worker::commitTX()
       active_tx.state = Transaction::STATE::READY_TO_COMMIT;
       // -------------------------------------------------------------------------------------
       if (LogManager::global->isPartitionedByWorker()) {
-         WALMetaEntry& entry = myLog().reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
+         myLog().reserveWALMetaEntry(WALEntry::TYPE::TX_COMMIT);
          // TODO: commit_ts in log
          myLog().submitWALMetaEntry(active_tx.start_ts);
       }
-      // XXX(mfd) : the use of start_ts is sceptical.
       last_precommitted_tx_commit_ts.store(active_tx.start_ts, std::memory_order_release);
       // -------------------------------------------------------------------------------------
       active_tx.stats.precommit = std::chrono::high_resolution_clock::now();
-      std::unique_lock<instrumented_mutex> g(precommitted_queue_mutex);
-      // TODO(mfd) : RFA is only relevant for Worker based log partitioning ?
-      if (per_worker_logging_info.remote_flush_dependency) {  // RFA
-         precommitted_queue.push_back(active_tx);
-      } else {
-         CRCounters::myCounters().rfa_committed_tx++;
-         precommitted_queue_rfa.push_back(active_tx);
+      if (LogManager::global->isPartitionedByWorker()) {
+         std::unique_lock<instrumented_mutex> g(precommitted_queue_mutex);
+         if (per_worker_logging_info.remote_flush_dependency) {  // RFA
+            precommitted_queue.push_back(active_tx);
+         } else {
+            raise(SIGTRAP);
+            CRCounters::myCounters().rfa_committed_tx++;
+            precommitted_queue_rfa.push_back(active_tx);
+         }
       }
     }
     // Only committing snapshot/ changing between SI and lower modes
@@ -205,6 +206,7 @@ void Worker::commitTX()
 // -------------------------------------------------------------------------------------
 void Worker::abortTX()
 {
+   NotImplementedWithDiscarding();
    utils::Timer timer(CRCounters::myCounters().cc_ms_abort_tx);
    ensure(FLAGS_wal);
    ensure(!active_tx.wal_larger_than_buffer);
@@ -231,7 +233,7 @@ void Worker::abortTX()
    // -------------------------------------------------------------------------------------
    if (LogManager::global->isPartitionedByWorker()) {
       auto& logging = myLog();
-      WALMetaEntry& entry = logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
+      logging.reserveWALMetaEntry(WALEntry::TYPE::TX_ABORT);
       logging.submitWALMetaEntry(active_tx.start_ts);
    }
    active_tx.state = Transaction::STATE::ABORTED;

@@ -122,10 +122,12 @@ Generic_Exception(TODO);
 // -------------------------------------------------------------------------------------
 #define TODOException() throw leanstore::ex::TODO(std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
 #define SetupFailed(msg) throw leanstore::ex::GenericException(msg + std::string(__FILE__) + ":" + std::string(std::to_string(__LINE__)));
-#define NotImplementedWithDiscarding()                 \
-   if (FLAGS_enable_discarding) {                      \
-      SetupFailed("Not Implemented With Discarding");  \
-   }
+#define NotImplementedWithDiscarding()                    \
+   do {                                                   \
+      if (FLAGS_enable_discarding) {                      \
+         SetupFailed("Not Implemented With Discarding");  \
+      }                                                   \
+   } while(0)
 // -------------------------------------------------------------------------------------
 #define explainIfNot(e) \
    if (!(e)) {          \
