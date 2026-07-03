@@ -9,7 +9,20 @@ namespace storage
 // Responsability of the caller to acquire the set lock
 void BufferManager::RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
 {
-   ensure(!FLAGS_enable_discarding || !active.load());
+   if (FLAGS_enable_discarding && active.load()) {
+      printf(
+          "[WARN] Background Page Fixer thread could not keep up with the IO writes\n"
+          "Will shutdown if this persists\n");
+      dump();
+      while (active.load()) {
+         // This happens when the garbage collection thread is not fast enough
+         // to reclaim the oldest RU. This is highly undesirable and we better
+         // not enter in this state at all.
+         m.unlock();
+         std::this_thread::sleep_for(std::chrono::microseconds(40000));
+         m.lock();
+      }
+   }
    ensure(!FLAGS_enable_discarding || cur_ru_epoch == -1);
    cur_ru_epoch = new_ru_epoch;
    active.store(true);
@@ -69,9 +82,6 @@ u32 BufferManager::RUEpochDiscardSet::ReclaimUnitUsage()
    // This formula does not account for those pages that are in the buffer pool
    s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
    s32 i = invalid.load(std::memory_order_acquire);
-   s32 tot = total.load(std::memory_order_acquire);
-   // double per = (i+d) * 1.0f / tot;
-   // printf("\n tot = %d, invalid = %d, to_gc = %d => per %f %%\n", tot, i, d, per * 100);
    return i + d;
 }
 // -------------------------------------------------------------------------------------

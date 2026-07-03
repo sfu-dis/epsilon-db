@@ -373,7 +373,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf
                   && cooled_bf->page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)) {
                   evict_bf(*cooled_bf, o_guard, true);
-               } else if (!async_write_buffer.full()) {
+               } else if (!async_write_buffer.full()
+                          && (rate.load(std::memory_order_acquire) == 100 || (utils::RandomGenerator::getRandU64(0, 100) < rate.load(std::memory_order_acquire)))) {
                   {
                      BMExclusiveGuard ex_guard(o_guard);
                      paranoid(!cooled_bf->header.is_being_written_back);

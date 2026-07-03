@@ -219,9 +219,34 @@ void BufferManager::startBackgroundThreads()
             if (open_new_ru_epoch) {
                ru_epoch_t new_ru_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
                if (FLAGS_enable_discarding) {
-                  if ((new_ru_epoch - reclaimed_ru_epoch) >= (max_open_ru_epochs - FLAGS_overprovisioning_ru_epochs)) {
-                     ru_discard_set[oldest_uncollected_ru_epoch].force_gc = true;
-                     bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+                  // Once we almost exhausted all free RUs, we enter the steady state where we reclaim RUs continously.
+                  // This will only happen if the workload access pattern never reaches the threshold of RU usage.
+                  // When this happens the first time, I reclaim agressively the oldest 20 ru epochs. This is very
+                  // similar to the device GC behaviour because, after all, there is no much time for the ru usage
+                  // to improve the threshold.
+                  const s64 free_ru_epochs = max_open_ru_epochs + reclaimed_ru_epoch - new_ru_epoch;
+                  // Probably too early ?
+                  if (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
+                     // cap the new rate at 80%
+                     u64 new_rate = (free_ru_epochs * 80)/FLAGS_overprovisioning_ru_epochs;
+                     rate.store(new_rate, std::memory_order_release);
+                     LOG_WARN(logger, "Updated the rate of writes to %lu%%, free ru epochs = %ld", new_rate, free_ru_epochs);
+                     if (!global_force_gc) {
+                        global_force_gc = true;
+                        const ru_epoch_t up_to = std::min<ru_epoch_t>(oldest_uncollected_ru_epoch + 20, ru_epoch.load(std::memory_order_relaxed) - 1);
+                        for (ru_epoch_t r = oldest_uncollected_ru_epoch; r < up_to; ++r) {
+                           ru_discard_set[r].force_gc = true;
+                           bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+                        }
+                     } else {
+                        ru_discard_set[oldest_uncollected_ru_epoch].force_gc = true;
+                        bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+                     }
+                  } else {
+                     if (rate.load(std::memory_order_relaxed) < 100) {
+                        rate.store(100, std::memory_order_release);
+                        LOG_INFO(logger, "Restored the rate of writes to 100%%, free ru epochs = %ld", free_ru_epochs);
+                     }
                   }
                }
                auto& set = ru_discard_set.data[new_ru_epoch % max_open_ru_epochs];

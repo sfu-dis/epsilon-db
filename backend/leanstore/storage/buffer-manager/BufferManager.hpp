@@ -108,6 +108,11 @@ class BufferManager
    };
    std::unique_ptr<padded_iostat[]> per_pp_iostats;
    std::unique_ptr<CustomSlabAllocator<LID>[]> per_pp_allocator;
+   // -------------------------------------------------------------------------------------
+   // written only by ru_epoch_mgr, read by page providers.
+   std::atomic<u64> rate = 100;
+   u64 pad0[7];
+   // -------------------------------------------------------------------------------------
    std::atomic<u64> tot_gc_writes = 0;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    void ruGarbageCollectorThread(u32 gc_id);
@@ -123,11 +128,10 @@ public:
    atomic<ru_epoch_t> oldest_uncollected_ru_epoch = 0; // persistant
    atomic<ru_epoch_t> reclaimed_ru_epoch = -1; // persistant
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
-   u64 pad[7];
+   u64 pad1[7];
    static u64 RU_SIZE;
+   bool global_force_gc = false;
    PageState *discard_state;
-   // XXX(mfd) : this depends on how many RUs are in the device
-   //  good number is : (device_size/ru_size)
    u32 max_open_ru_epochs;
    struct RUEpochDiscardSet {
       u32 id;
