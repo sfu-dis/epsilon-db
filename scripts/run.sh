@@ -572,13 +572,10 @@ flagfile_to_line() {
 }
 
 
-# exit 0
-
 # Make sure we're running as root
-# The use of root here is for 3 purpouses, first 2 can be avoided
+# The use of root here is for 2 purpouses, first one can be avoided
 # 1. direct access to the block device
-# 2. IO passthrough requires root privelages in kernel version < 6.12
-# 3. To sample waf from device
+# 2. To sample waf from device
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root. Re-running with sudo..."
     exec sudo bash "$0" "$original_args"
@@ -601,6 +598,23 @@ if (( trim == 1)); then
    echo "Trimmimg the device"
    if (( fdp == 1 )); then
       bash ${DEVICE_RESET_SCRIPT} --dev "${controller}"
+      NUM_NS=$(sudo nvme list-ns ${controller} -a | wc -l)
+      echo $NUM_NS
+      for ((i=1; i <= NUM_NS; i++)); do
+	 sudo nvme delete-ns ${controller} -n ${i}
+      done
+      sleep 10
+      sudo nvme set-feature ${controller} -f 0x1D -c 0 -s
+      sudo nvme set-feature ${controller} -f 0x1D -c 1 -s
+      sudo nvme get-feature ${controller} -f 0x1D -H
+      sleep 10
+      # size_bytes=$(blockdev --getsize64 )
+      total_cap=$(nvme id-ctrl "${controller}" | awk -F: '/Total NVM Capacity/ {gsub(/ /,"",$2); print $2}')
+      DEV_SIZE=$(( total_cap / 4096 ))
+      # This command may change from one device to another depending on the supported formatting
+      sudo nvme create-ns ${controller} -b 4096 --nsze=${DEV_SIZE}  --ncap=${DEV_SIZE}
+      sudo nvme attach-ns ${controller} --namespace-id=1 --controllers=0x7
+      sleep 10
    fi
    sanitize_nvme
 fi
@@ -633,7 +647,6 @@ fi
 
 shutdown() {
     echo "stopping background waf calculator job..."
-    set -x
     set +e
 
     if (( stats_dir == 1)); then
@@ -645,10 +658,6 @@ shutdown() {
        pkill -TERM -P "$waf_pid" 2>/dev/null
        kill $waf_pid 2>/dev/null
        wait "$waf_pid"
-       # test if blktrace is still running. kill it.
-       # pkill -TERM -P "$blktrace_pid" 2>/dev/null
-       # sudo kill -SIGINT $blktrace_pid 2>/dev/null
-       # transform the output using blkparse and my python script.
        if (( blktrace )); then
           wait "$blktrace_pid" || true
           rm blkparse_out

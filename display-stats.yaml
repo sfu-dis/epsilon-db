@@ -7,7 +7,7 @@ columns:
 
   gct_committed_tx:
     field: "dur TX"
-    enabled: true
+    enabled: false
     source: cr
 
   w_mib:
@@ -57,11 +57,27 @@ columns:
 
   failed_try_pop:
     field: "failed trypop"
-    enabled: false
+    enabled: true
+    source: bm
+
+  yielded_cpu_no_frame:
+    field: "yield"
+    enabled: true
+    source: bm
+
+
+  pp_write_latency:
+    field: "wlat"
+    enabled: true
+    source: bm
+
+  gc_read_mib:
+    field: "GC R MiB/s"
+    enabled: true
     source: bm
 
   gc_fixed_mib:
-    field: "GC Fix Mib/s"
+    field: "GC Fix MiB/s"
     enabled: true
     source: bm
 
@@ -77,14 +93,14 @@ columns:
 
   gc_hot:
     field: "GC hot"
-    enabled: true
+    enabled: false
     source: bm
 
   discard_state_peak_mem_usage:
     field: "GSPeak GiB"
-    enabled: true
+    enabled: false
     source: bm
-  
+
   log_space_usage:
     field: "WAL GiB"
     enabled: true
@@ -114,7 +130,7 @@ columns:
     field: "rlat"
     enabled: true
     source: bm
- 
+
   read_latency_0_us:
     field: "rlat0"
     enabled: true
@@ -122,12 +138,12 @@ columns:
 
   read_latency_1_us:
     field: "rlat1"
-    enabled: true
+    enabled: false
     source: bm
 
   read_latency_2_us:
     field: "rlat2"
-    enabled: true
+    enabled: false
     source: bm
 
   read_latency_3_us:
@@ -140,12 +156,62 @@ columns:
     enabled: false
     source: bm
 
+  read_latency_5_us:
+    field: "rlat5"
+    enabled: false
+    source: bm
+
   read_depth_0:
     field: "rd0"
-    enabled: false
+    enabled: true
     source: bm
 
   read_depth_1:
     field: "rd1"
+    enabled: true
+    source: bm
+
+  read_depth_2:
+    field: "rd2"
+    enabled: true
+    source: bm
+
+  read_depth_3:
+    field: "rd3"
+    enabled: true
+    source: bm
+
+  read_depth_4:
+    field: "rd4"
     enabled: false
+    source: bm
+
+  read_depth_5:
+    field: "rd5"
+    enabled: false
+    source: bm
+
+  ppl_not_yet_persisted:
+    field: "NP PPL"
+    enabled: false
+    source: bm
+
+  consecutive_same_key_in_page:
+    field: "tmp"
+    enabled: false
+    source: bm
+
+  dt_split:
+    field: "splits"
+    enabled: false
+    source: dt
+
+  wait_for_frame_us:
+    field: "Frame"
+    enabled: true
+    source: bm
+
+  max_on_demand_redo_ns:
+    field: "Redo ns"
+    enabled: true
     source: bm
