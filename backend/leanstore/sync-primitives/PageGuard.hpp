@@ -134,10 +134,9 @@ class HybridPageGuard
    }
    inline void incrementGSN()
    {
-      assert(bf != nullptr);
-      ensure(bf->page.GSN <= cr::Worker::my().getCurrentGSN());
+      ensure(bf != nullptr);
       markAsDirty();
-      LID new_gsn = cr::Worker::my().getCurrentGSN() + 1;
+      const LID new_gsn = std::max<LID>(cr::Worker::my().getCurrentGSN(), bf->page.GSN) + 1;
       bf->page.GSN = new_gsn;
       bf->header.last_writer_worker_id = cr::Worker::my().worker_id;  // RFA
       cr::Worker::my().setCurrentGSN(new_gsn);

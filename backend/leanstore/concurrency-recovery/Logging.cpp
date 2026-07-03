@@ -80,6 +80,7 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
 // -------------------------------------------------------------------------------------
 WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
 {
+   NotImplementedWithDiscarding();
    ensure(type <= WALEntry::TYPE::TX_ABORT);
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
@@ -92,6 +93,7 @@ WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
 // -------------------------------------------------------------------------------------
 void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
 {
+   NotImplementedWithDiscarding();
    if(!((wal_log_cursor >= current_tx_wal_start) || (wal_log_cursor + sizeof(WALMetaEntry) < current_tx_wal_start))) {
       // my().active_tx.wal_larger_than_buffer = true;
       raise(SIGTRAP);
@@ -109,7 +111,7 @@ void Logging::submitWALMetaEntry(u64 active_tx_start_ts)
 // Called by worker, so concurrent writes on the buffer
 void Logging::iterateOverCurrentTXEntries(std::function<void(const WALEntry& entry)> callback)
 {
-   raise(SIGTRAP);
+   NotImplementedWithDiscarding();
    u64 cursor = current_tx_wal_start;
    while (cursor != wal_log_cursor) {
       const WALEntry& entry = *reinterpret_cast<WALEntry*>(wal_buffer + cursor);
