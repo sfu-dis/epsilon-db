@@ -140,6 +140,7 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       new_root.unPin();
       new_left_node.unPin();
       // -------------------------------------------------------------------------------------
+      node_count++;
       height++;
       COUNTERS_BLOCK(dt_splits) { WorkerCounters::myCounters().dt_split[dt_id]++; }
       return;

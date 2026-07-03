@@ -69,7 +69,7 @@ class CustomSlabAllocator
       {
          std::lock_guard _l(m);
          T* addr = nullptr;
-         if (addr = try_pop())
+         if ((addr = try_pop()) != nullptr)
             return addr;
 
          allocate_new_chunk();

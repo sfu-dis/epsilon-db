@@ -76,7 +76,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       // Phase 1: unswizzle pages (put in the cooling stage)
       // -------------------------------------------------------------------------------------
       [[maybe_unused]] Time phase_1_begin, phase_1_end;
-      COUNTERS_BLOCK() { phase_1_begin = std::chrono::high_resolution_clock::now(); }
+      COUNTERS_BLOCK(pp_phases) { phase_1_begin = std::chrono::high_resolution_clock::now(); }
       volatile u64 failed_attempts =
           0;  // [corner cases]: prevent starving when free list is empty and cooling to the required level can not be achieved
 #define repickIf(cond)                       \
@@ -96,7 +96,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                BMOptimisticGuard r_guard(r_buffer->header.latch);
                repickIf(r_buffer->header.keep_in_memory || r_buffer->header.is_being_written_back || r_buffer->header.latch.isExclusivelyLatched());
-               if (FLAGS_wal && FLAGS_wal_pwrite && (r_buffer->header.logging != nullptr)) {
+               if (FLAGS_enable_discarding && FLAGS_wal && FLAGS_wal_pwrite && (r_buffer->header.logging != nullptr)) {
                   // FIXME(mfd) : Account for the page that has changed from an active RU epoch to the collected RU epoch.
                   // TODO(mfd) : Monitor failures because of this.
                   repickIf(r_buffer->page.GSN > r_buffer->header.logging->hardened_gsn.load(std::memory_order_acquire));
@@ -171,7 +171,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                // Suitable page founds, lets cool
                {
-                  const PID pid = r_buffer->header.pid;
+                  [[maybe_unused]] const PID pid = r_buffer->header.pid;
                   // r_x_guard can only be acquired and released while the partition mutex is locked
                   {
                      BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler.parent_guard);
@@ -194,7 +194,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             jumpmuCatch() {}
          }
       }
-      COUNTERS_BLOCK()
+      COUNTERS_BLOCK(pp_phases)
       {
          phase_1_end = std::chrono::high_resolution_clock::now();
          PPCounters::myCounters().phase_1_ms += (std::chrono::duration_cast<std::chrono::microseconds>(phase_1_end - phase_1_begin).count());
@@ -299,14 +299,13 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
-               // THINK(mfd) : How may this affect the PPL?
                to_discard_queue.pop_back();
                c_guard.guard.unlock();
                jumpmu::jump();
             }
             // The RU discard set identity may change meanwhile.
-            // I think I should simply allow this, this is a very rare event, and these are 
-            //  stats to approximate thresolhold of GC in RU epoch.
+            // I simply allow this, this is a very rare event, and these are
+            // stats just to approximate thresolhold of GC in RU epoch.
             ru_discard_set.data[bf.page.ru_epoch % max_open_ru_epochs].inserted.fetch_add(1);
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
@@ -399,8 +398,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                         cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
                      }
                      // TODO: preEviction callback according to DTID
-                     PID wb_pid = cooled_bf_pid;
-                     async_write_buffer.add(*cooled_bf, wb_pid);
+                     async_write_buffer.add(*cooled_bf, cooled_bf_pid);
                   }
                } else {
                   jumpmu_break;
@@ -421,12 +419,17 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          const u32 polled_events = async_write_buffer.pollEventsSync();
          per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::release);
          PPCounters::myCounters().flushed_pages_counter += polled_events;
-         COUNTERS_BLOCK() {
+         {
             auto end = std::chrono::high_resolution_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-            if (WorkerCounters::myCounters().ioWriteHistLock.try_lock()) {
-               WorkerCounters::myCounters().ioWriteHist.increaseSlot(elapsed);
-               WorkerCounters::myCounters().ioWriteHistLock.unlock();
+            COUNTERS_BLOCK(pp_phases) {
+               PPCounters::myCounters().io_phase_us += elapsed;
+            }
+            COUNTERS_BLOCK(ioWriteHist) {
+               if (WorkerCounters::myCounters().ioWriteHistLock.try_lock()) {
+                 WorkerCounters::myCounters().ioWriteHist.increaseSlot(elapsed);
+                 WorkerCounters::myCounters().ioWriteHistLock.unlock();
+               }
             }
          }
 
@@ -435,12 +438,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                 while (true) {
                    jumpmuTry()
                    {
-                      // TODO(mfd): With per page logging, the page provider thread needs to unlock
-                      // the global page state after the ppl is persisted, stayed locked here may
-                      // delay that (no risk of deadlock).
                       BMOptimisticGuard o_guard(written_bf.header.latch);
-                      // BMExclusiveGuard ex_guard(o_guard);
-                      o_guard.guard.toExclusive(); 
+                      BMExclusiveGuard ex_guard(o_guard);
 
                       ensure(written_bf.header.is_being_written_back);
                       ensure_lte(written_bf.header.last_written_plsn, written_plsn);
@@ -475,7 +474,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          freed_bfs_batch.push(current_partition);
       }
       unlock_discarded_pages_with_persisted_ppl();
-      COUNTERS_BLOCK() { PPCounters::myCounters().pp_thread_rounds++; }
+      COUNTERS_BLOCK(pp_thread_rounds) { PPCounters::myCounters().pp_thread_rounds++; }
    }
    bg_threads_counter--;
    pp_threads_counter--;

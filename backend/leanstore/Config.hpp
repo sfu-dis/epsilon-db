@@ -135,6 +135,7 @@ DECLARE_uint32(ppl_merge_threshold);
 DECLARE_bool(opportunistic_log_compaction);
 DECLARE_uint32(background_page_fixer_variant);
 DECLARE_bool(log_same_device_fdp);
+DECLARE_bool(trace_ru_threshold);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------

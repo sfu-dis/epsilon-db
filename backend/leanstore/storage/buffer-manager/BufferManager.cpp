@@ -233,6 +233,8 @@ void BufferManager::startBackgroundThreads()
                LOG_INFO(logger, "Opened up a new RU Epoch %lu!!!", new_ru_epoch);
             }
          };
+         FILE* tfp = fopen("thresholds.txt", "w");
+         u64 milliseconds = 0;
          while (bg_threads_keep_running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             check_for_new_ru_epoch();
@@ -249,6 +251,19 @@ void BufferManager::startBackgroundThreads()
                      gc_m.unlock();
                   }
                }
+            }
+            // each minute
+            if (FLAGS_trace_ru_threshold && FLAGS_enable_discarding) {
+               if (milliseconds == (1000*60)) {
+                  milliseconds = 0;
+                  ru_epoch_t newest_ru_epoch = ru_epoch.load();
+                  for (ru_epoch_t r = oldest_uncollected_ru_epoch; r < newest_ru_epoch; ++r) {
+                     fprintf(tfp, "(%ld,%.2f)", r, ru_discard_set[r].ReclaimUnitUsage() * 100.0 / ru_discard_set[r].total.load());
+                  }
+                  fprintf(tfp, "\n");
+                  fflush(tfp);
+               }
+               milliseconds += 10;
             }
          }
          // Wake up all grabage collection threads so that they could exit normally

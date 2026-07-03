@@ -140,6 +140,7 @@ DEFINE_uint32(ppl_merge_threshold, 3, "Threshold after which we merge the log re
 DEFINE_bool(opportunistic_log_compaction, false, "Merge consecutive log records that target same record whenever possible");
 DEFINE_uint32(background_page_fixer_variant, 1, "Only 1 supported for now");
 DEFINE_bool(log_same_device_fdp, false, "Isolate the WAL traffic to a diffrent RUH.");
+DEFINE_bool(trace_ru_threshold, false, "Periodically trace the ru threshold of all open RUs");
 // -------------------------------------------------------------------------------------
 DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------

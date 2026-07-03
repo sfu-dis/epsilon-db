@@ -114,13 +114,6 @@ LeanStore::LeanStore()
    max_open_ru_epochs += FLAGS_overprovisioning_ru_epochs;
    LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
    LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
-   if (FLAGS_background_page_fixer_variant == 2) {
-      const u64 ru_epoch_pids_size = utils::upAlign(sizeof(BufferManager::ru_epoch_pids) + 2 * FLAGS_ru_size * sizeof(PID), PAGE_SIZE);
-      const u64 space_for_ru_epoch_pids = ru_epoch_pids_size * max_open_ru_epochs;
-      total_blocks_in_ssd -= (space_for_ru_epoch_pids/4096);
-      // store the offset to pids array.
-      LOG_INFO(logger, "Per RU pids list size %.2f MiB, Total : %.2f GiB", ru_epoch_pids_size / 1048576.0, space_for_ru_epoch_pids / 1073741824.0);
-   }
    u64 persistant_state_blocks = utils::upAlign(sizeof(BufferManager::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
    total_blocks_in_ssd -= persistant_state_blocks;
    // Adjust ssd_gib
