@@ -1,4 +1,4 @@
 --tpcc_abort_pct=0
 --steady_tpcc
 --nomodified_tpcc_uniform
-
+# --bulk_insert

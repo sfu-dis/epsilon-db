@@ -1,35 +1,61 @@
 #!/bin/bash
 
+
+if [ -z "${BUILD_DIR}" ]; then
+   echo "Error: please set up BUILD_DIR environment variable."
+   exit 1
+else
+   echo "${BUILD_DIR}"
+fi
+
 set -euo pipefail
 # set -x
 
 trap 'echo "Error: command failed: $BASH_COMMAND"' ERR
 
-
 STATS_DIR=/home/mfd4/fdp/paper
-SRC_DIR=".." # assume running from build dir
-BUILD_DIR="."
-DEVICE_RESET_SCRIPT="${SRC_DIR}/scripts/reset-single-ns.sh"
-FLAGS_FILE="${SRC_DIR}/template.gflag"
-DRY_RUN_FLAGS_FILE="${SRC_DIR}/template.dry_run.gflag"
-YCSB_FLAGS_FILE="${SRC_DIR}/ycsb.gflag"
-TPCC_FLAGS_FILE="${SRC_DIR}/tpcc.gflag"
+# BUILD_DIR="."
+# Put all necessary flags into the scripts dir
+# SRC_DIR=".." # assume running from build dir
+DEVICE_RESET_SCRIPT="$PWD/reset-single-ns.sh"
+FLAGS_FILE="$PWD/template.gflag"
+DRY_RUN_FLAGS_FILE="$PWD/template.dry_run.gflag"
+YCSB_FLAGS_FILE="$PWD/ycsb.gflag"
+TPCC_FLAGS_FILE="$PWD/tpcc.gflag"
+WAF_SCRIPT="$PWD/calcssdwaf.sh"
+PARSE_PY="$PWD/parse_block.py"
 
 device=
+# currently un-used
+log_device=/dev/nvme3n1
 vanilla=0
 benchmark=
-distribution=
-zipfian_skew=0.8
-database_size_gib=
 threshold=0.8
 trim=0
+sanitize=0
+run_for_seconds=7200 # default to 5 hours
+
+worker_threads=96
+ru_size=
+
 prefix=""
 dry_run=0
 stats_dir=1
 gdb=0
 
+# TPC-C only flags
 tpcc_warehouse_count=
 max_log_records_to_discard=7
+
+# YCSB only flags
+ycsb_read_ratio=0
+ycsb_dead_tuple_ratio=0
+distribution=
+zipfian_skew=0.8
+database_size_gib=
+dram_gib=80
+
+subdir=
 
 force_stats_dir=0
 force_no_stats_dir=0
@@ -37,6 +63,14 @@ load_only=0
 run_only=0
 description=0
 override_stats_dir=0
+
+bg_page_fixer_threads=2
+
+
+blktrace=0
+
+# whether the device has FDP support or not, this is for samling the WAF.
+fdp=0
 
 original_args=("$@")
 
@@ -47,8 +81,16 @@ while [[ $# -gt 0 ]]; do
             device="$2"
             shift 2
             ;;
+        --log_device)
+           log_device="$2"
+           shift 2
+           ;;
         --trim)
             trim=1
+            shift 1
+            ;;
+        --sanitize)
+            sanitize=1
             shift 1
             ;;
         --vanilla)
@@ -77,6 +119,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --threshold)
             threshold="$2"
+            shift 2
+            ;;
+        --buffer_pool_gib)
+            dram_gib="$2"
             shift 2
             ;;
         --max_log_records_to_discard)
@@ -120,6 +166,46 @@ while [[ $# -gt 0 ]]; do
            ;;
         --override_stats_dir)
            override_stats_dir=1
+           shift 1
+           ;;
+        --bg_page_fixer_threads)
+           bg_page_fixer_threads="$2"
+           shift 2
+           ;;
+        --run_for_seconds)
+           run_for_seconds="$2"
+           shift 2
+           ;;
+        --worker_threads)
+           worker_threads="$2"
+           shift 2
+           ;;
+        --run_for_minutes)
+           run_for_seconds=$(( $2 * 60 ))
+           shift 2
+           ;;
+        --run_for_hours)
+           run_for_seconds=$(( $2 * 3600 ))
+           shift 2
+           ;;
+        --ycsb_read_ratio)
+           ycsb_read_ratio="$2"
+           shift 2
+           ;;
+        --ycsb_dead_tuple_ratio)
+           ycsb_dead_tuple_ratio="$2"
+           shift 2
+           ;;
+        --subdir)
+           subdir="$2"
+           shift 2
+           ;;
+        --blktrace)
+           blktrace=1
+           shift 1
+           ;;
+        --fdp)
+           fdp=1
            shift 1
            ;;
         *)
@@ -191,6 +277,14 @@ if [[ "$distribution" == "zipfian" ]]; then
    fi
 fi
 
+if [ -z "${bg_page_fixer_threads}" ]; then
+   if [ "${benchmark}" == "tpcc" ]; then
+      bg_page_fixer_threads=4
+   else
+      bg_page_fixer_threads=2
+   fi
+fi
+
 if (( missing )); then
     echo "Aborting due to missing required arguments."
     exit 1
@@ -198,6 +292,7 @@ fi
 
 if (( dry_run == 0 && trim == 0 && run_only == 0)); then
    echo "You are not doing a dry run but trim is disabled, have you forgotten the option --trim"
+   #TODO(mfd) : Add a timeout.
    read -p "Continue? [Y/y], Trim device? [t], type anything else to abort: " answer
    case "$answer" in
         [Yy]* )
@@ -226,19 +321,67 @@ if [[ "$distribution" == "zipfian" ]]; then
    skew="zipf${zipfian_skew}"
 fi
 
-dir_name="${STATS_DIR}/${prefix}${benchmark}"
+if (( ycsb_dead_tuple_ratio > 0 )); then
+   skew="${skew}_0.25dead"
+fi
+
+# Get controller device by removing 'n' and digits after it
+controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
+model=$(lsblk -ndo MODEL ${device} | tr ' ' '_')
+echo "$model"
+
+declare -A MODEL_MAP=(
+    ["SAMSUNG_MZ1L2960HCJR-00A07"]="PM39A"
+    ["Samsung_SSD_980_PRO_1TB"]="980PRO"
+    ["MZOL63T8HDLT-00AFB"]="PM9D3a"
+    ["Micron_7450_MTFDKBA480TFR"]="M7450Pro"
+)
+
+# This is just used by me to avoid forgetting to change the ru size when I change device.
+# Therefore pay attention, you may have the same model but different capacity, hence
+# different RU SIZE.
+declare -A RU_SIZE_MAP=(
+    ["Micron_7450_MTFDKBA480TFR"]="500000"
+    ["SAMSUNG_MZ1L2960HCJR-00A07"]="1000000"
+    ["MZOL63T8HDLT-00AFB"]="3193344"
+)
+
+if [[ -n "$subdir" ]]; then
+   STATS_DIR="${STATS_DIR}/${subdir}"
+fi
+
+short="${MODEL_MAP[$model]}"
+echo $short
+if [[ -z "$short" ]]; then
+   # TODO(mfd) : Prompt me for a mnemonic for the model.
+   exit 0
+   dir_name="${STATS_DIR}/${prefix}${benchmark}"
+else
+   dir_name="${STATS_DIR}/${short}/${prefix}${benchmark}"
+fi
+
+if [[ -z "${ru_size}" ]]; then
+   ru_size="${RU_SIZE_MAP[$model]}"
+   echo "Unspecified RU Size, will use ${ru_size}"
+fi
+
+if [[ -z "$ru_size" ]]; then
+   echo "Please specify an RU size; --ru_size"
+   exit 1
+fi
 
 if [[ "$benchmark" == "ycsb" ]]; then
-   tib_int=$(( database_size_gib / 1024 ))
-   tib_dec=$(( (database_size_gib * 10 / 1024) % 10 ))
-   database_size_tib="${tib_int}.${tib_dec}"
-   util="${database_size_tib}TiB"
+   # tib_int=$(( database_size_gib / 1024 ))
+   # tib_dec=$(( (database_size_gib * 10 / 1024) % 10 ))
+   # database_size_tib="${tib_int}.${tib_dec}"
+   util="${database_size_gib}G"
    dir_name="${dir_name}_${skew}_${util}"
 else
    util="${tpcc_warehouse_count}whs"
    dir_name="${dir_name}_${util}"
 fi
 
+dir_name="${dir_name}_${worker_threads}W"
 
 if (( vanilla == 1 )); then
    dir_name="${dir_name}_vanilla"
@@ -248,9 +391,11 @@ fi
 
 
 if [[ "$benchmark" == "ycsb" ]]; then
-    BENCHMARK_BINARY="${BUILD_DIR}/frontend/ycsb"
+    # BENCHMARK_BINARY="${BUILD_DIR}/frontend/ycsb"
+    BENCHMARK_BINARY="./frontend/ycsb"
 elif [[ "$benchmark" == "tpcc" ]]; then
-    BENCHMARK_BINARY="${BUILD_DIR}/frontend/tpcc"
+    # BENCHMARK_BINARY="${BUILD_DIR}/frontend/tpcc"
+    BENCHMARK_BINARY="./frontend/tpcc"
 else
     echo "Error: benchmark should be either ycsb or tpcc"
     exit 1
@@ -276,19 +421,23 @@ if [[ -d "$dir_name" && "$stats_dir" -eq 1 && "$override_stats_dir" -eq 0 ]]; th
     esac
 fi
 
+
+
+
 # echo "$dir_name"
 if (( stats_dir == 1)); then
-    mkdir -p "$dir_name"
     echo "Creating Directory ${dir_name}"
+    mkdir -p ${dir_name}
     if (( description == 1)); then
        echo "Please write a description that will go into the stats folder (additional remarks)"
        read -p "> " text_desc
        echo "${text_desc}" > "${dir_name}/description.txt"
+       echo "${model}" > "${dir_name}/ssd_model.txt"
     fi
 fi
 
 passwd=""
-fdp=0
+# fdp=0
 waf() {
    # echo "Background WAF sampling process: starting"
    if (( fdp == 1 )); then
@@ -300,69 +449,106 @@ waf() {
          sleep 600s
       done;
    else
-     sudo bash ${SRC_DIR}/scripts/calcssdwaf.sh ${dir_name}/detailed_waf "${device}"
+     sudo bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}"
    fi
 }
 
+pushd ${BUILD_DIR}
+
+blktrace_ssd_read() {
+   echo "$PWD in blktrace"
+   if [ -d blktrace_out ]; then
+      rm -rf blktrace_out
+   fi
+   mkdir -p blktrace_out
+   # wake up in the last 30 minutes and run for 15 minutes
+   sleep $((${run_for_seconds} - 300))
+   echo "Woke up to Collect traces"
+   # put raw data inside the build dir
+   sudo blktrace -d ${device} -a read -o blktrace_out/steady -w 300
+}
+
+#TODO(mfd): A temporary flag for common flags.
+# which are ssd device, log deice, OP region, RU size
+
+
+make -j 10
+
 load_flags="load.gflag"
 run_flags="run.gflag"
+common_flags="common.gflag"
 
 cp "$FLAGS_FILE" "$load_flags"
 cp "$FLAGS_FILE" "$run_flags"
 
-if [[ "$benchmark" == "ycsb" ]]; then
-   cat "$YCSB_FLAGS_FILE" >> "$load_flags"
-   cat "$YCSB_FLAGS_FILE" >> "$run_flags"
-else
-   cat "$TPCC_FLAGS_FILE" >> "$load_flags"
-   cat "$TPCC_FLAGS_FILE" >> "$run_flags"
-fi
-
 {
    echo "--ssd_path=${device}"
-   echo "--persist"
-   echo "--run_for_seconds=0"
-   echo "--noenable_discarding"
-   echo "--nowal"
-   echo "--nowal_pwrite"
-   # echo "--wal_partition_by=page"
+   echo "--worker_threads=${worker_threads}"
+   echo "--ru_size=${ru_size}"
+
+   echo "--dram_gib=${dram_gib}"
 
    if [[ "$benchmark" == "ycsb" ]]; then
       echo "--target_gib=${database_size_gib}"
    else
       echo "--tpcc_warehouse_count=${tpcc_warehouse_count}"
    fi
+} > "${common_flags}"
+
+cat "${common_flags}" >> "${load_flags}"
+cat "${common_flags}" >> "${run_flags}"
+
+if [[ "$benchmark" == "ycsb" ]]; then
+   cat "$YCSB_FLAGS_FILE" >> "$load_flags"
+   cat "$YCSB_FLAGS_FILE" >> "$run_flags"
+   echo "--ycsb_read_ratio=${ycsb_read_ratio}" >> "$run_flags"
+   echo "--ycsb_dead_tuple_ratio=${ycsb_dead_tuple_ratio}" >> "$run_flags"
+else
+   cat "$TPCC_FLAGS_FILE" >> "$load_flags"
+   cat "$TPCC_FLAGS_FILE" >> "$run_flags"
+fi
+
+{
+   echo "--persist"
+   echo "--run_for_seconds=0"
+   echo "--noenable_discarding"
+   echo "--nowal"
+   echo "--nowal_pwrite"
+   echo "--nobulk_insert"
+
+   # to avoid generating and shuffling the key array
+   echo "--zipf_factor=0"
+
 } >> "$load_flags"
 
 
 {
-   echo "--ssd_path=${device}"
    echo "--recover"
    echo "--clean_recover"
-   # echo "--run_for_seconds=36000" # 8 hours
-   echo "--run_for_seconds=57600" # 16 hours
+   echo "--run_for_seconds=${run_for_seconds}"
    echo "--wal_pwrite"
+   echo "--bulk_insert"
+
+   echo "--redo_log_file=${log_device}"
+
    if (( vanilla == 1 )); then
       echo "--noenable_discarding"
       echo "--wal_partition_by=ru_epoch"
    else
       echo "--enable_discarding"
-      echo "--ru_gc_threads=4"
+      echo "--ru_gc_threads=${bg_page_fixer_threads}"
       echo "--ru_gc_threshold=${threshold}"
       echo "--wal_partition_by=ru_epoch"
       echo "--max_log_records_to_discard=${max_log_records_to_discard}"
    fi
 
-   if [[ "$benchmark" == "tpcc" ]]; then
-      echo "--tpcc_warehouse_count=${tpcc_warehouse_count}"
-   else
+   if [[ "$benchmark" == "ycsb" ]]; then
       # ycsb benchmark
       if [[ "$distribution" == "zipfian" ]]; then
          echo "--zipf_factor=${zipfian_skew}"
       else
          echo "--zipf_factor=0"
       fi
-      echo "--target_gib=${database_size_gib}"
    fi
 
 } >> "$run_flags"
@@ -398,25 +584,27 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo bash "$0" "$original_args"
 fi
 
-# Get controller device by removing 'n' and digits after it
-controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
 
 sanitize_nvme() {
-    echo "sanitize"
-    sudo nvme sanitize --sanact=2 "${device}"
-    sleep 1m
-    sudo nvme sanitize-log "${controller}"
-    sleep 1m
+    if (( sanitize )); then
+       echo "sanitize"
+       sudo nvme sanitize --sanact=2 "${device}"
+       sleep 1m
+       sudo nvme sanitize-log "${controller}"
+       sleep 1m
+    fi
     sudo blkdiscard -v "${device}"
     sleep 1m
 }
 
 if (( trim == 1)); then
    echo "Trimmimg the device"
+   if (( fdp == 1 )); then
+      bash ${DEVICE_RESET_SCRIPT} --dev "${controller}"
+   fi
    sanitize_nvme
 fi
 
-make -j 10
 
 # Validate flags before running long experiments.
 sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$load_flags")
@@ -436,19 +624,40 @@ fi
 if (( stats_dir == 1 )); then
    waf > "${dir_name}/waf" &
    waf_pid=$!
+
+   if (( blktrace )); then
+      blktrace_ssd_read > "${dir_name}/blktrace_ssd_read.out" &
+      blktrace_pid=$!
+   fi
 fi
 
 shutdown() {
     echo "stopping background waf calculator job..."
-    set +x
+    set -x
+    set +e
 
     if (( stats_dir == 1)); then
        cp log_bm.csv ${dir_name}
        cp log_cr.csv ${dir_name}
        cp absorbed_writes_histogram.txt ${dir_name}
+       cp "${load_flags}" ${dir_name}
+       cp "${run_flags}" ${dir_name}
        pkill -TERM -P "$waf_pid" 2>/dev/null
        kill $waf_pid 2>/dev/null
        wait "$waf_pid"
+       # test if blktrace is still running. kill it.
+       # pkill -TERM -P "$blktrace_pid" 2>/dev/null
+       # sudo kill -SIGINT $blktrace_pid 2>/dev/null
+       # transform the output using blkparse and my python script.
+       if (( blktrace )); then
+          wait "$blktrace_pid" || true
+          rm blkparse_out
+          blkparse -i blktrace_out/steady.blktrace.0 -f "%T.%t %a %S\n" -o blkparse_out
+          python3 ${PARSE_PY} blkparse_out > "${dir_name}/blktrace_ssd_latency"
+          # mv blkparse_out ${dir_name}
+       fi
+       echo "results are saved to ${dir_name}"
+       popd
     fi
     exit 0
 }
@@ -463,9 +672,4 @@ if (( gdb == 1 )); then
 fi
 
 sudo ${PREFIX}${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
-# while true; do
-#   sleep 10
-#    echo "G"
-# done;
-
 
