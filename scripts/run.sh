@@ -66,6 +66,7 @@ override_stats_dir=0
 
 bg_page_fixer_threads=2
 
+ppl=1
 
 blktrace=0
 
@@ -195,6 +196,10 @@ while [[ $# -gt 0 ]]; do
         --ycsb_dead_tuple_ratio)
            ycsb_dead_tuple_ratio="$2"
            shift 2
+           ;;
+        --noppl)
+           ppl=0
+           shift 1
            ;;
         --subdir)
            subdir="$2"
@@ -539,7 +544,15 @@ fi
       echo "--ru_gc_threads=${bg_page_fixer_threads}"
       echo "--ru_gc_threshold=${threshold}"
       echo "--wal_partition_by=ru_epoch"
-      echo "--max_log_records_to_discard=${max_log_records_to_discard}"
+      if (( ppl == 1 )); then
+         echo "--per_page_logging"
+         echo "--ppl_merge_threshold=4"
+         echo "--opportunistic_log_compaction"
+         echo "--max_log_records_to_discard=7"
+      else
+         echo "--noper_page_logging"
+         echo "--max_log_records_to_discard=${max_log_records_to_discard}"
+      fi
    fi
 
    if [[ "$benchmark" == "ycsb" ]]; then

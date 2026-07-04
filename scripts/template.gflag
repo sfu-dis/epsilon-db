@@ -15,11 +15,5 @@
 --nowal_tuple_rfa
 --wal_sink_logs=32
 
-# --redo_log_file=/dev/nvme1n1
-
 --clean_recover
 
---per_page_logging
---ppl_merge_threshold=4
---opportunistic_log_compaction
---max_log_records_to_discard=7
