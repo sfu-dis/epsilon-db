@@ -34,6 +34,9 @@ make
 ```
 
 ## Benchmarks Examples 
+
+After building, from inside the `scripts/` directory, run the following command by passing the build directory as environment variable.
+
 ### YCSB
 ```bash
 sudo BUILD_DIR="../build" bash run.sh --device /dev/nvme2n1 --log_device /dev/nvme0n1 --benchmark ycsb --database_size 410 --distribution uniform --trim --run_for_hours 5 --worker_threads 64  --buffer_pool_gib 40
