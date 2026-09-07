@@ -181,11 +181,6 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          };
          // -------------------------------------------------------------------------------------
          if (config.enable_wal) {
-            auto new_left_init_wal = new_left_node.reserveWALEntry<WALInitPage>(0);
-            new_left_init_wal->type = WAL_LOG_TYPE::WALInitPage;
-            new_left_init_wal->dt_id = dt_id;
-            new_left_init_wal.submit();
-            // -------------------------------------------------------------------------------------
             WALLogicalSplit logical_split_entry;
             logical_split_entry.type = WAL_LOG_TYPE::WALLogicalSplit;
             logical_split_entry.right_pid = c_x_guard.bf()->header.pid;
