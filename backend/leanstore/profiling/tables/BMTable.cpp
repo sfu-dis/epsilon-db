@@ -71,6 +71,10 @@ void BMTable::open()
    columns.emplace("r_mib", [&](Column& col) {
       col << (local_read_operations_counter * PAGE_SIZE / 1024.0 / 1024.0);
    });
+   columns.emplace("split_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::write_just_splitted) * PAGE_SIZE/1048576.0); });
+   columns.emplace("new_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::write_new_page) * PAGE_SIZE/1048576.0); });
+   columns.emplace("pplf_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::ppl_buffer_full) * PAGE_SIZE/1048576.0); });
+   columns.emplace("hot_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::hot) * PAGE_SIZE/1048576.0); });
    columns.emplace("dirty_pct", [&](Column& col) {
       col <<
       (sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_read_operations_counter) * 100.0 / local_read_operations_counter);   });

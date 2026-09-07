@@ -345,6 +345,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       for (volatile const auto& cooled_bf : evict_candidate_bfs) {
          jumpmuTry()
          {
+            auto& header = cooled_bf->header;
+            auto& page = cooled_bf->page;
             BMOptimisticGuard o_guard(cooled_bf->header.latch);
             // Check if the BF got swizzled in or unswizzle another time in another partition
             if (cooled_bf->header.state != BufferFrame::STATE::COOL ||
@@ -368,38 +370,71 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             // -------------------------------------------------------------------------------------
             if (cooled_bf->isDirty()) {
+               std::optional<bool> page_in_live_ru_epoch;
                if (FLAGS_enable_discarding
                   && cooled_bf->isDiscardable()
-                  && reinterpret_cast<btree::BTreeNode*>(cooled_bf->page.dt)->is_leaf
-                  && cooled_bf->page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)) {
+                  && reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf
+                  && (page_in_live_ru_epoch = (page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)))) {
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()
                           && (rate.load(std::memory_order_acquire) == 100 || (utils::RandomGenerator::getRandU64(0, 100) < rate.load(std::memory_order_acquire)))) {
                   {
+                     if (page_in_live_ru_epoch.has_value() && !page_in_live_ru_epoch.value()) {
+                       // I will waste a memory fence here just for uniformity.
+                       cooled_bf->markUnDiscardable(RECLAIMED_RU_EPOCH);
+                     }
                      BMExclusiveGuard ex_guard(o_guard);
-                     paranoid(!cooled_bf->header.is_being_written_back);
-                     cooled_bf->header.is_being_written_back.store(true, std::memory_order_release);
+                     paranoid(!header.is_being_written_back);
+                     header.is_being_written_back.store(true, std::memory_order_release);
+                     // XXX(mfd) : Probably the better check is > reclaiming not > reclaimed.
+                     if (page.ru_epoch != UNMAPPED_RU_EPOCH && page.ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
+                         ru_discard_set.at(page.ru_epoch).undiscardable_cause_distribution[header.undiscardable_cause].fetch_add(1);
+                         ru_discard_set.at(page.ru_epoch).invalid.fetch_add(1);
+                     }
                      COUNTERS_BLOCK(absorbed_writes_histogram)
                      {
-                        u8 absorbed_writes = std::min<u8>(cooled_bf->header.absorbed_writes, 63);
+                        u8 absorbed_writes = std::min<u8>(header.absorbed_writes, 63);
                         PPCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
+                     }
+                     COUNTERS_BLOCK(undiscardable_cause)
+                     {
+                        switch(header.undiscardable_cause) {
+                           case (JUST_SPLITTED) : {
+                              PPCounters::myCounters().write_just_splitted++;
+                              break;
+                           }
+                           case (NEWLY_ALLOCATED) : {
+                              PPCounters::myCounters().write_new_page++;
+                              break;
+                           }
+                           case (PPL_BUFFER_FULL) : {
+                              PPCounters::myCounters().ppl_buffer_full++;
+                              break;
+                           }
+                           case (MAX_DISCARDING_DEPTH_EXCEEDED) : {
+                              PPCounters::myCounters().hot++;
+                              break;
+                           }
+                        }
                      }
                      /// We directly update the header information because we need this information
                      /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
-                     cooled_bf->header.not_yet_persisted = false;
-                     cooled_bf->header.logging = nullptr;
-                     cooled_bf->header.absorbed_writes = 0;
-                     cooled_bf->header.pending_lsn_count = 0;
-                     cooled_bf->header.last_written_plsn = cooled_bf->page.PLSN;
-                     cooled_bf->page.prev_ru_epoch = cooled_bf->page.ru_epoch;
-                     cooled_bf->page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
-                     if (!FLAGS_wal) { cooled_bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
+                     header.not_yet_persisted = false;
+                     header.logging = nullptr;
+                     header.absorbed_writes = 0;
+                     header.pending_lsn_count = 0;
+                     header.last_written_plsn = page.PLSN;
+                     header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+                     page.prev_ru_epoch = page.ru_epoch;
+                     page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
+                     if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
                      if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
                      if (FLAGS_crc_check) {
-                        cooled_bf->header.crc = utils::CRC(cooled_bf->page.dt, EFFECTIVE_PAGE_SIZE);
+                        header.crc = utils::CRC(page.dt, EFFECTIVE_PAGE_SIZE);
                      }
                      // TODO: preEviction callback according to DTID
                      async_write_buffer.add(*cooled_bf, cooled_bf_pid);
+                     ru_discard_set[page.ru_epoch].total.fetch_add(1);
                   }
                } else {
                   jumpmu_break;
@@ -446,11 +481,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       ensure_lte(written_bf.header.last_written_plsn, written_plsn);
                       // -------------------------------------------------------------------------------------
                       written_bf.header.is_being_written_back = false;
-                      s64 previous_ru_epoch = written_bf.page.prev_ru_epoch;
-                      if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
-                         ru_discard_set.data[previous_ru_epoch % max_open_ru_epochs].invalid.fetch_add(1);
-                      }
-                      ru_discard_set[written_ru_epoch].total.fetch_add(1);
+                      // FIXME(mfd) : I think this is already called in the destructor of ex_guard
                       o_guard.guard.unlock();
                       jumpmu_break;
                    }

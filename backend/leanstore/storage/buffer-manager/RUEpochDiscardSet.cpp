@@ -46,6 +46,10 @@ void BufferManager::RUEpochDiscardSet::reset()
    log_segment_size = -1;
    cur_ru_epoch = -1;
    active.store(false);
+   // std::memset(undiscardable_cause_distribution, 0, sizeof(undiscardable_cause_distribution));
+   for (auto& counter : undiscardable_cause_distribution) {
+      counter.store(0, std::memory_order_relaxed);
+   }
    BMC::global_bf->reclaimed_ru_epoch.fetch_add(1);
 }
 // -------------------------------------------------------------------------------------
@@ -102,6 +106,19 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
    }
    if (ok || (++cnt % 1024) == 0) {
       printf("\n ru_epoch = %ld tot = %d, invalid = %d, to_gc = %d => per %f %%\n", cur_ru_epoch, tot, i, d, per * 100);
+      const u32 c_none = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::NONE].load(std::memory_order_acquire);
+      const u32 c_new = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::NEWLY_ALLOCATED].load(std::memory_order_acquire);
+      const u32 c_ppl = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::PPL_BUFFER_FULL].load(std::memory_order_acquire);
+      const u32 c_depth = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::MAX_DISCARDING_DEPTH_EXCEEDED].load(std::memory_order_acquire);
+      const u32 c_split = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::JUST_SPLITTED].load(std::memory_order_acquire);
+      const u32 c_ru = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::RECLAIMED_RU_EPOCH].load(std::memory_order_acquire);
+      const u32 c_other = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::OTHER].load(std::memory_order_acquire);
+      const u32 total = c_none + c_new + c_ppl + c_depth + c_split + c_ru + c_other;
+
+      std::printf("total=%u | NONE=%u(%.1f%%) NEW_ALLOC=%u(%.1f%%) PPL_FULL=%u(%.1f%%) MAX_DEPTH=%u(%.1f%%) SPLIT=%u(%.1f%%) RU_EPOCH=%u(%.1f%%) OTHER=%u(%.1f%%)\n",
+                  total, c_none, total ? 100.0 * c_none / total : 0.0, c_new, total ? 100.0 * c_new / total : 0.0, c_ppl,
+                  total ? 100.0 * c_ppl / total : 0.0, c_depth, total ? 100.0 * c_depth / total : 0.0, c_split, total ? 100.0 * c_split / total : 0.0,
+                  c_ru, total ? 100.0 * c_ru / total : 0.0, c_other, total ? 100.0 * c_other / total : 0.0);
    }
    return ok;
 }

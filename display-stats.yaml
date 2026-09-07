@@ -15,6 +15,26 @@ columns:
     enabled: true
     source: bm
 
+  split_w_mib:
+    field: "Split W"
+    enabled: true
+    source: bm
+
+  new_w_mib:
+    field: "New W"
+    enabled: true
+    source: bm
+
+  pplf_w_mib:
+    field: "PPLF W"
+    enabled: true
+    source: bm
+
+  hot_w_mib:
+    field: "HOT W"
+    enabled: true
+    source: bm
+
   r_mib:
     field: "R MiB"
     enabled: true
@@ -62,7 +82,7 @@ columns:
 
   yielded_cpu_no_frame:
     field: "yield"
-    enabled: true
+    enabled: false
     source: bm
 
 
@@ -163,22 +183,22 @@ columns:
 
   read_depth_0:
     field: "rd0"
-    enabled: true
+    enabled: false
     source: bm
 
   read_depth_1:
     field: "rd1"
-    enabled: true
+    enabled: false
     source: bm
 
   read_depth_2:
     field: "rd2"
-    enabled: true
+    enabled: false
     source: bm
 
   read_depth_3:
     field: "rd3"
-    enabled: true
+    enabled: false
     source: bm
 
   read_depth_4:
@@ -208,10 +228,10 @@ columns:
 
   wait_for_frame_us:
     field: "Frame"
-    enabled: true
+    enabled: false
     source: bm
 
   max_on_demand_redo_ns:
     field: "Redo ns"
-    enabled: true
+    enabled: false
     source: bm

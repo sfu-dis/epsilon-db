@@ -440,24 +440,27 @@ BufferFrame& BufferManager::allocatePage()
    // Pick a pratition randomly
    Partition& partition = randomPartition();
    BufferFrame& free_bf = partition.dram_free_list.tryPop();
+   auto& header = free_bf.header;
+   auto& page = free_bf.page;
    auto [free_pid, ru_epoch] = partition.nextPID();
    if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
-   assert(free_bf.header.state == BufferFrame::STATE::FREE);
+   ensure_equal(header.state, BufferFrame::STATE::FREE);
    // -------------------------------------------------------------------------------------
    // Initialize Buffer Frame
-   free_bf.header.latch.assertNotExclusivelyLatched();
-   free_bf.header.latch.mutex.lock();  // Exclusive lock before changing to HOT
-   free_bf.header.latch->fetch_add(LATCH_EXCLUSIVE_BIT);
-   free_bf.header.pid = free_pid;
-   free_bf.header.state = BufferFrame::STATE::HOT;
-   free_bf.header.not_yet_persisted = true;
+   header.latch.assertNotExclusivelyLatched();
+   header.latch.mutex.lock();  // Exclusive lock before changing to HOT
+   header.latch->fetch_add(LATCH_EXCLUSIVE_BIT);
+   header.pid = free_pid;
+   header.state = BufferFrame::STATE::HOT;
+   header.not_yet_persisted = true;
+   header.undiscardable_cause = NEWLY_ALLOCATED;
    // A newly created page cannot be discarded.
-   ensure(!free_bf.header.discardable.load());
-   free_bf.header.last_written_plsn = 0;
-   free_bf.page.reset();
-   free_bf.page.ru_epoch = ru_epoch;
-   free_bf.page.magic_debugging_number = free_pid;
-   free_bf.header.latch.assertExclusivelyLatched();
+   ensure(!header.discardable.load());
+   header.last_written_plsn = 0;
+   page.reset();
+   page.ru_epoch = ru_epoch;
+   page.magic_debugging_number = free_pid;
+   header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK()
    {
@@ -683,9 +686,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             DTRegistry::global_dt_registry.redo(bf.page.dt_id, bf.page.dt, dte->payload, 1, lrec_size);
             if (reconstruct_ppl) {
                const bool canFitIntoPPL = bf.ppl.insertLogRecord(dte->payload, lrec_size);
+               // THINK(mfd) : Is it the case that this should always be true ?
+               // i.e, ensure(canFitIntoPPL);
                if (!canFitIntoPPL) {
                   reconstruct_ppl = false;
-                  bf.markUnDiscardable();
+                  bf.markUnDiscardable(PPL_BUFFER_FULL);
                }
             }
             bf.header.absorbed_writes += 1;

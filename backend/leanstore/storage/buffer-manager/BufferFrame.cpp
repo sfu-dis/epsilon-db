@@ -18,7 +18,7 @@ bool BufferFrame::submitPPLEntry()
    if (reclaiming_v1 >= page.ru_epoch) {
       // after implementing GC of pages in the buffer pool, this invariant should hold
       // ensure(reclaiming == page.ru_epoch);
-      markUnDiscardable();
+      markUnDiscardable(RECLAIMED_RU_EPOCH);
       return false;
    }
    ensure(header.logging != nullptr);
@@ -26,13 +26,13 @@ bool BufferFrame::submitPPLEntry()
    logging.mutex.lock();
    if (logging.redirect_to_sink_log.load()) {
       logging.mutex.unlock();
-      markUnDiscardable();
+      markUnDiscardable(OTHER);
       return false;
    }
    ru_epoch_t reclaiming_v2 = BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
    if (reclaiming_v2 != reclaiming_v1 && reclaiming_v2 >= page.ru_epoch) {
       logging.mutex.unlock();
-      markUnDiscardable();
+      markUnDiscardable(RECLAIMED_RU_EPOCH);
       return false;
    }
    ppl.header.pid = header.pid;

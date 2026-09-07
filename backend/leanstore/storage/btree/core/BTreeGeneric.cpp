@@ -82,7 +82,8 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
       auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
       // -------------------------------------------------------------------------------------
-      c_x_guard.bf()->markUnDiscardable();
+      // XXX(mfd) : The root should be already undiscardable.
+      c_x_guard.bf()->markUnDiscardable(INNER_NODE);
       if (config.enable_wal) {
          // TODO: System transactions
          new_root.incrementGSN();
@@ -159,8 +160,8 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
          auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
          // -------------------------------------------------------------------------------------
-         p_x_guard.bf()->markUnDiscardable();
-         c_x_guard.bf()->markUnDiscardable();
+         p_x_guard.bf()->markUnDiscardable(INNER_NODE);
+         c_x_guard.bf()->markUnDiscardable(JUST_SPLITTED);
          ensure(!new_left_node.bf()->isDiscardable());
          // Increment GSNs before writing WAL to make sure that these pages marked as dirty
          // regardless of the FLAGS_wal
@@ -268,9 +269,11 @@ bool BTreeGeneric::tryMerge(BufferFrame& to_merge, bool swizzle_sibling)
             return false;
          }
          // -------------------------------------------------------------------------------------
-         p_x_guard.bf()->markUnDiscardable();
-         c_x_guard.bf()->markUnDiscardable();
-         l_x_guard.bf()->markUnDiscardable();
+         // TODO(mfd) : Think more about merging
+         p_x_guard.bf()->markUnDiscardable(INNER_NODE);
+         c_x_guard.bf()->markUnDiscardable(OTHER);
+         // This is not needed,
+         // l_x_guard.bf()->markUnDiscardable(OTHER);
          if (config.enable_wal) {
             p_guard.incrementGSN();
             c_guard.incrementGSN();
@@ -306,9 +309,11 @@ bool BTreeGeneric::tryMerge(BufferFrame& to_merge, bool swizzle_sibling)
             return false;
          }
          // -------------------------------------------------------------------------------------
-         p_x_guard.bf()->markUnDiscardable();
-         c_x_guard.bf()->markUnDiscardable();
-         r_x_guard.bf()->markUnDiscardable();
+         // XXX(mfd) : It should be the case that the parent is already undiscardable.
+         p_x_guard.bf()->markUnDiscardable(INNER_NODE);
+         // c_x_guard.bf()->markUnDiscardable(OTHER);
+         // XXX(mfd) : This should be just merged
+         r_x_guard.bf()->markUnDiscardable(OTHER);
          if (config.enable_wal) {
             p_guard.incrementGSN();
             c_guard.incrementGSN();

@@ -126,10 +126,14 @@ class HybridPageGuard
    inline void markAsDirty()
    {
       bf->page.PLSN++;
-      if (FLAGS_enable_discarding
-         && bf->header.discardable.load(std::memory_order_acquire)
-         && (bf->page.PLSN - bf->header.last_written_plsn) > FLAGS_max_log_records_to_discard) {
-         bf->header.discardable.store(false, std::memory_order_release);
+      if (FLAGS_enable_discarding && bf->isDiscardable()) {
+         // TODO(mfd): What about ommiting this check when the PPL is enabled. That is if PPL
+         //  is enabled we keep on discarding as long as there is space in the PPL buffer.
+         if ((bf->page.PLSN - bf->header.last_written_plsn) > FLAGS_max_log_records_to_discard) {
+            // XXX(mfd) : This is not necessarily a hot page. Any page after a while will reach
+            //  the state where it has a lot of pending log records.
+            bf->markUnDiscardable(MAX_DISCARDING_DEPTH_EXCEEDED);
+         }
       }
    }
    inline void incrementGSN()
@@ -165,8 +169,8 @@ class HybridPageGuard
    {
       assert(FLAGS_wal);
       assert(guard.state == GUARD_STATE::EXCLUSIVE);
-      if (disable_discarding && bf->isDiscardable()) {
-         bf->markUnDiscardable();
+      if (disable_discarding) {
+         bf->markUnDiscardable(OTHER);
       }
       if (!FLAGS_wal_tuple_rfa) {
          incrementGSN();
@@ -211,7 +215,7 @@ class HybridPageGuard
          first_entry_in_log = true;
       }
       if (logging.is_sink_log) {
-         bf->markUnDiscardable();
+         bf->markUnDiscardable(OTHER);
       }
       bf->header.logging = &logging;
       logging.walEnsureEnoughSpace(sizeof(leanstore::cr::WALDTEntry) + sizeof(WT) + extra_size);

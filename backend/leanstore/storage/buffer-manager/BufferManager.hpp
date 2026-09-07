@@ -152,6 +152,8 @@ public:
       // -------------------------------------------------------------------------------------
       ru_epoch_t cur_ru_epoch = -1;
       atomic<bool> active{false};
+      // -------------------------------------------------------------------------------------
+      atomic<u32> undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::OTHER] = {0};
 
       void open(ru_epoch_t new_ru_epoch);
       void reset();
@@ -187,13 +189,26 @@ public:
       RUEpochsState(u64 size)
         : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size)) {}
 
+      /**
+       * operator[] is Exact : use when we're guarentted that the ru_epoch cannot be
+       * reclaimed while we're accessing it. This typically the case for the
+       * background page fixing threads.
+       * The at() is a non-exact variant of operator[], it is used for stats and for the ru usage.
+       * The window of error is small that we allow small error.
+       */
+      RUEpochDiscardSet& at(size_t index) {
+         return data[index % size];
+      }
+      const RUEpochDiscardSet& at(size_t index) const {
+         return data[index % size];
+      }
       RUEpochDiscardSet& operator[](size_t index) {
          ensure_equal(data[index % size].cur_ru_epoch, s64(index));
-         return data[index % size];
+         return at(index);
       }
       const RUEpochDiscardSet& operator[](size_t index) const {
          ensure_equal(data[index % size].cur_ru_epoch, s64(index));
-         return data[index % size];
+         return at(index);
       }
    };
    RUEpochsState ru_discard_set;

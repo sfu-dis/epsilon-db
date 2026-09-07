@@ -28,6 +28,17 @@ struct WALEntry;  // Forward Declaration
 const u64 PAGE_SIZE = 4 * 1024;
 constexpr u64 PAGE_ALIGNEMENT = 1024;
 // -------------------------------------------------------------------------------------
+enum UNDISCARDABLE_CAUSE : u8 {
+   NONE = 0,
+   NEWLY_ALLOCATED = 1,
+   PPL_BUFFER_FULL = 2,
+   MAX_DISCARDING_DEPTH_EXCEEDED = 3,
+   JUST_SPLITTED = 4,
+   RECLAIMED_RU_EPOCH = 5,
+   INNER_NODE = 6,
+   OTHER = 7
+};
+// -------------------------------------------------------------------------------------
 struct BufferFrame {
    enum class STATE : u8 { FREE = 0, HOT = 1, COOL = 2, LOADED = 3 };
    struct Header {
@@ -35,6 +46,7 @@ struct BufferFrame {
       LID last_written_plsn = 0;
       STATE state = STATE::FREE;  // INIT:
       std::atomic<bool> is_being_written_back = false;
+      UNDISCARDABLE_CAUSE undiscardable_cause{UNDISCARDABLE_CAUSE::NONE};
       bool keep_in_memory = false;
       bool not_yet_persisted = true;
       PID pid = 9999;         // INIT:
@@ -148,6 +160,7 @@ struct BufferFrame {
       {
          PLSN = 0;
          GSN = 0;
+         dt_id = 9999;
          ru_epoch = UNMAPPED_RU_EPOCH;
          prev_ru_epoch = UNMAPPED_RU_EPOCH;
          last_written_lsn = INVALID_LSN;
@@ -167,7 +180,15 @@ struct BufferFrame {
    inline bool isDirty() const { return page.PLSN != header.last_written_plsn; }
    inline bool isFree() const { return header.state == STATE::FREE; }
    inline bool isDiscardable() const { return header.discardable.load(std::memory_order_acquire); }
-   inline void markUnDiscardable() { return header.discardable.store(false, std::memory_order_release); }
+   inline void markUnDiscardable(UNDISCARDABLE_CAUSE cause)
+   {
+      if (!header.discardable.load(std::memory_order_acquire)) {
+         // XXX(mfd): I am making this function idemptent.
+         return;
+      }
+      header.undiscardable_cause = cause;
+      return header.discardable.store(false, std::memory_order_release);
+   }
    // -------------------------------------------------------------------------------------
    // Pre: bf is exclusively locked
    void reset()
@@ -190,6 +211,7 @@ struct BufferFrame {
       header.contention_tracker.reset();
       header.keep_in_memory = false;
       header.pending_lsn_count = 0;
+      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
       ppl.reset();
       // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
@@ -209,7 +231,7 @@ struct BufferFrame {
          return std::nullopt;
       const u32 total_entry_size = sizeof(WT) + payload_size;
       if (!ppl.hasSpaceFor(total_entry_size)) {
-         this->markUnDiscardable();
+         this->markUnDiscardable(PPL_BUFFER_FULL);
          return std::nullopt;
       }
       if (overrides_previous) {

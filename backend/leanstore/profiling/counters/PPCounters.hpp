@@ -22,6 +22,11 @@ struct PPCounters {
    // -------------------------------------------------------------------------------------
    atomic<u64> evicted_pages = 0, pp_thread_rounds = 0;
    atomic<u64> discarded_pages = 0;
+   // We were not able to discard because it has just splitted.
+   atomic<u64> write_just_splitted = 0;
+   atomic<u64> write_new_page = 0;
+   atomic<u64> ppl_buffer_full = 0;
+   atomic<u64> hot = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> touched_bfs_counter = 0;
    atomic<u64> flushed_pages_counter = 0;
