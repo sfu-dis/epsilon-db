@@ -230,7 +230,7 @@ class HybridPageGuard
       logging.active_dt_entry->prev_lsn = first_entry_in_log ? INVALID_LSN : bf->page.last_written_lsn;
       logging.mutex.unlock();
       // -------------------------------------------------------------------------------------
-      bf->header.absorbed_writes++;
+      bf->ppl.absorbed_writes++;
       if (FLAGS_wal_pwrite) {
          bf->page.last_written_lsn = handler.lsn;
       } else {

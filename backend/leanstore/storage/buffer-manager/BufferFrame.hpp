@@ -1,4 +1,5 @@
 #pragma once
+#include "SaturatingCounter.hpp"
 #include "Swip.hpp"
 #include "Units.hpp"
 #include "leanstore/KVInterface.hpp"
@@ -57,7 +58,6 @@ struct BufferFrame {
       cr::Logging* logging = nullptr;
       bool flush_sink_log = false;
       LID fixed_at_plsn = 0;  // TODO(mfd) : jsut for debugging, remove later
-      u8 absorbed_writes = 0;
       u8 pending_lsn_count = 0;
       LID pending_lsn[MAX_PENDING_LSN_COUNT];
       // Any page is by default discardable unless :
@@ -116,7 +116,7 @@ struct BufferFrame {
       };
       PerPageLogEntryHeader header;
       u16 last_entry_offset = -1;
-      u8 absorbed_writes = 0;  // Used just as a stat.
+      saturating_u8 absorbed_writes = 0;  // Used just as a stat.
       u8 nb_log_records;
       static constexpr u32 space_for_log_records = PAGE_ALIGNEMENT - sizeof(Header) - sizeof(wal_entry) - sizeof(header) - 4;
       u8 log_records[space_for_log_records];
@@ -204,7 +204,6 @@ struct BufferFrame {
       header.pid = 9999;
       header.next_free_bf = nullptr;
       header.logging = nullptr;
-      header.absorbed_writes = 0;
       header.fixed_at_plsn = 0;
       header.discardable = false;
       header.flush_sink_log = false;

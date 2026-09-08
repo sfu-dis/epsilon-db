@@ -393,7 +393,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      }
                      COUNTERS_BLOCK(absorbed_writes_histogram)
                      {
-                        u8 absorbed_writes = std::min<u8>(header.absorbed_writes, 63);
+                        u8 absorbed_writes = std::min<u8>(cooled_bf->ppl.absorbed_writes, 63);
                         PPCounters::myCounters().absorbed_writes_histogram[absorbed_writes]++;
                      }
                      COUNTERS_BLOCK(undiscardable_cause)
@@ -419,9 +419,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      }
                      /// We directly update the header information because we need this information
                      /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
+                     cooled_bf->ppl.absorbed_writes = 0;
                      header.not_yet_persisted = false;
                      header.logging = nullptr;
-                     header.absorbed_writes = 0;
                      header.pending_lsn_count = 0;
                      header.last_written_plsn = page.PLSN;
                      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;

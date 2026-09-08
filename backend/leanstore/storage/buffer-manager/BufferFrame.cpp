@@ -37,7 +37,7 @@ bool BufferFrame::submitPPLEntry()
    }
    ppl.header.pid = header.pid;
    ppl.header.dt_id = page.dt_id;
-   ppl.absorbed_writes = header.absorbed_writes;
+   ensure(ppl.absorbed_writes > 0);
    ensure_lte(page.GSN, logging.getCurrentGSN());
    const LID ppl_lsn = logging.reservePPLEntry(ppl);
    page.last_written_lsn = ppl_lsn;
@@ -63,6 +63,7 @@ bool BufferFrame::PPL::insertLogRecord(u8* log_record_buf, u32 log_record_size)
    std::memcpy(log_records + payload_size(), log_record_buf, log_record_size);
    nb_log_records += 1;
    wal_entry.size += log_record_size;
+   absorbed_writes += 1;
    return true;
 }
 // -------------------------------------------------------------------------------------
@@ -78,6 +79,7 @@ void BufferFrame::PPL::insertPPL(const PPL& other)
    nb_log_records = other.nb_log_records;
    wal_entry.size += other.payload_size();
    last_entry_offset = other.last_entry_offset;
+   absorbed_writes += other.absorbed_writes;
 }
 // -------------------------------------------------------------------------------------
 void BufferFrame::dump()
