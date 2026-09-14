@@ -103,6 +103,29 @@ struct BufferFrame {
       // -------------------------------------------------------------------------------------
       u64 crc = 0;
       // -------------------------------------------------------------------------------------
+      void reset()
+      {
+         crc = 0;
+         // -------------------------------------------------------------------------------------
+         ensure(!is_being_written_back);
+         latch.assertExclusivelyLatched();
+         last_writer_worker_id = std::numeric_limits<u8>::max();
+         last_written_plsn = 0;
+         state = STATE::FREE;  // INIT:
+         is_being_written_back.store(false, std::memory_order_release);
+         pid = 9999;
+         next_free_bf = nullptr;
+         logging = nullptr;
+         fixed_at_plsn = 0;
+         discardable = false;
+         flush_sink_log = false;
+         contention_tracker.reset();
+         keep_in_memory = false;
+         pending_lsn_count = 0;
+         undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+         // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
+      }
+      // -------------------------------------------------------------------------------------
       void dump();
    };
    // -------------------------------------------------------------------------------------
@@ -193,26 +216,8 @@ struct BufferFrame {
    // Pre: bf is exclusively locked
    void reset()
    {
-      header.crc = 0;
-      // -------------------------------------------------------------------------------------
-      assert(!header.is_being_written_back);
-      header.latch.assertExclusivelyLatched();
-      header.last_writer_worker_id = std::numeric_limits<u8>::max();
-      header.last_written_plsn = 0;
-      header.state = STATE::FREE;  // INIT:
-      header.is_being_written_back.store(false, std::memory_order_release);
-      header.pid = 9999;
-      header.next_free_bf = nullptr;
-      header.logging = nullptr;
-      header.fixed_at_plsn = 0;
-      header.discardable = false;
-      header.flush_sink_log = false;
-      header.contention_tracker.reset();
-      header.keep_in_memory = false;
-      header.pending_lsn_count = 0;
-      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+      header.reset();
       ppl.reset();
-      // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
    }
    // -------------------------------------------------------------------------------------
    BufferFrame()
