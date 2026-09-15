@@ -133,6 +133,7 @@ public:
    bool global_force_gc = false;
    PageState *discard_state;
    u32 max_open_ru_epochs;
+   u32 max_pending_lsn;
    struct RUEpochDiscardSet {
       u32 id;
       instrumented_mutex m{"ru_discard_set"};

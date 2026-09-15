@@ -163,7 +163,7 @@ LeanStore::LeanStore()
          u64 hint = 1;
          int ret = fcntl(log_dev_fd, F_SET_RW_HINT, &hint);
          ensure_equal(ret, 0);
-         LOG_INFO(logger, "set the placement-id (%ld) to log file\n", hint);
+         LOG_INFO(logger, "set the placement-id (%ld) to log file", hint);
       }
    }
    cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);

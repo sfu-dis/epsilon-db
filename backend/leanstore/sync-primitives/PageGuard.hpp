@@ -242,12 +242,22 @@ class HybridPageGuard
       if (FLAGS_enable_discarding && bf->isDiscardable()) {
          ensure(!logging.is_sink_log);
          ensure(!first_entry_in_log || (bf->header.pending_lsn_count == 0));
-         ensure_lt(bf->header.pending_lsn_count, FLAGS_max_log_records_to_discard);
-         pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
-         if (bf->header.pending_lsn_count != (bf->page.PLSN - bf->header.last_written_plsn)) {
-            bf->dump();
+         // When PPL is disabled this is always true.
+         if (!bf->header.will_flush_ppl) {
+            ensure_lt(bf->header.pending_lsn_count, FLAGS_max_log_records_to_discard);
+            pending_lsn[bf->header.pending_lsn_count++] = handler.lsn;
+            if (bf->header.pending_lsn_count != (bf->page.PLSN - bf->header.last_written_plsn)) {
+               bf->dump();
+            }
+            ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
+            if (FLAGS_per_page_logging && (bf->header.pending_lsn_count >= FLAGS_ppl_merge_threshold)) {
+               ensure(!bf->header.will_flush_ppl);
+               bf->header.will_flush_ppl = true;
+            }
+         } else {
+            ensure(FLAGS_per_page_logging);
+            ensure_equal(bf->header.pending_lsn_count, FLAGS_ppl_merge_threshold);
          }
-         ensure_equal(bf->header.pending_lsn_count, bf->page.PLSN - bf->header.last_written_plsn);
       }
       return handler;
    }

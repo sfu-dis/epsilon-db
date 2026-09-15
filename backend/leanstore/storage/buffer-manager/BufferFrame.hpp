@@ -50,6 +50,9 @@ struct BufferFrame {
       UNDISCARDABLE_CAUSE undiscardable_cause{UNDISCARDABLE_CAUSE::NONE};
       bool keep_in_memory = false;
       bool not_yet_persisted = true;
+      // The PPL is flushed when the number of discarded log records exceeds the threshold.
+      // will_flush_ppl == fasle : threshold not exceeded yet.
+      bool will_flush_ppl = false;
       PID pid = 9999;         // INIT:
       HybridLatch latch = 0;  // INIT: // ATTENTION: NEVER DECREMENT
       // -------------------------------------------------------------------------------------
@@ -123,6 +126,7 @@ struct BufferFrame {
          keep_in_memory = false;
          pending_lsn_count = 0;
          undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+         will_flush_ppl = false;
          // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
       }
       // -------------------------------------------------------------------------------------

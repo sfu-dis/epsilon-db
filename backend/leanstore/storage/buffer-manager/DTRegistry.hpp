@@ -51,7 +51,7 @@ struct DTRegistry {
    // -------------------------------------------------------------------------------------
    // TODO: synchronize properly
    std::mutex mutex;
-   s64 instances_counter = 0;
+   DTID instances_counter = 0;
    std::unordered_map<DTType, DTMeta> dt_types_ht;
    std::unordered_map<DTID, std::tuple<DTType, void*, string>> dt_instances_ht;
    static DTRegistry global_dt_registry;

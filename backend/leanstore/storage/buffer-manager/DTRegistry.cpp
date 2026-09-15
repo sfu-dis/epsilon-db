@@ -47,6 +47,7 @@ void DTRegistry::registerDatastructureType(DTType type, DTRegistry::DTMeta dt_me
 void DTRegistry::registerDatastructureInstance(DTType type, void* root_object, string name, DTID dt_id)
 {
    std::unique_lock guard(mutex);
+   ensure_lt(instances_counter, MAX_DT_ID);
    dt_instances_ht.insert({dt_id, {type, root_object, name}});
    if (dt_id >= instances_counter) {
       instances_counter = dt_id + 1;
@@ -56,6 +57,11 @@ void DTRegistry::registerDatastructureInstance(DTType type, void* root_object, s
 DTID DTRegistry::registerDatastructureInstance(DTType type, void* root_object, string name)
 {
    std::unique_lock guard(mutex);
+   if (instances_counter >= MAX_DT_ID) {
+      // Unhandled Exception.
+      cerr << "Cannot create DT " << name << " because it exceeded the total number of DT supported : " << MAX_DT_ID << endl;
+      throw std::runtime_error("Unhandled Exception");
+   }
    DTID new_instance_id = instances_counter++;
    dt_instances_ht.insert({new_instance_id, {type, root_object, name}});
    return new_instance_id;

@@ -56,10 +56,15 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
       madvise(bfs, dram_total_size, MADV_HUGEPAGE);
       madvise(bfs, dram_total_size,
               MADV_DONTFORK);  // O_DIRECT does not work with forking.
+      mlock(big_memory_chunk, dram_total_size);
+#if 0
       if (mlock(big_memory_chunk, dram_total_size) == -1) {
          perror("mlock");
          SetupFailed("Cannot prefault the buffer pool, do you have enough memory?");
       }
+#endif
+      // -------------------------------------------------------------------------------------
+      logger = std::make_unique<utils::Logger>("buffer_manager_journal.txt");
       // -------------------------------------------------------------------------------------
       if (FLAGS_enable_discarding) {
          void *entries_p = mmap(nullptr, total_blocks_in_ssd * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -79,7 +84,12 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          {
             bm_stats.discard_state_peak_mem_usage.store(total_blocks_in_ssd * sizeof(PageState));
          }
-         if (FLAGS_max_log_records_to_discard > 1) {
+         max_pending_lsn = FLAGS_per_page_logging ? FLAGS_ppl_merge_threshold : FLAGS_ppl_merge_threshold;
+         if (max_pending_lsn > MAX_PENDING_LSN_COUNT) {
+            SetupFailed("");
+         }
+         LOG_INFO(logger, "Max Pending LSN : %u", max_pending_lsn);
+         if (max_pending_lsn > 1) {
             per_pp_allocator = std::make_unique<CustomSlabAllocator<LID>[]>(FLAGS_pp_threads);
          }
          if (FLAGS_recover) {
@@ -106,8 +116,6 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
             p_i = (p_i + 1) % partitions_count;
          }
       });
-      // -------------------------------------------------------------------------------------
-      logger = std::make_unique<utils::Logger>("buffer_manager_journal.txt");
       // -------------------------------------------------------------------------------------
       per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
       u64 aligned_size = utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs*sizeof(u32), 4096);
@@ -863,7 +871,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          }
          ensure_equal(log_id, cr::LogManager::getLogID(bf.page.ru_epoch));
          bf.header.logging = &cr::LogManager::global->all_logs[log_id];
-         ensure_lte(nb_log_records, FLAGS_max_log_records_to_discard);
+         ensure_lte(nb_log_records, max_pending_lsn);
          ensure_equal(bf.header.pending_lsn_count, 0);
          auto start_on_demand_redo = std::chrono::high_resolution_clock::now();
          fix_dirty_page(bf, lsn_list, nb_log_records);

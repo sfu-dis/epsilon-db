@@ -12,6 +12,7 @@ namespace storage
 bool BufferFrame::submitPPLEntry()
 {
    ensure(FLAGS_per_page_logging);
+   ensure(header.will_flush_ppl);
    if (!isDiscardable())
       return false;
    ru_epoch_t reclaiming_v1 = BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire);
@@ -117,7 +118,8 @@ void BufferFrame::Header::dump()
         << " flush_sink_log        = " << flush_sink_log << "\n"
         << " fixed_at_plsn         = " << fixed_at_plsn << "\n"
         << " pending_lsn_count     = " << +pending_lsn_count << "\n"
-        << " discardable           = " << discardable.load() << "\n";
+        << " discardable           = " << discardable.load() << "\n"
+        << " will flush PPL        = " << will_flush_ppl << "\n";
 
    if (pending_lsn_count > 0) {
       cout << " pending_lsn: ";

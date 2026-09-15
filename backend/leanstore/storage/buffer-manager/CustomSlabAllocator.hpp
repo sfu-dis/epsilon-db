@@ -1,6 +1,7 @@
 #pragma once
 #include "Units.hpp"
 #include "BufferManager.hpp"
+#include "Macros.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -13,6 +14,8 @@ template <typename T>
 class CustomSlabAllocator
 {
    static constexpr u32 CHUNK_OBJS = 1024;
+
+   DO_NOT_COPY(CustomSlabAllocator);
 
    struct Chunks {
       T* ptr;
@@ -79,27 +82,28 @@ class CustomSlabAllocator
       }
    };
 
+   const u32 slabs_count;
    FreeList* lists;
 
   public:
-   CustomSlabAllocator()
+   CustomSlabAllocator() : slabs_count(BMC::global_bf->max_pending_lsn)
    {
-      lists = static_cast<FreeList*>(std::malloc((FLAGS_max_log_records_to_discard - 1) * sizeof(FreeList)));
-      for (u32 i = 2; i <= FLAGS_max_log_records_to_discard; ++i) {
+      lists = static_cast<FreeList*>(std::malloc((slabs_count - 1) * sizeof(FreeList)));
+      for (u32 i = 2; i <= slabs_count ; ++i) {
          new (&lists[i - 2]) FreeList(i);
       }
    }
 
    T* allocate(u32 n)
    {
-      ensure(n <= FLAGS_max_log_records_to_discard);
+      ensure(n <= slabs_count);
       ensure(n >= 2);
       return lists[n - 2].allocate();
    }
 
    void free(T* addr, u32 n)
    {
-      ensure(n <= FLAGS_max_log_records_to_discard);
+      ensure(n <= slabs_count);
       ensure(n >= 2);
       lists[n - 2].free(addr);
    }

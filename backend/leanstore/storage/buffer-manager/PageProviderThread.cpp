@@ -263,9 +263,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // In the second case since the page should be mapped now to a new RU epoch.
             // Be aware of deadlock between page latch and page state latch
             ensure(bf.header.pending_lsn_count > 0);
-            ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
-            ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
-            ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
+            if (!bf.header.will_flush_ppl) {
+               ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
+               ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
+               ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
+            }
             LID *pending_lsn = nullptr;
             bool submitted_ppl = false;
             if (bf.header.pending_lsn_count == 1) {
@@ -280,7 +282,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      c_guard.guard.unlock();
                      jumpmu::jump();
                   }
-                  ensure(bf.header.pending_lsn_count == 1);
+                  ensure_equal(bf.header.pending_lsn_count, 1);
                   pending_lsn = bf.header.pending_lsn;
                   submitted_ppl = true;
                } else {
@@ -306,7 +308,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // The RU discard set identity may change meanwhile.
             // I simply allow this, this is a very rare event, and these are
             // stats just to approximate thresolhold of GC in RU epoch.
-            ru_discard_set.data[bf.page.ru_epoch % max_open_ru_epochs].inserted.fetch_add(1);
+            ru_discard_set.at(bf.page.ru_epoch).inserted.fetch_add(1);
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
@@ -425,6 +427,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      header.pending_lsn_count = 0;
                      header.last_written_plsn = page.PLSN;
                      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+                     header.will_flush_ppl = false;
                      page.prev_ru_epoch = page.ru_epoch;
                      page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
                      if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
