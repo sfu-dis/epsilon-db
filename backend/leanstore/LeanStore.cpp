@@ -397,14 +397,16 @@ LeanStore::~LeanStore()
       }
    }
    // -------------------------------------------------------------------------------------
-   bg_threads_keep_running = false;
-   buffer_manager->stopBackgroundThreads();
-   while (bg_threads_counter) {
-   }
+   LOG_INFO(logger, "Shutting down...");
    if (FLAGS_persist) {
+      buffer_manager->stopWriterThreads();
       serializeState();
       buffer_manager->writeAllBufferFrames();
+   } else {
+      buffer_manager->stopBackgroundThreads();
    }
+   buffer_manager->waitForAllBackgroundThreads();
+   close(ssd_fd);
 }
 // -------------------------------------------------------------------------------------
 // Static members

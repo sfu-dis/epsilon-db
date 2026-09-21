@@ -119,6 +119,7 @@ class BufferManager
    void ruGarbageCollectorThread(u32 gc_id);
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
+   atomic<bool> shutdown_flush_in_progress = false;
    atomic<u64> pp_threads_counter = 0;
    atomic<u64> gc_threads_counter = 0;
    // -------------------------------------------------------------------------------------
@@ -269,7 +270,10 @@ public:
    void pageWriteBackPrologue(BufferFrame::Page& page);
    // -------------------------------------------------------------------------------------
    void startBackgroundThreads();
+   void stopWriterThreads();
+   void stopRUEpochManagerThread();
    void stopBackgroundThreads();
+   void waitForAllBackgroundThreads();
    void writeAllBufferFrames();
    std::unordered_map<std::string, std::string> serialize();
    void deserialize(std::unordered_map<std::string, std::string> map);

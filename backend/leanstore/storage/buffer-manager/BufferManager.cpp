@@ -263,12 +263,12 @@ void BufferManager::startBackgroundThreads()
                   set.open(new_ru_epoch);
                }
                ru_epoch.store(new_ru_epoch, std::memory_order_release);
-               LOG_INFO(logger, "Opened up a new RU Epoch %lu!!!", new_ru_epoch);
+               LOG_INFO(logger, "Opened up a new RU Epoch %lu, closed previous ru epoch with %lu pages!!!", new_ru_epoch, ru_discard_set[new_ru_epoch - 1].total.load());
             }
          };
          FILE* tfp = fopen("thresholds.txt", "w");
          u64 milliseconds = 0;
-         while (bg_threads_keep_running) {
+         while (bg_threads_keep_running || shutdown_flush_in_progress.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             check_for_new_ru_epoch();
             if (FLAGS_enable_discarding
@@ -356,10 +356,13 @@ void BufferManager::deserialize(std::unordered_map<std::string, std::string> map
 // -------------------------------------------------------------------------------------
 void BufferManager::writeAllBufferFrames()
 {
-   stopBackgroundThreads();
+   ensure(FLAGS_persist);
+   // The caller ~Leanstore is responsible for shutting down writer threads.
+   ensure_equal(pp_threads_counter.load(), 0);
+   ensure_equal(gc_threads_counter.load(), 0);
+   ensure(shutdown_flush_in_progress.load(std::memory_order_acquire));
 
-   const s32 ru_size = RU_SIZE;
-   ensure(ru_discard_set[ru_epoch.load()].total.load() < ru_size);
+   ensure_lt(ru_discard_set[ru_epoch.load()].total.load(), static_cast<s32>(RU_SIZE));
 
    utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
       BufferFrame::Page page;
@@ -368,32 +371,18 @@ void BufferManager::writeAllBufferFrames()
          bf.header.latch.mutex.lock();
          if (!bf.isFree() && bf.isDirty()) {
             bf.page.magic_debugging_number = bf.header.pid;
-            ru_epoch_t previous_ru_epoch = bf.page.ru_epoch;
-            ru_epoch_t cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
-            bf.page.prev_ru_epoch = previous_ru_epoch;
-            bf.page.ru_epoch = cur_ru_epoch;
+            pageWriteBackPrologue(bf.page);
             ++bf.page.write_back_count;
-            if (!FLAGS_wal) { bf.page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure_equal(ret, PAGE_SIZE);
-            if (ru_discard_set[cur_ru_epoch].total.fetch_add(1) == ru_size) {
-               ru_discard_set.data[(cur_ru_epoch + 1) % max_open_ru_epochs].open(cur_ru_epoch+1);
-               bool ok = ru_epoch.compare_exchange_strong(cur_ru_epoch, cur_ru_epoch + 1);
-               ensure(ok);
-               LOG_INFO(logger, "Opened up a new RU epoch %lu", cur_ru_epoch + 1);
-               // FIXME(mfd) : Ensure that the buffer manager size is always less than the
-               // overprovision size, so that we're gaarenteed that this will never happen.
-               ensure((cur_ru_epoch + 1 - reclaimed_ru_epoch) <= max_open_ru_epochs);
-            }
-            if (previous_ru_epoch != -1 && previous_ru_epoch > reclaimed_ru_epoch) {
-               s32 invalid = ru_discard_set[previous_ru_epoch].invalid.fetch_add(1);
-               ensure(invalid <= ru_discard_set[previous_ru_epoch].total.load(std::memory_order_acquire));
-            }
+            per_pp_iostats[bf_i % FLAGS_pp_threads].io_counter.fetch_add(1, std::memory_order_release);
          }
          bf.header.latch.mutex.unlock();
       }
    });
+   stopRUEpochManagerThread();
+   // TODO(mfd) : Move this as the responsability of the RU Epoch Manager.
    ru_epoch_t newest_ru_epoch = ru_epoch.load(std::memory_order_acquire);
    LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[newest_ru_epoch].total.load());
    ensure_equal(oldest_uncollected_ru_epoch, 0);
@@ -1059,19 +1048,45 @@ Partition& BufferManager::getPartition(PID pid)
    return *partitions[partition_i];
 }
 // -------------------------------------------------------------------------------------
-void BufferManager::stopBackgroundThreads()
+void BufferManager::stopWriterThreads()
 {
-   bg_threads_keep_running = false;
-   LOG_INFO(logger, "Shutting down...");
+   // ATTENTION: The two flags should be set in this order.
+   shutdown_flush_in_progress.store(true, std::memory_order_release);
+   bg_threads_keep_running.store(false);
    while (pp_threads_counter) {
    }
    LOG_INFO(logger, "All page provider threads shutted down successfully.");
    while (gc_threads_counter) {
    }
    LOG_INFO(logger, "All background page fixer threads shutted down successfully.");
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::stopRUEpochManagerThread()
+{
+   ensure(bg_threads_keep_running.load() == false);
+   // No flush follows in this path, so there is nothing more for ru_epoch_mgr to wait for.
+   shutdown_flush_in_progress.store(false, std::memory_order_release);
+   // The RU Epoch Manager Thread is the last one to exit.
+   // So I wait for all threads here.
+   waitForAllBackgroundThreads();
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::stopBackgroundThreads()
+{
+   stopWriterThreads();
+   stopRUEpochManagerThread();
+   ensure_equal(bg_threads_counter.load(), 0);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::waitForAllBackgroundThreads()
+{
+   static std::atomic<bool> once = true;
+   ensure(shutdown_flush_in_progress.load() == false);
    while (bg_threads_counter) {
    }
-   LOG_INFO(logger, "All background threads shutted down successfully.");
+   if (once.exchange(false)) {
+      LOG_INFO(logger, "All background threads shutted down successfully.");
+   }
 }
 // -------------------------------------------------------------------------------------
 BufferManager::~BufferManager()
