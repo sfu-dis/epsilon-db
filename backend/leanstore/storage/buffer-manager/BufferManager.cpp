@@ -372,6 +372,7 @@ void BufferManager::writeAllBufferFrames()
             ru_epoch_t cur_ru_epoch = this->ru_epoch.load(std::memory_order_acquire);
             bf.page.prev_ru_epoch = previous_ru_epoch;
             bf.page.ru_epoch = cur_ru_epoch;
+            ++bf.page.write_back_count;
             if (!FLAGS_wal) { bf.page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
@@ -800,7 +801,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          WorkerCounters::myCounters().read_operations_counter++;
       }
       // -------------------------------------------------------------------------------------
-      struct io_uring_cqe* cqes[1 + FLAGS_max_log_records_to_discard];
+      struct io_uring_cqe* cqes[1 + max_pending_lsn];
       u32 ready = io_uring_peek_batch_cqe(&cr::Worker::my().ring, cqes, wait_for_io);
       ensure_equal(ready, wait_for_io);
       end_io = std::chrono::high_resolution_clock::now();
@@ -836,7 +837,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_uring_cq_advance(&cr::Worker::my().ring, wait_for_io);
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
-         ru_discard_set.data[bf.page.ru_epoch % max_open_ru_epochs].deleted.fetch_add(1);
+         ru_discard_set.at(bf.page.ru_epoch).deleted.fetch_add(1);
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
@@ -998,6 +999,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    }
    ensure(false);
 }  // namespace storage
+// -------------------------------------------------------------------------------------
+void BufferManager::pageWriteBackPrologue(BufferFrame::Page& page)
+{
+   const ru_epoch_t prev_ru_epoch = page.ru_epoch;
+   page.prev_ru_epoch = prev_ru_epoch;
+   page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
+   if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
+   // Update the stats here
+   ru_discard_set[page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
+   if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
+      ru_discard_set.at(prev_ru_epoch).invalid.fetch_add(1);
+   }
+   // TODO(mfd) : Assign the placement ID.
+}
 // -------------------------------------------------------------------------------------
 // SSD management
 // -------------------------------------------------------------------------------------

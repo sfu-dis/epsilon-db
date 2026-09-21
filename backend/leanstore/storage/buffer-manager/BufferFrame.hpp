@@ -169,7 +169,7 @@ struct BufferFrame {
    static constexpr u32 log_records_offset = offsetof(PPL, log_records);
    static_assert(log_records_offset == 60, "");
    // -------------------------------------------------------------------------------------
-   struct alignas(PAGE_ALIGNEMENT) Page {
+   struct PageHeader {
       LID PLSN = 0;
       LID GSN = 0;
       DTID dt_id = 9999;                             // INIT: datastructure id
@@ -177,9 +177,12 @@ struct BufferFrame {
       ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH;  // TODO(mfd) : Used just for debugging, remove later
       ru_epoch_t ru_epoch = UNMAPPED_RU_EPOCH;
       LID last_written_lsn = INVALID_LSN;
-      u64 eviction_count = 0;       // TODO(mfd) : Used just for debugging, remove later
-      u8 dt[PAGE_SIZE - sizeof(PLSN) - sizeof(GSN) - sizeof(dt_id) - sizeof(magic_debugging_number) -
-            2 * sizeof(ru_epoch) - sizeof(last_written_lsn) - sizeof(eviction_count)];  // Datastruture BE CAREFUL HERE !!!!!
+      u32 write_back_count = 0;          // TODO(mfd) : Used just for debugging, remove later
+      u32 bg_page_fixed_count = 0;       // TODO(mfd) : Used just for debugging, remove later
+   };
+   // -------------------------------------------------------------------------------------
+   struct alignas(PAGE_ALIGNEMENT) Page : PageHeader {
+     u8 dt[PAGE_SIZE - sizeof(PageHeader)];
       // -------------------------------------------------------------------------------------
       operator u8*() { return reinterpret_cast<u8*>(this); }
       // -------------------------------------------------------------------------------------
@@ -191,9 +194,12 @@ struct BufferFrame {
          ru_epoch = UNMAPPED_RU_EPOCH;
          prev_ru_epoch = UNMAPPED_RU_EPOCH;
          last_written_lsn = INVALID_LSN;
+         write_back_count = 0;
+         bg_page_fixed_count = 0;
       }
       void dump();
    };
+   static_assert(sizeof(Page) == PAGE_SIZE, "Page must fit exactly in PAGE_SIZE");
    // -------------------------------------------------------------------------------------
    struct Header header;
    // -------------------------------------------------------------------------------------

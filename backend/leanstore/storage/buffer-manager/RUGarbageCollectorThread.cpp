@@ -196,8 +196,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       page->PLSN += to_apply_log_records.size();
       page->last_written_lsn = last_lsn;
       page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records.back())->gsn;
-      page->prev_ru_epoch = page->ru_epoch;
-      page->ru_epoch = BMC::global_bf->ru_epoch.load(std::memory_order_acquire);
+      pageWriteBackPrologue(*page);
+      ++page->bg_page_fixed_count;
 
       // Just for debugging
       ++total_fixed;
@@ -241,8 +241,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       ensure_equal(page->magic_debugging_number, pid);
 
       discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page->ru_epoch));
-
-      ru_discard_set[page->ru_epoch].total.fetch_add(1, std::memory_order_acq_rel);
 
       Partition& partition = getPartition(pid);
       std::lock_guard g_guard(partition.ht_mutex);

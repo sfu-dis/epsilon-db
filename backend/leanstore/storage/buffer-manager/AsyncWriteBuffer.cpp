@@ -73,6 +73,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    } else {
       ensure_equal(bf.page.magic_debugging_number, pid);
    }
+   ++bf.page.write_back_count;
    // XXX(mfd) : Tentitavely update the RU epoch without waiting for the
    // write to return. This is to allow correct mapping to logs when the
    // page is being written back. Consider storing the tentative ru_epoch

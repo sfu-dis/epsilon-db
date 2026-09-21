@@ -35,6 +35,7 @@ namespace cr
 struct WALEntry;  // Forward declaration
 struct WALDTEntry;  // Forward declaration
 }
+// -------------------------------------------------------------------------------------
 namespace storage
 {
 template <typename T> class CustomSlabAllocator;  // Forward declaration
@@ -261,6 +262,11 @@ public:
    void readPageSync(PID pid, u8* destination);
    void readPageAsync(PID pid, u8* destination, std::function<void()> callback);
    void fDataSync();
+   // Single choke point for updating header of a page before write back. Used by :
+   // 1. PageProvider for eviction.
+   // 2. During shutdown to write all dirty frames.
+   // 3. Background Page Fixer Thread.
+   void pageWriteBackPrologue(BufferFrame::Page& page);
    // -------------------------------------------------------------------------------------
    void startBackgroundThreads();
    void stopBackgroundThreads();

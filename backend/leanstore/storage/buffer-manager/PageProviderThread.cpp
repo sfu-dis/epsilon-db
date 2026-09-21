@@ -391,7 +391,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      // XXX(mfd) : Probably the better check is > reclaiming not > reclaimed.
                      if (page.ru_epoch != UNMAPPED_RU_EPOCH && page.ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
                          ru_discard_set.at(page.ru_epoch).undiscardable_cause_distribution[header.undiscardable_cause].fetch_add(1);
-                         ru_discard_set.at(page.ru_epoch).invalid.fetch_add(1);
                      }
                      COUNTERS_BLOCK(absorbed_writes_histogram)
                      {
@@ -428,16 +427,13 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      header.last_written_plsn = page.PLSN;
                      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
                      header.will_flush_ppl = false;
-                     page.prev_ru_epoch = page.ru_epoch;
-                     page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
-                     if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
+                     pageWriteBackPrologue(page);
                      if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
                      if (FLAGS_crc_check) {
                         header.crc = utils::CRC(page.dt, EFFECTIVE_PAGE_SIZE);
                      }
                      // TODO: preEviction callback according to DTID
                      async_write_buffer.add(*cooled_bf, cooled_bf_pid);
-                     ru_discard_set[page.ru_epoch].total.fetch_add(1);
                   }
                } else {
                   jumpmu_break;
