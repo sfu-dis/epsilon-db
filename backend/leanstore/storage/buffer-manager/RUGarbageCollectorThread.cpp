@@ -559,7 +559,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   ensure_equal(i, remaining);
                   io_uring_cq_advance(&w_ring, remaining);
                }
-               tot_gc_writes.fetch_add(actually_fixed, std::memory_order_acq_rel);
+               writers_iostat[FLAGS_pp_threads + gc_id].io_counter.fetch_add(actually_fixed, std::memory_order_acq_rel);
             }
             to_fix_pids.clear();
             pages_to_fix = 0;

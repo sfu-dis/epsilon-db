@@ -37,6 +37,7 @@ u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from 
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs) :
   ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs),
+  io_writer_threads_count(FLAGS_pp_threads + FLAGS_ru_gc_threads),
   persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE),
   ru_discard_set(max_open_ru_epochs)
 {
@@ -117,7 +118,8 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          }
       });
       // -------------------------------------------------------------------------------------
-      per_pp_iostats = std::make_unique<padded_iostat[]>(FLAGS_pp_threads);
+      ensure(io_writer_threads_count > 0);
+      writers_iostat = std::make_unique<padded_iostat[]>(io_writer_threads_count);
       u64 aligned_size = utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs*sizeof(u32), 4096);
       persistant_ru_state = reinterpret_cast<PersistantRUState*>(std::aligned_alloc(4096, aligned_size));
       ensure(persistant_ru_state != nullptr);
@@ -136,8 +138,9 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          ensure_equal(persistant_ru_state->reclaimed_ru_epoch, -1);
          oldest_uncollected_ru_epoch.store(persistant_ru_state->oldest_active_ru_epoch);
          reclaimed_ru_epoch.store(persistant_ru_state->reclaimed_ru_epoch);
-         u32 last_total = persistant_ru_state->totals[newest_active_ru_epoch];
-         per_pp_iostats[0].io_counter = last_total;
+         const u32 last_total = persistant_ru_state->totals[newest_active_ru_epoch];
+         ensure_lt(last_total, RU_SIZE);
+         writers_iostat[0].io_counter = last_total;
          LOG_INFO(logger, "Recovering, pages used in the newest RU %u", last_total);
          for (ru_epoch_t e = oldest_uncollected_ru_epoch; e <= newest_active_ru_epoch; ++e) {
             auto& set = ru_discard_set.data[e % max_open_ru_epochs];
@@ -199,27 +202,23 @@ void BufferManager::startBackgroundThreads()
       std::thread ru_epoch_mgr = std::thread([&]() {
          pthread_setname_np(pthread_self(), "ru_epoch_mgr");
          bg_threads_counter++;
-         u64 last_seen_tot_gc_writes = 0;
          u64 tot_page_written = 0;
-         std::vector<u64> last_seen(FLAGS_pp_threads, 0);
+         std::vector<u64> last_seen(io_writer_threads_count, 0);
          if (FLAGS_recover) {
-            for (u32 pp = 0; pp < FLAGS_pp_threads; ++pp) {
-               last_seen[pp] = per_pp_iostats[pp].io_counter.load();
-               tot_page_written += last_seen[pp];
+            for (u32 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+               last_seen[io_handler] = writers_iostat[io_handler].io_counter.load();
+               tot_page_written += last_seen[io_handler];
             }
          }
          auto check_for_new_ru_epoch = [&]() {
             bool open_new_ru_epoch = false;
-            for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-               u64 new_value = per_pp_iostats[pp_id].io_counter.load(std::memory_order::acquire);
-               ensure(new_value >= last_seen[pp_id]);
-               u64 diff = new_value - last_seen[pp_id];
+            for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+               u64 new_value = writers_iostat[io_handler].io_counter.load(std::memory_order::acquire);
+               ensure(new_value >= last_seen[io_handler]);
+               u64 diff = new_value - last_seen[io_handler];
                tot_page_written += diff;
-               last_seen[pp_id] = new_value;
+               last_seen[io_handler] = new_value;
             }
-            u64 seen = tot_gc_writes.load(std::memory_order_acquire);
-            tot_page_written += (seen - last_seen_tot_gc_writes);
-            last_seen_tot_gc_writes = seen;
             if (tot_page_written >= RU_SIZE) {
                open_new_ru_epoch = true;
                tot_page_written = tot_page_written - RU_SIZE;
@@ -310,8 +309,8 @@ void BufferManager::startBackgroundThreads()
          check_for_new_ru_epoch();
          // sanity check block
          {
-            for (u64 pp_id = 0; pp_id < FLAGS_pp_threads; ++pp_id) {
-               ensure_equal(per_pp_iostats[pp_id].io_counter, last_seen[pp_id]);
+            for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+               ensure_equal(writers_iostat[io_handler].io_counter, last_seen[io_handler]);
             }
          }
          bg_threads_counter--;
@@ -376,7 +375,7 @@ void BufferManager::writeAllBufferFrames()
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure_equal(ret, PAGE_SIZE);
-            per_pp_iostats[bf_i % FLAGS_pp_threads].io_counter.fetch_add(1, std::memory_order_release);
+            writers_iostat[bf_i % io_writer_threads_count].io_counter.fetch_add(1, std::memory_order_release);
          }
          bf.header.latch.mutex.unlock();
       }

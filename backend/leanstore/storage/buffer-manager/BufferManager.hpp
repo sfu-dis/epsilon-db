@@ -107,14 +107,15 @@ class BufferManager
      atomic<u64> io_counter = 0;
      u64 pad[7];
    };
-   std::unique_ptr<padded_iostat[]> per_pp_iostats;
+   // One per thread that writes to storage.
+   const u32 io_writer_threads_count;
+   std::unique_ptr<padded_iostat[]> writers_iostat;
    std::unique_ptr<CustomSlabAllocator<LID>[]> per_pp_allocator;
    // -------------------------------------------------------------------------------------
    // written only by ru_epoch_mgr, read by page providers.
    std::atomic<u64> rate = 100;
    u64 pad0[7];
    // -------------------------------------------------------------------------------------
-   std::atomic<u64> tot_gc_writes = 0;
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
    void ruGarbageCollectorThread(u32 gc_id);
    atomic<u64> bg_threads_counter = 0;

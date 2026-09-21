@@ -452,7 +452,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       auto start = std::chrono::high_resolution_clock::now();
       if (async_write_buffer.submit()) {
          const u32 polled_events = async_write_buffer.pollEventsSync();
-         per_pp_iostats[pp_id].io_counter.fetch_add(polled_events, std::memory_order::release);
+         writers_iostat[pp_id].io_counter.fetch_add(polled_events, std::memory_order::release);
          PPCounters::myCounters().flushed_pages_counter += polled_events;
          {
             auto end = std::chrono::high_resolution_clock::now();
