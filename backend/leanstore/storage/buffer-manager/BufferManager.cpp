@@ -36,8 +36,9 @@ thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs) :
-  ssd_fd(ssd_fd), max_open_ru_epochs(max_open_ru_epochs),
+  ssd_fd(ssd_fd),
   io_writer_threads_count(FLAGS_pp_threads + FLAGS_ru_gc_threads),
+  max_open_ru_epochs(max_open_ru_epochs),
   persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE),
   ru_discard_set(max_open_ru_epochs)
 {
@@ -143,7 +144,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          writers_iostat[0].io_counter = last_total;
          LOG_INFO(logger, "Recovering, pages used in the newest RU %u", last_total);
          for (ru_epoch_t e = oldest_uncollected_ru_epoch; e <= newest_active_ru_epoch; ++e) {
-            auto& set = ru_discard_set.data[e % max_open_ru_epochs];
+            auto& set = ru_discard_set.at(e);
             set.total.store(persistant_ru_state->totals[e - oldest_uncollected_ru_epoch]);
             // FIXME(mfd) : recover real invalid counter
             set.invalid.store(0);
@@ -154,8 +155,8 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          persistant_ru_state->ru_epoch = 0;
          persistant_ru_state->oldest_active_ru_epoch = 0;
          persistant_ru_state->reclaimed_ru_epoch = -1;
-         ru_discard_set.data[0].cur_ru_epoch = 0;
-         ru_discard_set.data[0].active.store(true);
+         ru_discard_set.at(0).cur_ru_epoch = 0;
+         ru_discard_set.at(0).active.store(true);
       }
       if (FLAGS_wal && FLAGS_wal_pwrite) {
          ensure(!FLAGS_redo_log_file.empty());
@@ -256,7 +257,7 @@ void BufferManager::startBackgroundThreads()
                      }
                   }
                }
-               auto& set = ru_discard_set.data[new_ru_epoch % max_open_ru_epochs];
+               auto& set = ru_discard_set.at(new_ru_epoch);
                {
                   std::lock_guard _l(set.m);
                   set.open(new_ru_epoch);

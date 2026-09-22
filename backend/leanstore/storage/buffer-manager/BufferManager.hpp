@@ -187,9 +187,11 @@ public:
    };
    PersistantRUState *persistant_ru_state;
    struct RUEpochsState {
+     private:
       u32 size;
       std::unique_ptr<RUEpochDiscardSet[]> data;
 
+     public:
       RUEpochsState(u64 size)
         : size(size), data(std::make_unique<RUEpochDiscardSet[]>(size)) {}
 
