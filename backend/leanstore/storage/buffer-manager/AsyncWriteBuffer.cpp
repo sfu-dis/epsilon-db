@@ -3,6 +3,7 @@
 
 #include "Exceptions.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 // -------------------------------------------------------------------------------------
 #include "gflags/gflags.h"
 // -------------------------------------------------------------------------------------
@@ -24,6 +25,9 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
 
    events = make_unique<struct io_uring_cqe*[]>(batch_max_size);
    unsigned flags = (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+   if (FLAGS_enable_fdp) {
+      flags |= (IORING_SETUP_SQE128 | IORING_SETUP_CQE32);
+   }
    int rc = io_uring_queue_init(2 * FLAGS_replacement_chunk_size, &ring, flags);
    if (rc != 0) {
       throw ex::GenericException("io_uring_queue_init failed, ret code = " + std::to_string(rc));
@@ -82,7 +86,14 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    void* write_buffer_slot_ptr = &write_buffer[slot];
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid);
+   nvme_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid);
+#if 0
+   if (FLAGS_enable_fdp) {
+      // plid_t plid = FDP::AssignPlacementID(bf);
+      plid_t plid = 0;
+      fdp_sqe_set_plid(sqe, plid);
+   }
+#endif
    io_uring_sqe_set_data(sqe, write_buffer_slot_ptr);
    if (FLAGS_io_trace) {
       // add to trace, use tsc as timesamp
@@ -132,7 +143,11 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<bool(BufferFrame&, LID, ru_ep
    {
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;
       // -------------------------------------------------------------------------------------
-      ensure_equal(cqe->res, static_cast<s32>(page_size));
+      if (FLAGS_enable_fdp) {
+         ensure_equal(cqe->res, 0);
+      } else {
+         ensure_equal(cqe->res, static_cast<s32>(page_size));
+      }
       auto written_plsn = write_buffer[slot].PLSN;
       u64 written_ru_epoch = write_buffer[slot].ru_epoch;
       bool success = callback(*write_buffer_commands[slot].bf, written_plsn, written_ru_epoch);

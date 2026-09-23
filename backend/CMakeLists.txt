@@ -51,8 +51,20 @@ IF(SANI)
 ENDIF(SANI)
 
 add_dependencies(leanstore gen_header)
-target_link_libraries(leanstore gflags Threads::Threads aio tbb atomic tabluate rapidjson yaml-cpp uring ${Boost_LIBRARIES}) #tbb
+target_link_libraries(leanstore PUBLIC gflags Threads::Threads aio tbb atomic tabluate rapidjson yaml-cpp uring ${Boost_LIBRARIES}) #tbb
+# ---------------------------------------------------------------------------
+OPTION(WITH_FDP "Compile with support for Flexible Data Placement(FDP)" ON)
+IF(WITH_FDP)
+  include(FetchContent)
+  #TODO(mfd): Add an appropriate TAG later
+  FetchContent_Declare(fdp
+      GIT_REPOSITORY https://github.com/Driramohamedfarouk/libfdp.git
+      GIT_TAG        main)
+  FetchContent_MakeAvailable(fdp)
 
+  target_link_libraries(leanstore PUBLIC fdp::fdp)
+  target_compile_definitions(leanstore PRIVATE WITH_FDP)
+ENDIF(WITH_FDP)
 # ---------------------------------------------------------------------------
 OPTION(PARANOID "Enable sanity checks in release mode" OFF)
 IF(PARANOID)

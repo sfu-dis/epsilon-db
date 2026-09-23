@@ -146,3 +146,5 @@ DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(redo_log_file, "", ""); // Should provide a log file for now
 DEFINE_uint64(log_dev_size_gib, 0, "Size of the log device, 0 value will read actual device size");
+// -------------------------------------------------------------------------------------
+DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");

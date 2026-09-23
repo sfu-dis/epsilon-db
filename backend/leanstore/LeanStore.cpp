@@ -3,6 +3,7 @@
 #include "leanstore/profiling/counters/CPUCounters.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 #include "leanstore/utils/FVector.hpp"
 #include "leanstore/utils/ThreadLocalAggregator.hpp"
 // -------------------------------------------------------------------------------------
@@ -79,6 +80,12 @@ LeanStore::LeanStore()
       // per page logging is only relevant when discarding is enabled, silently turn it off.
       FLAGS_per_page_logging = false;
    }
+   if (FLAGS_enable_fdp) {
+#ifndef WITH_FDP
+      SetupFailed("You have requested fdp support at runtime but compiled with FDP support disabled."
+                  "Please turned on by passing -DWITH_FDP to cmake.");
+#endif
+   }
    // -------------------------------------------------------------------------------------
    logger = std::make_unique<utils::Logger>("leanstore_log.txt", true);
    // -------------------------------------------------------------------------------------
@@ -88,10 +95,20 @@ LeanStore::LeanStore()
    if (FLAGS_trunc) {
       flags |= O_TRUNC | O_CREAT;
    }
-   ssd_fd = open(FLAGS_ssd_path.c_str(), flags, 0666);
+   ssd_fd = nvme_open(FLAGS_ssd_path.c_str(), flags, 0666);
    if (ssd_fd == -1) {
       perror("posix error");
-      std::cout << "path: " << FLAGS_ssd_path << std::endl;
+      std::cerr << "path: " << FLAGS_ssd_path << std::endl;
+      if (FLAGS_enable_fdp) {
+         if (errno == ENOTSUP) {
+            LOG_ERROR(logger, "%s: device/namespace does not support FDP", FLAGS_ssd_path.c_str());
+         } else if (errno == EACCES && errno == EPERM) {
+            LOG_ERROR(logger, "%s: insufficient privileges to issue NVMe passthrough "
+               "commands (try running as root)" , FLAGS_ssd_path.c_str());
+         } else {
+            LOG_ERROR(logger, "%s: fdp_open failed: %s", FLAGS_ssd_path.c_str(), strerror(errno));
+         }
+      }
       SetupFailed("Could not open the file or the SSD block device");
    }
    ensure(fcntl(ssd_fd, F_GETFL) != -1);
