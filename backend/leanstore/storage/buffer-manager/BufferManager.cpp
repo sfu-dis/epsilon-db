@@ -33,6 +33,11 @@ namespace storage
 {
 // -------------------------------------------------------------------------------------
 thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
+// Used to identify writer threads.
+// Range [0, FLAGS_pp_threads) for page provider threads.
+// Range [FLAGS_pp_threads, FLAGS_pp_threads + FLAGS_ru_gc_thread) for bg page fixer threads.
+// -1 for now writer threads.
+thread_local s32 tls_writer_thread_id = -1;
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
 BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs) :
@@ -364,7 +369,9 @@ void BufferManager::writeAllBufferFrames()
 
    ensure_lt(ru_discard_set[ru_epoch.load()].total.load(), static_cast<s32>(RU_SIZE));
 
+   std::atomic<u32> ephemeral_write_id = 0;
    utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
+      tls_writer_thread_id = ephemeral_write_id.fetch_add(1) % io_writer_threads_count;
       BufferFrame::Page page;
       for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
          auto& bf = bfs[bf_i];
@@ -376,7 +383,6 @@ void BufferManager::writeAllBufferFrames()
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
             ensure_equal(ret, PAGE_SIZE);
-            writers_iostat[bf_i % io_writer_threads_count].io_counter.fetch_add(1, std::memory_order_release);
          }
          bf.header.latch.mutex.unlock();
       }
@@ -1000,6 +1006,8 @@ void BufferManager::pageWriteBackPrologue(BufferFrame::Page& page)
    if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
       ru_discard_set.at(prev_ru_epoch).invalid.fetch_add(1);
    }
+   ensure(tls_writer_thread_id != -1);
+   writers_iostat[tls_writer_thread_id].io_counter.fetch_add(1, std::memory_order_relaxed);
    // TODO(mfd) : Assign the placement ID.
 }
 // -------------------------------------------------------------------------------------

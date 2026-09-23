@@ -40,6 +40,8 @@ namespace storage
 {
 template <typename T> class CustomSlabAllocator;  // Forward declaration
 // -------------------------------------------------------------------------------------
+extern thread_local s32 tls_writer_thread_id;
+// -------------------------------------------------------------------------------------
 struct FreedBfsBatch {
    BufferFrame *freed_bfs_batch_head = nullptr, *freed_bfs_batch_tail = nullptr;
    u64 freed_bfs_counter = 0;

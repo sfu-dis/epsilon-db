@@ -37,6 +37,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
 {
    std::string thread_name("pp_" + std::to_string(p_begin) + "_" + std::to_string(p_end));
    pthread_setname_np(pthread_self(), thread_name.c_str());
+   tls_writer_thread_id = pp_id;
    using Time = decltype(std::chrono::high_resolution_clock::now());
    // -------------------------------------------------------------------------------------
    leanstore::cr::CRManager::global->registerMeAsSpecialWorker();
@@ -452,7 +453,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
       auto start = std::chrono::high_resolution_clock::now();
       if (async_write_buffer.submit()) {
          const u32 polled_events = async_write_buffer.pollEventsSync();
-         writers_iostat[pp_id].io_counter.fetch_add(polled_events, std::memory_order::release);
          PPCounters::myCounters().flushed_pages_counter += polled_events;
          {
             auto end = std::chrono::high_resolution_clock::now();

@@ -50,6 +50,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
 {
    std::string gc_thread_name = "ru_gc_" + std::to_string(gc_id);
    pthread_setname_np(pthread_self(), gc_thread_name.c_str());
+   tls_writer_thread_id = FLAGS_pp_threads + gc_id;
    // FIXME(mfd): Temporely set it large enough
    const u32 batch_size = 256;
    ru_epoch_t current_gc_epoch = -1;
@@ -559,7 +560,6 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                   ensure_equal(i, remaining);
                   io_uring_cq_advance(&w_ring, remaining);
                }
-               writers_iostat[FLAGS_pp_threads + gc_id].io_counter.fetch_add(actually_fixed, std::memory_order_acq_rel);
             }
             to_fix_pids.clear();
             pages_to_fix = 0;
