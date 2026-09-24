@@ -90,7 +90,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          {
             bm_stats.discard_state_peak_mem_usage.store(total_blocks_in_ssd * sizeof(PageState));
          }
-         max_pending_lsn = FLAGS_per_page_logging ? FLAGS_ppl_merge_threshold : FLAGS_ppl_merge_threshold;
+         max_pending_lsn = FLAGS_per_page_logging ? FLAGS_ppl_merge_threshold : FLAGS_max_log_records_to_discard;
          if (max_pending_lsn > MAX_PENDING_LSN_COUNT) {
             SetupFailed("");
          }
