@@ -5,6 +5,7 @@
 #include "FreeList.hpp"
 #include "Partition.hpp"
 #include "PageState.hpp"
+#include "RUEpochManagerThread.hpp"
 #include "Swip.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
@@ -39,6 +40,7 @@ struct WALDTEntry;  // Forward declaration
 namespace storage
 {
 template <typename T> class CustomSlabAllocator;  // Forward declaration
+class RUEpochManager;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -86,6 +88,7 @@ class BufferManager
    friend class leanstore::LeanStore;
    friend class leanstore::profiling::BMTable;
    friend class AsyncWriteBuffer;
+   friend class RUEpochManager;
    // -------------------------------------------------------------------------------------
    BufferFrame* bfs;
    // -------------------------------------------------------------------------------------
@@ -126,6 +129,7 @@ class BufferManager
    atomic<bool> shutdown_flush_in_progress = false;
    atomic<u64> pp_threads_counter = 0;
    atomic<u64> gc_threads_counter = 0;
+   std::unique_ptr<RUEpochManager> ru_epoch_mgr;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
@@ -231,13 +235,6 @@ public:
    std::condition_variable gc_cv;
    std::vector<u64> to_gc_epochs;
    int is_gc_sleeping{0};
-   // -------------------------------------------------------------------------------------
-   // RU Epoch Manager helpers, called only from the ru_epoch_mgr thread.
-   // TODO(mfd) : Create a class for the RU Epoch Manager, decouple it from the Buffer Manager.
-   void checkForNewRUEpoch(ruh_id_t ruh, std::vector<u64>& last_seen, u64& tot_page_written);
-   s64 freeRUEpochsAfterOpeningOne();
-   void forceGCOldestRUEpochs();
-   void tryReclaimNonDefaultRUEpoch(ruh_id_t ruh);
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();
