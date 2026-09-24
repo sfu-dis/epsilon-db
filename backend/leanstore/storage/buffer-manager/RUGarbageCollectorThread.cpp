@@ -282,7 +282,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          if (!bg_threads_keep_running) break;
          current_gc_epoch = gc_ru_epoch;
          ru_epoch_t prev_gc_ru_epoch = current_gc_epoch - 1;
-         auto& set = ru_discard_set[gc_ru_epoch];
+         auto& set = ru_discard_set[DEFAULT_RUH][gc_ru_epoch];
          auto& logging = cr::LogManager::getLog(gc_ru_epoch);
          u32 currently_reclaiming_log_id = logging.log_id;
          set.m.lock();
@@ -569,7 +569,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
          auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
          set.total_fixed.fetch_add(total_fixed);
          if (set.done_gc.fetch_sub(1) == 1) {
-            ru_epoch_t old_re = reclaimed_ru_epoch.load(std::memory_order_relaxed);
+            ru_epoch_t old_re = reclaimed_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
             ru_epoch_t new_re = old_re + 1;
             ensure_equal(new_re, current_gc_epoch);
             auto& logging = cr::LogManager::getLog(current_gc_epoch);

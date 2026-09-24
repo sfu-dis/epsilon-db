@@ -33,6 +33,21 @@ void BufferManager::RUEpochDiscardSet::reset()
 {
    ensure(FLAGS_enable_discarding || is_currently_being_garbage_collected.load() == true);
    ensure_equal(done_gc, 0);
+   resetAndMarkReclaimed();
+}
+// -------------------------------------------------------------------------------------
+// Responsability of the caller to acquire the set lock
+// Used by the RUHs which are reclaimed without going through the page fixing GC threads.
+void BufferManager::RUEpochDiscardSet::resetWithoutGC()
+{
+   ensure(FLAGS_enable_discarding);
+   ensure(id != DEFAULT_RUH);
+   ensure_equal(done_gc, FLAGS_ru_gc_threads);
+   resetAndMarkReclaimed();
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::RUEpochDiscardSet::resetAndMarkReclaimed()
+{
    ensure(force_gc == false);
    offset_batch = 0;
    inserted = 0;
@@ -50,7 +65,8 @@ void BufferManager::RUEpochDiscardSet::reset()
    for (auto& counter : undiscardable_cause_distribution) {
       counter.store(0, std::memory_order_relaxed);
    }
-   BMC::global_bf->reclaimed_ru_epoch.fetch_add(1);
+   /// TODO(mfd) : The easiest generalization of this is that I store the ruh in the discard set.
+   BMC::global_bf->reclaimed_ru_epoch[ruh].fetch_add(1);
 }
 // -------------------------------------------------------------------------------------
 void BufferManager::RUEpochDiscardSet::dump()

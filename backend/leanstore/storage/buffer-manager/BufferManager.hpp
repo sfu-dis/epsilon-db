@@ -105,10 +105,11 @@ class BufferManager
 
    // -------------------------------------------------------------------------------------
    // Threads managements
-   struct alignas(64) padded_iostat {
-     atomic<u64> io_counter = 0;
-     u64 pad[7];
+   struct alignas(CACHE_LINE_SIZE) padded_iostat {
+     std::array<atomic<u64>, NUM_RUHS> io_counter{};
+     u8 pad[CACHE_LINE_SIZE - sizeof(io_counter)];
    };
+   static_assert(sizeof(padded_iostat) == CACHE_LINE_SIZE, "");
    // One per thread that writes to storage.
    const u32 io_writer_threads_count;
    std::unique_ptr<padded_iostat[]> writers_iostat;
@@ -129,9 +130,11 @@ class BufferManager
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
 public:
-   atomic<ru_epoch_t> ru_epoch = 0; // persistant
-   atomic<ru_epoch_t> oldest_uncollected_ru_epoch = 0; // persistant
-   atomic<ru_epoch_t> reclaimed_ru_epoch = -1; // persistant
+   // One independent RU epoch stream per RUH. Only DEFAULT_RUH is persisted for now.
+   std::array<atomic<ru_epoch_t>, NUM_RUHS> ru_epoch;
+   std::array<atomic<ru_epoch_t>, NUM_RUHS> oldest_uncollected_ru_epoch;
+   std::array<atomic<ru_epoch_t>, NUM_RUHS> reclaimed_ru_epoch;
+   // DEFAULT_RUH only: advanced by the page-fixing GC threads.
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad1[7];
    static u64 RU_SIZE;
@@ -140,7 +143,8 @@ public:
    u32 max_open_ru_epochs;
    u32 max_pending_lsn;
    struct RUEpochDiscardSet {
-      u32 id;
+      ruh_id_t ruh = UNMAPPED_RUH;
+      u32 id = - 1;  // index of this set into the circular buffer.
       instrumented_mutex m{"ru_discard_set"};
       void* mmaped_log = nullptr;
       u64 log_segment_start = -1;
@@ -163,6 +167,8 @@ public:
 
       void open(ru_epoch_t new_ru_epoch);
       void reset();
+      void resetWithoutGC();
+      void resetAndMarkReclaimed();
       u32 ReclaimUnitUsage();
       bool shouldGC();
       void dump();
@@ -219,12 +225,19 @@ public:
          return at(index);
       }
    };
-   RUEpochsState ru_discard_set;
+   std::vector<RUEpochsState> ru_discard_set; // one per RUH
    // -------------------------------------------------------------------------------------
    std::mutex gc_m;
    std::condition_variable gc_cv;
    std::vector<u64> to_gc_epochs;
    int is_gc_sleeping{0};
+   // -------------------------------------------------------------------------------------
+   // RU Epoch Manager helpers, called only from the ru_epoch_mgr thread.
+   // TODO(mfd) : Create a class for the RU Epoch Manager, decouple it from the Buffer Manager.
+   void checkForNewRUEpoch(ruh_id_t ruh, std::vector<u64>& last_seen, u64& tot_page_written);
+   s64 freeRUEpochsAfterOpeningOne();
+   void forceGCOldestRUEpochs();
+   void tryReclaimNonDefaultRUEpoch(ruh_id_t ruh);
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();

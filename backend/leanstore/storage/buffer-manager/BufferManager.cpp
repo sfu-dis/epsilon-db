@@ -44,8 +44,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
   ssd_fd(ssd_fd),
   io_writer_threads_count(FLAGS_pp_threads + FLAGS_ru_gc_threads),
   max_open_ru_epochs(max_open_ru_epochs),
-  persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE),
-  ru_discard_set(max_open_ru_epochs)
+  persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE)
 {
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
@@ -124,6 +123,20 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          }
       });
       // -------------------------------------------------------------------------------------
+      // Every RUH gets a ring as large as the global budget since a single RUH may hold all open RU epochs.
+      ru_discard_set.reserve(NUM_RUHS);
+      for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+         ru_discard_set.emplace_back(max_open_ru_epochs);
+         for (u32 i = 0; i < max_open_ru_epochs; ++i) {
+            auto& set = ru_discard_set[ruh].at(i);
+            set.ruh = ruh;
+            set.id = i;
+         }
+         ru_epoch[ruh].store(0);
+         oldest_uncollected_ru_epoch[ruh].store(0);
+         reclaimed_ru_epoch[ruh].store(-1);
+      }
+      // -------------------------------------------------------------------------------------
       ensure(io_writer_threads_count > 0);
       writers_iostat = std::make_unique<padded_iostat[]>(io_writer_threads_count);
       u64 aligned_size = utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs*sizeof(u32), 4096);
@@ -131,26 +144,31 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
       ensure(persistant_ru_state != nullptr);
       new (persistant_ru_state) PersistantRUState(max_open_ru_epochs);
       if (FLAGS_recover) {
+         /// XXX(mfd) : To keep changes minimal, everything here assumes all writes has gone through
+         /// the default RUH during loading.
+         /// This means that the ru_epoch of other RUHs is assumed to be zero.
+         /// This will be fixed in the future.
          persistant_ru_state->loadFromPersistantStorage();
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          ru_epoch_t newest_active_ru_epoch = persistant_ru_state->ru_epoch;
          LOG_INFO(logger, "Recovering, Newest Active RU epoch is %lu", newest_active_ru_epoch);
          ensure(newest_active_ru_epoch < max_open_ru_epochs);
-         ru_epoch.store(newest_active_ru_epoch);
+         ru_epoch[DEFAULT_RUH].store(newest_active_ru_epoch);
          if (persistant_ru_state->oldest_active_ru_epoch != 0) {
             // We do not fully support recovering from discarded state for now.
             TODOException();
          }
          ensure_equal(persistant_ru_state->reclaimed_ru_epoch, -1);
-         oldest_uncollected_ru_epoch.store(persistant_ru_state->oldest_active_ru_epoch);
-         reclaimed_ru_epoch.store(persistant_ru_state->reclaimed_ru_epoch);
+         oldest_uncollected_ru_epoch[DEFAULT_RUH].store(persistant_ru_state->oldest_active_ru_epoch);
+         reclaimed_ru_epoch[DEFAULT_RUH].store(persistant_ru_state->reclaimed_ru_epoch);
          const u32 last_total = persistant_ru_state->totals[newest_active_ru_epoch];
          ensure_lt(last_total, RU_SIZE);
-         writers_iostat[0].io_counter = last_total;
+         writers_iostat[0].io_counter[DEFAULT_RUH] = last_total;
          LOG_INFO(logger, "Recovering, pages used in the newest RU %u", last_total);
-         for (ru_epoch_t e = oldest_uncollected_ru_epoch; e <= newest_active_ru_epoch; ++e) {
-            auto& set = ru_discard_set.at(e);
-            set.total.store(persistant_ru_state->totals[e - oldest_uncollected_ru_epoch]);
+         const ru_epoch_t oldest = oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+         for (ru_epoch_t e = oldest; e <= newest_active_ru_epoch; ++e) {
+            auto& set = ru_discard_set[DEFAULT_RUH].at(e);
+            set.total.store(persistant_ru_state->totals[e - oldest]);
             // FIXME(mfd) : recover real invalid counter
             set.invalid.store(0);
             set.cur_ru_epoch = e;
@@ -160,8 +178,13 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          persistant_ru_state->ru_epoch = 0;
          persistant_ru_state->oldest_active_ru_epoch = 0;
          persistant_ru_state->reclaimed_ru_epoch = -1;
-         ru_discard_set.at(0).cur_ru_epoch = 0;
-         ru_discard_set.at(0).active.store(true);
+         ru_discard_set[DEFAULT_RUH].at(0).cur_ru_epoch = 0;
+         ru_discard_set[DEFAULT_RUH].at(0).active.store(true);
+      }
+      for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+         if (ruh == DEFAULT_RUH) continue;
+         ru_discard_set[ruh].at(0).cur_ru_epoch = 0;
+         ru_discard_set[ruh].at(0).active.store(true);
       }
       if (FLAGS_wal && FLAGS_wal_pwrite) {
          ensure(!FLAGS_redo_log_file.empty());
@@ -208,97 +231,64 @@ void BufferManager::startBackgroundThreads()
       std::thread ru_epoch_mgr = std::thread([&]() {
          pthread_setname_np(pthread_self(), "ru_epoch_mgr");
          bg_threads_counter++;
-         u64 tot_page_written = 0;
-         std::vector<u64> last_seen(io_writer_threads_count, 0);
-         if (FLAGS_recover) {
-            for (u32 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
-               last_seen[io_handler] = writers_iostat[io_handler].io_counter.load();
-               tot_page_written += last_seen[io_handler];
+         // Per RUH: pages written in the open RU epoch, and the last seen counter of each writer thread.
+         std::array<u64, NUM_RUHS> tot_page_written{};
+         std::array<std::vector<u64>, NUM_RUHS> last_seen;
+         for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+            last_seen[ruh].assign(io_writer_threads_count, 0);
+            if (FLAGS_recover) {
+               for (u32 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+                  last_seen[ruh][io_handler] = writers_iostat[io_handler].io_counter[ruh].load();
+                  tot_page_written[ruh] += last_seen[ruh][io_handler];
+               }
             }
          }
-         auto check_for_new_ru_epoch = [&]() {
-            bool open_new_ru_epoch = false;
-            for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
-               u64 new_value = writers_iostat[io_handler].io_counter.load(std::memory_order::acquire);
-               ensure(new_value >= last_seen[io_handler]);
-               u64 diff = new_value - last_seen[io_handler];
-               tot_page_written += diff;
-               last_seen[io_handler] = new_value;
-            }
-            if (tot_page_written >= RU_SIZE) {
-               open_new_ru_epoch = true;
-               tot_page_written = tot_page_written - RU_SIZE;
-            }
-            if (open_new_ru_epoch) {
-               ru_epoch_t new_ru_epoch = ru_epoch.load(std::memory_order_relaxed) + 1;
-               if (FLAGS_enable_discarding) {
-                  // Once we almost exhausted all free RUs, we enter the steady state where we reclaim RUs continously.
-                  // This will only happen if the workload access pattern never reaches the threshold of RU usage.
-                  // When this happens the first time, I reclaim agressively the oldest 20 ru epochs. This is very
-                  // similar to the device GC behaviour because, after all, there is no much time for the ru usage
-                  // to improve the threshold.
-                  const s64 free_ru_epochs = max_open_ru_epochs + reclaimed_ru_epoch - new_ru_epoch;
-                  // Probably too early ?
-                  if (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
-                     // cap the new rate at 80%
-                     u64 new_rate = (free_ru_epochs * 80)/FLAGS_overprovisioning_ru_epochs;
-                     rate.store(new_rate, std::memory_order_release);
-                     LOG_WARN(logger, "Updated the rate of writes to %lu%%, free ru epochs = %ld", new_rate, free_ru_epochs);
-                     if (!global_force_gc) {
-                        global_force_gc = true;
-                        const ru_epoch_t up_to = std::min<ru_epoch_t>(oldest_uncollected_ru_epoch + 20, ru_epoch.load(std::memory_order_relaxed) - 1);
-                        for (ru_epoch_t r = oldest_uncollected_ru_epoch; r < up_to; ++r) {
-                           ru_discard_set[r].force_gc = true;
-                           bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
-                        }
-                     } else {
-                        ru_discard_set[oldest_uncollected_ru_epoch].force_gc = true;
-                        bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
-                     }
-                  } else {
-                     if (rate.load(std::memory_order_relaxed) < 100) {
-                        rate.store(100, std::memory_order_release);
-                        LOG_INFO(logger, "Restored the rate of writes to 100%%, free ru epochs = %ld", free_ru_epochs);
-                     }
-                  }
-               }
-               auto& set = ru_discard_set.at(new_ru_epoch);
-               {
-                  std::lock_guard _l(set.m);
-                  set.open(new_ru_epoch);
-               }
-               ru_epoch.store(new_ru_epoch, std::memory_order_release);
-               LOG_INFO(logger, "Opened up a new RU Epoch %lu, closed previous ru epoch with %lu pages!!!", new_ru_epoch, ru_discard_set[new_ru_epoch - 1].total.load());
+         auto check_for_new_ru_epochs = [&]() {
+            for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+               checkForNewRUEpoch(ruh, last_seen[ruh], tot_page_written[ruh]);
             }
          };
          FILE* tfp = fopen("thresholds.txt", "w");
          u64 milliseconds = 0;
          while (bg_threads_keep_running || shutdown_flush_in_progress.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            check_for_new_ru_epoch();
-            if (FLAGS_enable_discarding
-                && oldest_uncollected_ru_epoch < ru_epoch.load(std::memory_order_relaxed)
-                && ru_discard_set[oldest_uncollected_ru_epoch].shouldGC()) {
-               if (gc_m.try_lock()) {
-                  to_gc_epochs.push_back(oldest_uncollected_ru_epoch);
-                  oldest_uncollected_ru_epoch++;
-                  if (is_gc_sleeping > 0) {
-                     gc_m.unlock();
-                     gc_cv.notify_all();
-                  } else {
-                     gc_m.unlock();
+            check_for_new_ru_epochs();
+            if (FLAGS_enable_discarding) {
+               const ru_epoch_t oldest = oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+               const ru_epoch_t newest = ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+               if (oldest < newest && ru_discard_set[DEFAULT_RUH][oldest].shouldGC()) {
+                  // TODO(mfd) : I forgot when the try_lock() fails and why it is okay to skip.
+                  // Document this.
+                  if (gc_m.try_lock()) {
+                     to_gc_epochs.push_back(oldest_uncollected_ru_epoch[DEFAULT_RUH]);
+                     oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
+                     if (is_gc_sleeping > 0) {
+                        gc_m.unlock();
+                        gc_cv.notify_all();
+                     } else {
+                        gc_m.unlock();
+                     }
                   }
                }
+               // Reclaim the non discardable RU Epochs inline.
+               // For the first 2 RUH set up that I will use
+               // This will never fire.
+               // Because the other RUH contains dead pages.
             }
             // each minute
             if (FLAGS_trace_ru_threshold && FLAGS_enable_discarding) {
                if (milliseconds == (1000*60)) {
                   milliseconds = 0;
-                  ru_epoch_t newest_ru_epoch = ru_epoch.load();
-                  for (ru_epoch_t r = oldest_uncollected_ru_epoch; r < newest_ru_epoch; ++r) {
-                     fprintf(tfp, "(%ld,%.2f)", r, ru_discard_set[r].ReclaimUnitUsage() * 100.0 / ru_discard_set[r].total.load());
+                  for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+                     ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
+                     ru_epoch_t newest = ru_epoch[ruh].load(std::memory_order_relaxed);
+                     fprintf(tfp, "RUH : %u\n", ruh);
+                     for (ru_epoch_t r = oldest; r < newest; ++r) {
+                        // TODO(mfd) : Left to handle ru_discard_set per RUH
+                        fprintf(tfp, "(%ld,%.2f)", r, ru_discard_set[ruh][r].ReclaimUnitUsage() * 100.0 / ru_discard_set[ruh][r].total.load(std::memory_order_relaxed));
+                     }
+                     fprintf(tfp, "\n");
                   }
-                  fprintf(tfp, "\n");
                   fflush(tfp);
                }
                milliseconds += 10;
@@ -312,11 +302,13 @@ void BufferManager::startBackgroundThreads()
          while(pp_threads_counter) {}
          while(gc_threads_counter) {}
          // No thread is able to write now
-         check_for_new_ru_epoch();
+         check_for_new_ru_epochs();
          // sanity check block
          {
-            for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
-               ensure_equal(writers_iostat[io_handler].io_counter, last_seen[io_handler]);
+            for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+               for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+                  ensure_equal(writers_iostat[io_handler].io_counter[ruh], last_seen[ruh][io_handler]);
+               }
             }
          }
          bg_threads_counter--;
@@ -336,6 +328,111 @@ void BufferManager::startBackgroundThreads()
          }
       }
    }
+}
+// -------------------------------------------------------------------------------------
+// RU Epoch Manager
+// -------------------------------------------------------------------------------------
+void BufferManager::checkForNewRUEpoch(ruh_id_t ruh, std::vector<u64>& last_seen, u64& tot_page_written)
+{
+   for (u64 io_handler = 0; io_handler < io_writer_threads_count; ++io_handler) {
+      u64 new_value = writers_iostat[io_handler].io_counter[ruh].load(std::memory_order::acquire);
+      ensure(new_value >= last_seen[io_handler]);
+      tot_page_written += new_value - last_seen[io_handler];
+      last_seen[io_handler] = new_value;
+   }
+   if (tot_page_written < RU_SIZE) {
+      return;
+   }
+   tot_page_written -= RU_SIZE;
+   const ru_epoch_t new_ru_epoch = ru_epoch[ruh].load(std::memory_order_relaxed) + 1;
+   if (FLAGS_enable_discarding) {
+      // Once we almost exhausted all free RUs, we enter the steady state where we reclaim RUs continously.
+      // This will only happen if the workload access pattern never reaches the threshold of RU usage.
+      // When this happens the first time, I reclaim agressively the oldest 20 ru epochs. This is very
+      // similar to the device GC behaviour because, after all, there is no much time for the ru usage
+      // to improve the threshold.
+      const s64 free_ru_epochs = freeRUEpochsAfterOpeningOne();
+      // Probably too early ?
+      if (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
+         // cap the new rate at 80%
+         u64 new_rate = (free_ru_epochs * 80) / FLAGS_overprovisioning_ru_epochs;
+         rate.store(new_rate, std::memory_order_release);
+         LOG_WARN(logger, "Updated the rate of writes to %lu%%, free ru epochs = %ld", new_rate, free_ru_epochs);
+         // TODO(mfd) : Pick the one with the highest RU Usage and free it.
+         // For now I will start with the two RUH examples therefore I force only the default RUH for now.
+         // Later I should also force the HOT RUH.
+         // forceGCOldestRUEpochs();
+      } else {
+         if (rate.load(std::memory_order_relaxed) < 100) {
+            rate.store(100, std::memory_order_release);
+            LOG_INFO(logger, "Restored the rate of writes to 100%%, free ru epochs = %ld", free_ru_epochs);
+         }
+      }
+   }
+   auto& set = ru_discard_set[ruh].at(new_ru_epoch);
+   {
+      std::lock_guard _l(set.m);
+      set.open(new_ru_epoch);
+   }
+   ru_epoch[ruh].store(new_ru_epoch, std::memory_order_release);
+   LOG_INFO(logger, "RUH %u : Opened up a new RU Epoch %lu, closed previous ru epoch with %lu pages!!!", ruh, new_ru_epoch,
+            ru_discard_set[ruh][new_ru_epoch - 1].total.load());
+}
+// -------------------------------------------------------------------------------------
+// Free RU epochs left in the budget shared by all RUHs once one more RU epoch gets opened.
+s64 BufferManager::freeRUEpochsAfterOpeningOne()
+{
+   s64 used_ru_epochs = 1;
+   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      used_ru_epochs += ru_epoch[ruh].load(std::memory_order_relaxed) - reclaimed_ru_epoch[ruh].load(std::memory_order_relaxed);
+   }
+   ensure_lte(used_ru_epochs, max_open_ru_epochs);
+   return static_cast<s64>(max_open_ru_epochs) - used_ru_epochs;
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::forceGCOldestRUEpochs()
+{
+   /// XXX(mfd) : For now this will force only the DEFAULT_RUH, which is the discardable RUH.
+   /// Eventually If I force GC, I need to pick the 20 oldest RU epochs from both streams.
+   const ru_epoch_t oldest = oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+   const ru_epoch_t newest = ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+   if (oldest >= newest) {
+      // Only the open RU epoch is left, nothing to force.
+      return;
+   }
+   auto& sets = ru_discard_set[DEFAULT_RUH];
+   if (!global_force_gc) {
+      global_force_gc = true;
+      const ru_epoch_t up_to = std::min<ru_epoch_t>(oldest + 20, newest - 1);
+      for (ru_epoch_t r = oldest; r < up_to; ++r) {
+         sets[r].force_gc = true;
+         bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+      }
+   } else {
+      sets[oldest].force_gc = true;
+      bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+   }
+}
+// -------------------------------------------------------------------------------------
+// Pages of a non default RUH are never fixed, the RU epoch is declared reclaimed as soon as
+// it is garbage heavy enough (or forced), leaving the relocation of its valid pages to the device.
+void BufferManager::tryReclaimNonDefaultRUEpoch(ruh_id_t ruh)
+{
+   ensure(ruh != DEFAULT_RUH);
+   const ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
+   if (oldest >= ru_epoch[ruh].load(std::memory_order_relaxed)) {
+      return;
+   }
+   auto& set = ru_discard_set[ruh][oldest];
+   if (!set.shouldGC()) {
+      return;
+   }
+   {
+      std::lock_guard _l(set.m);
+      set.resetWithoutGC();
+   }
+   oldest_uncollected_ru_epoch[ruh].store(oldest + 1, std::memory_order_release);
+   LOG_INFO(logger, "RUH %u : Reclaimed RU epoch %ld", ruh, oldest);
 }
 // -------------------------------------------------------------------------------------
 std::unordered_map<std::string, std::string> BufferManager::serialize()
@@ -367,7 +464,7 @@ void BufferManager::writeAllBufferFrames()
    ensure_equal(gc_threads_counter.load(), 0);
    ensure(shutdown_flush_in_progress.load(std::memory_order_acquire));
 
-   ensure_lt(ru_discard_set[ru_epoch.load()].total.load(), static_cast<s32>(RU_SIZE));
+   ensure_lt(ru_discard_set[DEFAULT_RUH][ru_epoch[DEFAULT_RUH].load()].total.load(), static_cast<s32>(RU_SIZE));
 
    std::atomic<u32> ephemeral_write_id = 0;
    utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
@@ -389,15 +486,17 @@ void BufferManager::writeAllBufferFrames()
    });
    stopRUEpochManagerThread();
    // TODO(mfd) : Move this as the responsability of the RU Epoch Manager.
-   ru_epoch_t newest_ru_epoch = ru_epoch.load(std::memory_order_acquire);
-   LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[newest_ru_epoch].total.load());
-   ensure_equal(oldest_uncollected_ru_epoch, 0);
-   ensure_equal(reclaimed_ru_epoch, -1);
+   ru_epoch_t newest_ru_epoch = ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire);
+   LOG_INFO(logger, "newest RU epoch is left with %d", ru_discard_set[DEFAULT_RUH][newest_ru_epoch].total.load());
+   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      ensure_equal(oldest_uncollected_ru_epoch[ruh].load(), 0);
+      ensure_equal(reclaimed_ru_epoch[ruh].load(), -1);
+   }
    persistant_ru_state->ru_epoch = newest_ru_epoch;
    persistant_ru_state->oldest_active_ru_epoch = 0;
    persistant_ru_state->reclaimed_ru_epoch = -1;
    for (ru_epoch_t e = 0; e <= newest_ru_epoch; ++e) {
-      auto &set = ru_discard_set[e];
+      auto &set = ru_discard_set[DEFAULT_RUH][e];
       persistant_ru_state->totals[e] = set.total.load();
    }
    persistant_ru_state->writetoPersistantStorage();
@@ -832,7 +931,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       io_uring_cq_advance(&cr::Worker::my().ring, wait_for_io);
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
-         ru_discard_set.at(bf.page.ru_epoch).deleted.fetch_add(1);
+         ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).deleted.fetch_add(1);
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
@@ -997,18 +1096,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
 // -------------------------------------------------------------------------------------
 void BufferManager::pageWriteBackPrologue(BufferFrame::Page& page)
 {
+   // TODO(mfd) : Assign the placement ID.
+   // For now we will map everything to the DEFAULT_RUH for backward compatibility.
+   const ruh_id_t ruh = DEFAULT_RUH, prev_ruh = DEFAULT_RUH;
    const ru_epoch_t prev_ru_epoch = page.ru_epoch;
    page.prev_ru_epoch = prev_ru_epoch;
-   page.ru_epoch = ru_epoch.load(std::memory_order_acquire);
+   page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
    if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
    // Update the stats here
-   ru_discard_set[page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
-   if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
-      ru_discard_set.at(prev_ru_epoch).invalid.fetch_add(1);
+   ru_discard_set[ruh][page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
+   if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
+      ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
    }
    ensure(tls_writer_thread_id != -1);
-   writers_iostat[tls_writer_thread_id].io_counter.fetch_add(1, std::memory_order_relaxed);
-   // TODO(mfd) : Assign the placement ID.
+   writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(1, std::memory_order_relaxed);
 }
 // -------------------------------------------------------------------------------------
 // SSD management

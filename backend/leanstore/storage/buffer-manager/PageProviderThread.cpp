@@ -309,7 +309,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // The RU discard set identity may change meanwhile.
             // I simply allow this, this is a very rare event, and these are
             // stats just to approximate thresolhold of GC in RU epoch.
-            ru_discard_set.at(bf.page.ru_epoch).inserted.fetch_add(1);
+            ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).inserted.fetch_add(1);
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
          } else {
@@ -378,6 +378,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   && cooled_bf->isDiscardable()
                   && reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf
                   && (page_in_live_ru_epoch = (page.ru_epoch > reclaiming_ru_epoch.load(std::memory_order_acquire)))) {
+                  /// TODO(mfd) : Ensure, if possible, that the page belongs to the appropriate ruh, which is the DEFAULT_RUH
                   evict_bf(*cooled_bf, o_guard, true);
                } else if (!async_write_buffer.full()
                           && (rate.load(std::memory_order_acquire) == 100 || (utils::RandomGenerator::getRandU64(0, 100) < rate.load(std::memory_order_acquire)))) {
@@ -390,8 +391,13 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      paranoid(!header.is_being_written_back);
                      header.is_being_written_back.store(true, std::memory_order_release);
                      // XXX(mfd) : Probably the better check is > reclaiming not > reclaimed.
-                     if (page.ru_epoch != UNMAPPED_RU_EPOCH && page.ru_epoch > reclaimed_ru_epoch.load(std::memory_order_acquire)) {
-                         ru_discard_set.at(page.ru_epoch).undiscardable_cause_distribution[header.undiscardable_cause].fetch_add(1);
+                     // TODO(mfd) : I will put the default RUH here, But it should be the RUH that the page will be written into
+                     /// This part makes sense only for pages belonging to the discardable ruh.
+                     /// Or at least previously belonging to the discardable ruh.
+                     /// The open question is how to identify this upfront.
+                     const ruh_id_t ruh = DEFAULT_RUH;
+                     if (page.ru_epoch != UNMAPPED_RU_EPOCH && page.ru_epoch > reclaimed_ru_epoch[ruh].load(std::memory_order_acquire)) {
+                         ru_discard_set[ruh].at(page.ru_epoch).undiscardable_cause_distribution[header.undiscardable_cause].fetch_add(1);
                      }
                      COUNTERS_BLOCK(absorbed_writes_histogram)
                      {

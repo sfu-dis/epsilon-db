@@ -17,3 +17,6 @@ debug*
 release*
 clang*
 paper*
+
+shared-headers/counters_config.hpp
+
