@@ -148,7 +148,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
          /// the default RUH during loading.
          /// This means that the ru_epoch of other RUHs is assumed to be zero.
          /// This will be fixed in the future.
-         persistant_ru_state->loadFromPersistantStorage();
+         persistant_ru_state->loadFromPersistantStorage(ssd_fd, persistant_ru_state_offset);
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          ru_epoch_t newest_active_ru_epoch = persistant_ru_state->ru_epoch;
          LOG_INFO(logger, "Recovering, Newest Active RU epoch is %lu", newest_active_ru_epoch);
@@ -310,7 +310,7 @@ void BufferManager::writeAllBufferFrames()
       auto &set = ru_discard_set[DEFAULT_RUH][e];
       persistant_ru_state->totals[e] = set.total.load();
    }
-   persistant_ru_state->writetoPersistantStorage();
+   persistant_ru_state->writetoPersistantStorage(ssd_fd, persistant_ru_state_offset);
 }
 // -------------------------------------------------------------------------------------
 u64 BufferManager::consumedPages()

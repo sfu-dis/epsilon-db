@@ -581,6 +581,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
             ensure_equal(rc, 0);
             set.mmaped_log = nullptr;
             set.reset();
+            reclaimed_ru_epoch[DEFAULT_RUH].fetch_add(1);
             logging.reset();
             set.m.unlock();
             if (FLAGS_wal && FLAGS_wal_pwrite) {

@@ -4,7 +4,8 @@
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/storage/NvmeDevice.hpp"
-#include "leanstore/utils/FVector.hpp"
+#include "leanstore/storage/buffer-manager/RUEpochDiscardSet.hpp"
+// #include "leanstore/utils/FVector.hpp"
 #include "leanstore/utils/ThreadLocalAggregator.hpp"
 // -------------------------------------------------------------------------------------
 #include "gflags/gflags.h"
@@ -131,7 +132,7 @@ LeanStore::LeanStore()
    max_open_ru_epochs += FLAGS_overprovisioning_ru_epochs;
    LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
    LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
-   u64 persistant_state_blocks = utils::upAlign(sizeof(BufferManager::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
+   u64 persistant_state_blocks = utils::upAlign(sizeof(storage::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
    total_blocks_in_ssd -= persistant_state_blocks;
    // Adjust ssd_gib
    FLAGS_ssd_gib = (total_blocks_in_ssd * 4) / 1048576;

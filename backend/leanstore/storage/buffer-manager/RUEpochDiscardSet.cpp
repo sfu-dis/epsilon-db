@@ -1,13 +1,21 @@
-#include "BufferManager.hpp"
+#include "RUEpochDiscardSet.hpp"
+// -------------------------------------------------------------------------------------
 #include "leanstore/utils/Misc.hpp"
-
+// -------------------------------------------------------------------------------------
+#include <unistd.h>
+// -------------------------------------------------------------------------------------
+#include <chrono>
+#include <cstdio>
+#include <iostream>
+#include <thread>
+// -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace storage
 {
 // -------------------------------------------------------------------------------------
 // Responsability of the caller to acquire the set lock
-void BufferManager::RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
+void RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
 {
    if (FLAGS_enable_discarding && active.load()) {
       printf(
@@ -29,24 +37,24 @@ void BufferManager::RUEpochDiscardSet::open(ru_epoch_t new_ru_epoch)
 }
 // -------------------------------------------------------------------------------------
 // Responsability of the caller to acquire the set lock
-void BufferManager::RUEpochDiscardSet::reset()
+void RUEpochDiscardSet::reset()
 {
    ensure(FLAGS_enable_discarding || is_currently_being_garbage_collected.load() == true);
    ensure_equal(done_gc, 0);
-   resetAndMarkReclaimed();
+   clear();
 }
 // -------------------------------------------------------------------------------------
 // Responsability of the caller to acquire the set lock
 // Used by the RUHs which are reclaimed without going through the page fixing GC threads.
-void BufferManager::RUEpochDiscardSet::resetWithoutGC()
+void RUEpochDiscardSet::resetWithoutGC()
 {
    ensure(FLAGS_enable_discarding);
    ensure(id != DEFAULT_RUH);
    ensure_equal(done_gc, FLAGS_ru_gc_threads);
-   resetAndMarkReclaimed();
+   clear();
 }
 // -------------------------------------------------------------------------------------
-void BufferManager::RUEpochDiscardSet::resetAndMarkReclaimed()
+void RUEpochDiscardSet::clear()
 {
    ensure(force_gc == false);
    offset_batch = 0;
@@ -65,11 +73,9 @@ void BufferManager::RUEpochDiscardSet::resetAndMarkReclaimed()
    for (auto& counter : undiscardable_cause_distribution) {
       counter.store(0, std::memory_order_relaxed);
    }
-   /// TODO(mfd) : The easiest generalization of this is that I store the ruh in the discard set.
-   BMC::global_bf->reclaimed_ru_epoch[ruh].fetch_add(1);
 }
 // -------------------------------------------------------------------------------------
-void BufferManager::RUEpochDiscardSet::dump()
+void RUEpochDiscardSet::dump()
 {
    cout << "===== RUEpochDiscardSet =====" << endl;
    cout << "id: " << id << endl;
@@ -97,7 +103,7 @@ void BufferManager::RUEpochDiscardSet::dump()
    cout << "=============================" << endl;
 }
 // -------------------------------------------------------------------------------------
-u32 BufferManager::RUEpochDiscardSet::ReclaimUnitUsage()
+u32 RUEpochDiscardSet::ReclaimUnitUsage()
 {
    // This formula does not account for those pages that are in the buffer pool
    s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
@@ -105,7 +111,7 @@ u32 BufferManager::RUEpochDiscardSet::ReclaimUnitUsage()
    return i + d;
 }
 // -------------------------------------------------------------------------------------
-bool BufferManager::RUEpochDiscardSet::shouldGC()
+bool RUEpochDiscardSet::shouldGC()
 {
    static u64 cnt = 0;
    s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
@@ -139,19 +145,19 @@ bool BufferManager::RUEpochDiscardSet::shouldGC()
    return ok;
 }
 // -------------------------------------------------------------------------------------
-BufferManager::PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) : max_open_ru_epochs(max_open_ru_epochs) {}
+PersistantRUState::PersistantRUState(u32 max_open_ru_epochs) : max_open_ru_epochs(max_open_ru_epochs) {}
 // -------------------------------------------------------------------------------------
-void BufferManager::PersistantRUState::loadFromPersistantStorage()
+void PersistantRUState::loadFromPersistantStorage(int fd, u64 offset)
 {
    u64 sz = utils::upAlign(getSize(), 4096);
-   s64 ret = pread(BMC::global_bf->ssd_fd, this, sz, BMC::global_bf->persistant_ru_state_offset);
+   s64 ret = pread(fd, this, sz, offset);
    ensure_equal(ret, s64(sz));
 }
 // -------------------------------------------------------------------------------------
-void BufferManager::PersistantRUState::writetoPersistantStorage()
+void PersistantRUState::writetoPersistantStorage(int fd, u64 offset)
 {
    u64 sz = utils::upAlign(getSize(), 4096);
-   s64 ret = pwrite(BMC::global_bf->ssd_fd, this, sz, BMC::global_bf->persistant_ru_state_offset);
+   s64 ret = pwrite(fd, this, sz, offset);
    ensure_equal(ret, s64(sz));
 }
 // -------------------------------------------------------------------------------------
