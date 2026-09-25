@@ -286,7 +286,8 @@ void BufferManager::writeAllBufferFrames()
          bf.header.latch.mutex.lock();
          if (!bf.isFree() && bf.isDirty()) {
             bf.page.magic_debugging_number = bf.header.pid;
-            pageWriteBackPrologue(bf.page);
+            fdp_placement_policy.onWriteBackDirtyPage(bf);
+            pageWriteBackPrologue(bf);
             ++bf.page.write_back_count;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
@@ -356,7 +357,7 @@ BufferFrame& BufferManager::allocatePage()
    BufferFrame& free_bf = partition.dram_free_list.tryPop();
    auto& header = free_bf.header;
    auto& page = free_bf.page;
-   auto [free_pid, ru_epoch] = partition.nextPID();
+   auto [free_pid, ru_epoch, ruh] = partition.nextPID();
    if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
    ensure_equal(header.state, BufferFrame::STATE::FREE);
    // -------------------------------------------------------------------------------------
@@ -372,8 +373,10 @@ BufferFrame& BufferManager::allocatePage()
    ensure(!header.discardable.load());
    header.last_written_plsn = 0;
    page.reset();
+   page.ruh = ruh;
    page.ru_epoch = ru_epoch;
    page.magic_debugging_number = free_pid;
+   fdp_placement_policy.onAllocateNewPage(free_bf);
    header.latch.assertExclusivelyLatched();
    // -------------------------------------------------------------------------------------
    COUNTERS_BLOCK()
@@ -453,7 +456,7 @@ void BufferManager::reclaimPage(BufferFrame& bf)
    if (FLAGS_enable_discarding) discard_state[bf.header.pid].free();
    Partition& partition = getPartition(bf.header.pid);
    if (FLAGS_recycle_pages) {
-      partition.freePage(bf.header.pid, bf.page.ru_epoch);
+      partition.freePage(bf.header.pid, bf.page.ru_epoch, bf.page.ruh);
    }
    // -------------------------------------------------------------------------------------
    if (bf.header.is_being_written_back) {
@@ -905,13 +908,15 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    ensure(false);
 }  // namespace storage
 // -------------------------------------------------------------------------------------
-void BufferManager::pageWriteBackPrologue(BufferFrame::Page& page)
+void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
 {
-   // TODO(mfd) : Assign the placement ID.
-   // For now we will map everything to the DEFAULT_RUH for backward compatibility.
-   const ruh_id_t ruh = DEFAULT_RUH, prev_ruh = DEFAULT_RUH;
+   auto& page = bf.page;
+   const ruh_id_t prev_ruh = page.ruh;
    const ru_epoch_t prev_ru_epoch = page.ru_epoch;
    page.prev_ru_epoch = prev_ru_epoch;
+   page.prev_ruh = prev_ruh;
+   ensure(bf.header.next_ruh != UNMAPPED_RUH);
+   const ruh_id_t ruh = page.ruh = bf.header.next_ruh;
    page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
    if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
    // Update the stats here

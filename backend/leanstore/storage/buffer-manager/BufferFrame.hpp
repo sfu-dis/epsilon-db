@@ -37,7 +37,9 @@ enum UNDISCARDABLE_CAUSE : u8 {
    JUST_SPLITTED = 4,
    RECLAIMED_RU_EPOCH = 5,
    INNER_NODE = 6,
-   OTHER = 7
+   NOT_DEFAULT_RUH = 7,
+   OTHER = 8,
+   SIZE = 9
 };
 // -------------------------------------------------------------------------------------
 struct BufferFrame {
@@ -53,6 +55,10 @@ struct BufferFrame {
       // The PPL is flushed when the number of discarded log records exceeds the threshold.
       // will_flush_ppl == fasle : threshold not exceeded yet.
       bool will_flush_ppl = false;
+      // This will be set up to a valid value when the placement policy set it up.
+      // We need it seperate from the ruh stored in the page because the ruh in the page
+      // describes the physical location on the SSD through the <RUH, RU> pair.
+      ruh_id_t next_ruh = UNMAPPED_RUH;
       PID pid = 9999;         // INIT:
       HybridLatch latch = 0;  // INIT: // ATTENTION: NEVER DECREMENT
       // -------------------------------------------------------------------------------------
@@ -115,6 +121,7 @@ struct BufferFrame {
          last_writer_worker_id = std::numeric_limits<u8>::max();
          last_written_plsn = 0;
          state = STATE::FREE;  // INIT:
+         next_ruh = UNMAPPED_RUH;
          is_being_written_back.store(false, std::memory_order_release);
          pid = 9999;
          next_free_bf = nullptr;
@@ -176,6 +183,8 @@ struct BufferFrame {
       u64 magic_debugging_number;                    // ATTENTION
       ru_epoch_t prev_ru_epoch = UNMAPPED_RU_EPOCH;  // TODO(mfd) : Used just for debugging, remove later
       ru_epoch_t ru_epoch = UNMAPPED_RU_EPOCH;
+      ruh_id_t prev_ruh = UNMAPPED_RUH;
+      ruh_id_t ruh = UNMAPPED_RUH;
       LID last_written_lsn = INVALID_LSN;
       u32 write_back_count = 0;          // TODO(mfd) : Used just for debugging, remove later
       u32 bg_page_fixed_count = 0;       // TODO(mfd) : Used just for debugging, remove later
@@ -191,8 +200,10 @@ struct BufferFrame {
          PLSN = 0;
          GSN = 0;
          dt_id = 9999;
-         ru_epoch = UNMAPPED_RU_EPOCH;
          prev_ru_epoch = UNMAPPED_RU_EPOCH;
+         ru_epoch = UNMAPPED_RU_EPOCH;
+         prev_ruh = UNMAPPED_RUH;
+         ruh = UNMAPPED_RUH;
          last_written_lsn = INVALID_LSN;
          write_back_count = 0;
          bg_page_fixed_count = 0;

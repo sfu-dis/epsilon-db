@@ -38,6 +38,10 @@ using DTID = s64;  // Datastructure ID
 // -------------------------------------------------------------------------------------
 using ru_epoch_t = s64;
 constexpr ru_epoch_t UNMAPPED_RU_EPOCH = ru_epoch_t(-1);
+using ruh_id_t = u8;
+constexpr ruh_id_t DEFAULT_RUH = 0;
+constexpr u32 NUM_RUHS = 2;  // RUH 0 = log-backed, RUH 1 = sink-log-backed
+constexpr ruh_id_t UNMAPPED_RUH = ruh_id_t(-1);
 // -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);
 constexpr LID INEXISTANT_LSN = LID(-2);
@@ -69,4 +73,6 @@ constexpr u64 MSB2 = u64(1) << 62;
 constexpr u64 MSB2_MASK = ~(MSB2);
 // -------------------------------------------------------------------------------------
 constexpr u32 CACHE_LINE_SIZE = 64;
+// -------------------------------------------------------------------------------------
+constexpr DTID MAX_DT_ID = 1000;
 // -------------------------------------------------------------------------------------

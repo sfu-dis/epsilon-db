@@ -434,7 +434,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      header.last_written_plsn = page.PLSN;
                      header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
                      header.will_flush_ppl = false;
-                     pageWriteBackPrologue(page);
+                     fdp_placement_policy.onWriteBackDirtyPage(*cooled_bf);
+                     pageWriteBackPrologue(*cooled_bf);
                      if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
                      if (FLAGS_crc_check) {
                         header.crc = utils::CRC(page.dt, EFFECTIVE_PAGE_SIZE);

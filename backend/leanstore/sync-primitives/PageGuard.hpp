@@ -175,6 +175,9 @@ class HybridPageGuard
       if (!FLAGS_wal_tuple_rfa) {
          incrementGSN();
       }
+      if (bf->page.ruh != UNMAPPED_RUH && bf->page.ruh != DEFAULT_RUH) {
+         bf->markUnDiscardable(NOT_DEFAULT_RUH);
+      }
       // -------------------------------------------------------------------------------------
       const auto pid = bf->header.pid;
       const auto dt_id = bf->page.dt_id;

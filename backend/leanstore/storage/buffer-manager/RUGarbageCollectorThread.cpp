@@ -58,7 +58,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
    gc_threads_counter++;
    bg_threads_counter++;
 
-   BufferFrame::Page buf_pages[batch_size];
+   BufferFrame buf_pages[batch_size];
 
    u8* log_records = nullptr;
    u64 cur_log_segment_start = -1;
@@ -89,7 +89,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       assert(idx < to_fix_pids.size());
       ensure_equal(to_fix_pids[idx].pid, fixed_pid);
       const LID last_lsn = to_fix_pids[idx].last_lsn;
-      BufferFrame::Page* page = &buf_pages[idx];
+      BufferFrame* bf = &buf_pages[idx];
+      BufferFrame::Page* page = &bf->page;
       ensure_equal(page->magic_debugging_number, fixed_pid);
       if (page->ru_epoch != current_gc_epoch) {
          // This means that the page was written back in a new RU epoch
@@ -197,7 +198,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       page->PLSN += to_apply_log_records.size();
       page->last_written_lsn = last_lsn;
       page->GSN = reinterpret_cast<cr::WALDTEntry*>(to_apply_log_records.back())->gsn;
-      pageWriteBackPrologue(*page);
+      fdp_placement_policy.onFixDiscardedPage(*bf);
+      pageWriteBackPrologue(*bf);
       ++page->bg_page_fixed_count;
 
       // Just for debugging
@@ -238,7 +240,8 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       u64 data = io_uring_cqe_get_data64(cqe);
       PID pid = data & 0x0000FFFFFFFFFFFF;
       u64 idx = data >> 48;
-      BufferFrame::Page* page = &buf_pages[idx];
+      BufferFrame* bf = &buf_pages[idx];
+      BufferFrame::Page* page = &bf->page;
       ensure_equal(page->magic_debugging_number, pid);
 
       discard_state[pid].unlockClean(to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page->ru_epoch));
@@ -263,6 +266,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
       {
          GCCounters::myCounters().total_fixed++;
       }
+      bf->reset();
    };
 
    ru_epoch_t tls_max_collected_ru_epoch = 0;
@@ -489,7 +493,7 @@ void BufferManager::ruGarbageCollectorThread(u32 gc_id)
                struct io_uring_sqe* sqe = io_uring_get_sqe(&r_ring);
                ensure(sqe != nullptr);
                // TODO(mfd) : Fixed buffer read
-               io_uring_prep_read(sqe, ssd_fd, &buf_pages[pages_to_fix], PAGE_SIZE, pid * PAGE_SIZE);
+               io_uring_prep_read(sqe, ssd_fd, buf_pages[pages_to_fix].page, PAGE_SIZE, pid * PAGE_SIZE);
                // TODO(mfd) : store just the index into the array.
                //  we can keep the pid here just for debugging.
                ensure((pid & 0xFFFF000000000000) == 0);

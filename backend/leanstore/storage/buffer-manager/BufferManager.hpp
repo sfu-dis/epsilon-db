@@ -134,6 +134,8 @@ class BufferManager
    // -------------------------------------------------------------------------------------
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
+   fdp::PlacementPolicy fdp_placement_policy;
+   // -------------------------------------------------------------------------------------
 public:
    // One independent RU epoch stream per RUH. Only DEFAULT_RUH is persisted for now.
    std::array<atomic<ru_epoch_t>, NUM_RUHS> ru_epoch;
@@ -202,7 +204,7 @@ public:
    // 1. PageProvider for eviction.
    // 2. During shutdown to write all dirty frames.
    // 3. Background Page Fixer Thread.
-   void pageWriteBackPrologue(BufferFrame::Page& page);
+   void pageWriteBackPrologue(BufferFrame& bf);
    // -------------------------------------------------------------------------------------
    void startBackgroundThreads();
    void stopWriterThreads();

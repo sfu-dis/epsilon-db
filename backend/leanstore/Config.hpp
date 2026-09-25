@@ -143,3 +143,4 @@ DECLARE_string(redo_log_file);
 DECLARE_uint64(log_dev_size_gib);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_fdp);
+DECLARE_string(fdp_placement_policy);

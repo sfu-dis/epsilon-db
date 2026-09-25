@@ -86,7 +86,7 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    void* write_buffer_slot_ptr = &write_buffer[slot];
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   nvme_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid);
+   nvme_io_uring_prep_write(sqe, fd, write_buffer_slot_ptr, page_size, page_size * pid, bf.page.ruh);
 #if 0
    if (FLAGS_enable_fdp) {
       // plid_t plid = FDP::AssignPlacementID(bf);
