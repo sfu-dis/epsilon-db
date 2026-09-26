@@ -14,7 +14,6 @@
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 #include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
-#include <libaio.h>
 #include <sys/mman.h>
 
 #include <condition_variable>

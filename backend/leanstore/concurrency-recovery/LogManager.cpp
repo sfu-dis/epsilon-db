@@ -96,16 +96,17 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       ensure_equal(ret, s64(meta_size));
    }
    // -------------------------------------------------------------------------------------
-   // initialize aio context
-   // TODO(mfd) : use io_uring here instead and register the log file descriptor and all log buffers.
-   iocbs = make_unique<struct iocb[]>(batch_max_size);
-   iocbs_ptr = make_unique<struct iocb*[]>(batch_max_size);
-   events = make_unique<struct io_event[]>(batch_max_size);
+   cqes = make_unique<struct io_uring_cqe*[]>(batch_max_size);
    {
-      memset(&aio_context, 0, sizeof(aio_context));
-      const int ret = io_setup(batch_max_size, &aio_context);
+      u32 flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
+      // This is a hack to allow the group committer thread to acquire ownership over the ring.
+      flags |= IORING_SETUP_R_DISABLED;
+      if (FLAGS_enable_fdp) {
+         flags |= (IORING_SETUP_SQE128 | IORING_SETUP_CQE32);
+      }
+      const int ret = io_uring_queue_init(batch_max_size, &ring, flags);
       if (ret != 0) {
-         throw ex::GenericException("io_setup failed, ret code = " + std::to_string(ret));
+         throw ex::GenericException("io_uring_queue_init failed, ret code = " + std::to_string(ret));
       }
    }
 }
@@ -191,6 +192,7 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    lseg.offset = 0;
 }
 
+/// TODO(mfd) : remove the block_full variable and take care of alignment here.
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
 {
    if (!FLAGS_wal_pwrite) return;
@@ -202,9 +204,11 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    ensure_equal((lseg.offset % 4096), 0);
    ensure_equal((lseg.start_off % 4096), 0);
    auto& logging = all_logs[log_i];
-   io_prep_pwrite(&iocbs[io_slot], log_dev_fd, logging.wal_buffer + buffer_offset, size, lseg.start_off + lseg.offset);
-   iocbs[io_slot].data = logging.wal_buffer + buffer_offset;
-   iocbs_ptr[io_slot] = &iocbs[io_slot];
+   const u64 file_offset = lseg.start_off + lseg.offset;
+   struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+   ensure(sqe != nullptr);
+   [[maybe_unused]] ruh_id_t wal_ruh = 0;
+   io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset);
    io_slot++;
    lseg.offset += size;
    COUNTERS_BLOCK(log_space_usage)
@@ -234,30 +238,31 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
 void LogManager::submitAndWait()
 {
    if (!FLAGS_wal_pwrite) return;
-   u32 submitted = 0;
-   u32 left = io_slot;
-   while (left) {
-      s32 ret_code = io_submit(aio_context, left, iocbs_ptr.get() + submitted);
-      ensure_equal(ret_code, s32(io_slot));
-      posix_check(ret_code >= 0);
-      submitted += ret_code;
-      left -= ret_code;
-   }
-   {
-      if (io_slot > 0) {
-         const s32 done_requests = io_getevents(aio_context, submitted, submitted, events.get(), NULL);
-         posix_check(done_requests >= 0);
-         for (s32 i = 0; i < done_requests; ++i) {
-            ensure(s64(events[i].res) > 0);
-            ensure_equal(events[i].res2, 0);
-            if ((events[i].res % LOG_DEV_BLK_SIZE) != 0)
-               cout << events[i].res << endl;
-            ensure_equal((s64(events[i].res) % LOG_DEV_BLK_SIZE), 0);
+   if (io_slot > 0) {
+      // TODO(mfd) : submit_and_wait in a single syscall ?
+      const s32 ret_code = io_uring_submit(&ring);
+      ensure_equal(ret_code, io_slot);
+      const int rc = io_uring_wait_cqe_nr(&ring, cqes.get(), io_slot);
+      posix_check(rc == 0);
+      struct io_uring_cqe* cqe;
+      u32 head;
+      s32 i = 0;
+      io_uring_for_each_cqe(&ring, head, cqe)
+      {
+         if (FLAGS_enable_fdp) {
+            ensure_equal(s64(cqe->res), 0);
+         } else {
+            ensure(s64(cqe->res) > 0);
          }
+         ensure_equal((s64(cqe->res) % LOG_DEV_BLK_SIZE), 0);
+         ++i;
+       }
+      ensure_equal(i, io_slot);
+      io_uring_cq_advance(&ring, io_slot);
+      io_slot = 0;
+      if (FLAGS_wal_fsync) {
+         fdatasync(log_dev_fd);
       }
-   }
-   if (FLAGS_wal_fsync) {
-      fdatasync(log_dev_fd);
    }
 }
 
@@ -276,6 +281,7 @@ LogManager::~LogManager()
 {
     // ensure background threads are stopped ?
     persistMetaBlock();
+    io_uring_queue_exit(&ring);
 }
 
 }  // namespace cr

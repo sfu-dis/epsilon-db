@@ -3,7 +3,7 @@
 #include "Worker.hpp"
 #include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
-#include <libaio.h>
+#include <liburing.h>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -51,10 +51,8 @@ struct LogManager {
    // Async IO
    u64 batch_max_size;
    s32 io_slot = 0;
-   std::unique_ptr<struct iocb[]> iocbs = make_unique<struct iocb[]>(batch_max_size);
-   std::unique_ptr<struct iocb*[]> iocbs_ptr = make_unique<struct iocb*[]>(batch_max_size);
-   std::unique_ptr<struct io_event[]> events = make_unique<struct io_event[]>(batch_max_size);
-   io_context_t aio_context;
+   struct io_uring ring;
+   std::unique_ptr<struct io_uring_cqe*[]> cqes = make_unique<struct io_uring_cqe*[]>(batch_max_size);
    // -------------------------------------------------------------------------------------
    enum class PARTITION_BY : u8 { WORKER, PAGE, RU_EPOCH };
    PARTITION_BY partition_by;

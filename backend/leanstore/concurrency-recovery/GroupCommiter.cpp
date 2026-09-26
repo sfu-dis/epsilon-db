@@ -5,7 +5,6 @@
 #include "leanstore/utils/Misc.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
-#include <libaio.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
@@ -30,7 +29,10 @@ void CRManager::groupCommiter()
    running_threads++;
    std::string thread_name("group_committer");
    pthread_setname_np(pthread_self(), thread_name.c_str());
-   CPUCounters::registerThread(thread_name, false);
+   if (false) {
+      CPUCounters::registerThread(thread_name, false);
+   }
+   io_uring_enable_rings(&LogManager::global->ring);
    // -------------------------------------------------------------------------------------
    [[maybe_unused]] u64 round_i = 0;  // For debugging
    // -------------------------------------------------------------------------------------

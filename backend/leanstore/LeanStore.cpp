@@ -164,6 +164,7 @@ LeanStore::LeanStore()
       ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
       ensure(log_dev_fd > 0);
+      LOG_INFO(logger, "Opened log device with fd %d", log_dev_fd);
 
       if (FLAGS_log_dev_size_gib == 0) {
          if (ioctl(log_dev_fd, BLKGETSIZE64, &log_device_size) == 0) {
