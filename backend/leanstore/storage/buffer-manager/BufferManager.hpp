@@ -6,11 +6,11 @@
 #include "Partition.hpp"
 #include "PageState.hpp"
 #include "RUEpochDiscardSet.hpp"
-#include "RUEpochManagerThread.hpp"
 #include "Swip.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 #include "PerfEvent.hpp"
+#include "leanstore/storage/fdp/PlacementPolicy.hpp"
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
 #include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
@@ -42,6 +42,7 @@ namespace storage
 {
 template <typename T> class CustomSlabAllocator;  // Forward declaration
 class RUEpochManager;  // Forward declaration
+class RUBackgroundPageFixer;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -90,6 +91,7 @@ class BufferManager
    friend class leanstore::profiling::BMTable;
    friend class AsyncWriteBuffer;
    friend class RUEpochManager;
+   friend class RUBackgroundPageFixer;
    // -------------------------------------------------------------------------------------
    BufferFrame* bfs;
    // -------------------------------------------------------------------------------------
@@ -124,13 +126,13 @@ class BufferManager
    u64 pad0[7];
    // -------------------------------------------------------------------------------------
    void pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end);  // [p_begin, p_end)
-   void ruGarbageCollectorThread(u32 gc_id);
    atomic<u64> bg_threads_counter = 0;
    atomic<bool> bg_threads_keep_running = true;
    atomic<bool> shutdown_flush_in_progress = false;
    atomic<u64> pp_threads_counter = 0;
-   atomic<u64> gc_threads_counter = 0;
    std::unique_ptr<RUEpochManager> ru_epoch_mgr;
+   // Owns and manages the background page fixer threads.
+   std::unique_ptr<RUBackgroundPageFixer> ru_bg_page_fixer;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
@@ -152,11 +154,6 @@ public:
    u64 persistant_ru_state_offset;
    PersistantRUState *persistant_ru_state;
    std::vector<RUEpochsState> ru_discard_set; // one per RUH
-   // -------------------------------------------------------------------------------------
-   std::mutex gc_m;
-   std::condition_variable gc_cv;
-   std::vector<u64> to_gc_epochs;
-   int is_gc_sleeping{0};
    // -------------------------------------------------------------------------------------
    // Misc
    Partition& randomPartition();

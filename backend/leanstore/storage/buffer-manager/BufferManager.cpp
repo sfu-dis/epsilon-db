@@ -5,6 +5,8 @@
 #include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
 #include "PageState.hpp"
+#include "RUBackgroundPageFixer.hpp"
+#include "RUEpochManagerThread.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/storage/btree/core/BTreeGeneric.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
@@ -193,6 +195,7 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
       }
       // -------------------------------------------------------------------------------------
       ru_epoch_mgr = std::make_unique<RUEpochManager>(*this);
+      ru_bg_page_fixer = std::make_unique<RUBackgroundPageFixer>(*this);
    }
 }
 // -------------------------------------------------------------------------------------
@@ -231,17 +234,8 @@ void BufferManager::startBackgroundThreads()
 
       ru_epoch_mgr->start();
 
-      auto garbage_collector_routine = [&](u32 gc_id) {
-         ruGarbageCollectorThread(gc_id);
-      };
-      std::vector<std::thread> garbage_collectors;
       if (FLAGS_enable_discarding) {
-         for (s32 gc_id = 0; gc_id < FLAGS_ru_gc_threads; ++gc_id) {
-            garbage_collectors.emplace_back(garbage_collector_routine, gc_id);
-         }
-         for (auto& t : garbage_collectors) {
-            t.detach();
-         }
+         ru_bg_page_fixer->start();
       }
    }
 }
@@ -272,7 +266,7 @@ void BufferManager::writeAllBufferFrames()
    ensure(FLAGS_persist);
    // The caller ~Leanstore is responsible for shutting down writer threads.
    ensure_equal(pp_threads_counter.load(), 0);
-   ensure_equal(gc_threads_counter.load(), 0);
+   ensure_equal(ru_bg_page_fixer->runningThreads(), 0);
    ensure(shutdown_flush_in_progress.load(std::memory_order_acquire));
 
    ensure_lt(ru_discard_set[DEFAULT_RUH][ru_epoch[DEFAULT_RUH].load()].total.load(), static_cast<s32>(RU_SIZE));
@@ -981,7 +975,7 @@ void BufferManager::stopWriterThreads()
    while (pp_threads_counter) {
    }
    LOG_INFO(logger, "All page provider threads shutted down successfully.");
-   while (gc_threads_counter) {
+   while (ru_bg_page_fixer->runningThreads()) {
    }
    LOG_INFO(logger, "All background page fixer threads shutted down successfully.");
 }
@@ -1018,7 +1012,7 @@ BufferManager::~BufferManager()
 {
    ensure_equal(bg_threads_keep_running.load(), false);
    ensure_equal(pp_threads_counter.load(), 0);
-   ensure_equal(gc_threads_counter.load(), 0);
+   ensure_equal(ru_bg_page_fixer->runningThreads(), 0);
    ensure_equal(bg_threads_counter.load(), 0);
    // -------------------------------------------------------------------------------------
    const u64 dram_total_size = sizeof(BufferFrame) * (dram_pool_size + safety_pages);

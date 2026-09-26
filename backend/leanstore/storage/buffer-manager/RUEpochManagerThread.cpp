@@ -2,6 +2,7 @@
 
 #include "BufferManager.hpp"
 #include "Exceptions.hpp"
+#include "RUBackgroundPageFixer.hpp"
 #include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
 #include <gflags/gflags.h>
@@ -52,12 +53,11 @@ void RUEpochManager::run()
    }
    // Wake up all grabage collection threads so that they could exit normally
    if (FLAGS_enable_discarding) {
-      std::lock_guard _l(bm.gc_m);
-      bm.gc_cv.notify_all();
+      bm.ru_bg_page_fixer->wakeUpAll();
    }
    while (bm.pp_threads_counter) {
    }
-   while (bm.gc_threads_counter) {
+   while (bm.ru_bg_page_fixer->runningThreads()) {
    }
    // No thread is able to write now
    checkForNewRUEpochs();
@@ -145,17 +145,8 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
    const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
    const ru_epoch_t newest = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
    if (oldest < newest && bm.ru_discard_set[DEFAULT_RUH][oldest].shouldGC()) {
-      // TODO(mfd) : I forgot when the try_lock() fails and why it is okay to skip.
-      // Document this.
-      if (bm.gc_m.try_lock()) {
-         bm.to_gc_epochs.push_back(bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]);
+      if (bm.ru_bg_page_fixer->tryEnqueueRUEpoch(oldest)) {
          bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
-         if (bm.is_gc_sleeping > 0) {
-            bm.gc_m.unlock();
-            bm.gc_cv.notify_all();
-         } else {
-            bm.gc_m.unlock();
-         }
       }
    }
 }
