@@ -4,6 +4,7 @@
 #include "leanstore/profiling/counters/CRCounters.hpp"
 #include "leanstore/storage/buffer-manager/BufferFrame.hpp"
 #include "leanstore/storage/buffer-manager/BufferManager.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 
 namespace leanstore
 {
@@ -12,8 +13,8 @@ namespace cr
 
 LogManager* LogManager::global = nullptr;
 
-LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
-    : log_count(nb_logs), log_dev_fd(log_dev_fd), log_dev_size(log_dev_size), batch_max_size(nb_logs * 2 + 2)
+LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log_dev_size)
+    : log_count(nb_logs), log_dev_fd(log_dev_fd), log_file_offset(log_file_offset), log_dev_size(log_dev_size), batch_max_size(nb_logs * 2 + 2)
 {
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "worker") {
@@ -30,22 +31,26 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
    // -------------------------------------------------------------------------------------
    logger = std::make_unique<utils::Logger>("log_manager_journal.txt");
    // -------------------------------------------------------------------------------------
-   meta_size = log_start_offset = utils::upAlign(sizeof(meta_block) + nb_logs * sizeof(per_worker_log_segment), LOG_DEV_BLK_SIZE);
+   meta_size = utils::upAlign(sizeof(meta_block) + nb_logs * sizeof(per_worker_log_segment), LOG_DEV_BLK_SIZE);
+   ensure_equal(log_file_offset % LOG_DEV_BLK_SIZE, 0);
+   log_start_offset = log_file_offset + meta_size;
    u8* meta_block_buffer = (u8*)aligned_alloc(4096, meta_size);
    ensure(meta_block_buffer != nullptr);
    memset(meta_block_buffer, 0, meta_size);
    meta = (struct meta_block*)meta_block_buffer;
-   log_segment_size = utils::downAlign((log_dev_size - log_start_offset) / nb_logs, LOG_DEV_BLK_SIZE);
+   ensure_lt(meta_size, log_dev_size);
+   log_segment_size = utils::downAlign((log_dev_size - meta_size) / nb_logs, LOG_DEV_BLK_SIZE);
    ensure(log_segment_size > 2 * FLAGS_wal_buffer_size);
    ensure((FLAGS_wal_buffer_size % 4096) == 0);
    // we simplify log segment wrap around logic, by enforcing each
    // log file size to be an integer multiple of the log buffer size.
    log_segment_size = log_segment_size - (log_segment_size % FLAGS_wal_buffer_size);
    LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size/1073741824.0);
+   trim_enabled.store(FLAGS_log_discard_on_reclaim && FLAGS_wal_pwrite);
    // -------------------------------------------------------------------------------------
    const bool recover_wal = FLAGS_recover && !FLAGS_clean_recover;
    if (recover_wal) {
-      s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, 0);
+      s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, log_file_offset);
       ensure_equal(ret, s64(meta_size));
       ensure_equal(meta->number_logs, nb_logs);
       Logging::global_min_gsn_flushed.store(meta->min_durable_gsn);
@@ -92,7 +97,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size)
       std::memset(logging.wal_buffer, 0, FLAGS_wal_buffer_size);
    }
    if (!recover_wal) {
-      s64 ret = pwrite(log_dev_fd, meta_block_buffer, meta_size, /*offset*/ 0);
+      s64 ret = pwrite(log_dev_fd, meta_block_buffer, meta_size, log_file_offset);
       ensure_equal(ret, s64(meta_size));
    }
    // -------------------------------------------------------------------------------------
@@ -189,7 +194,28 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    {
       log_stats.bytes_used.fetch_sub(lseg.offset);
    }
+   // CHECK(mfd) : Does it matter whether I issue a TRIM to the whole region or to the only mapped one ?
+   trimRange(lseg.start_off, log_segment_size);
    lseg.offset = 0;
+}
+
+void LogManager::trimRange(u64 offset, u64 size)
+{
+   // TODO(mfd) : First try issue nvme dsm command to trim through blocking ioctl passthrough cmd
+   //  then fallback to using ioctl(BLKDISCARD);
+   if (!trim_enabled.load(std::memory_order_relaxed) || size == 0) return;
+   ensure_equal((offset % LOG_DEV_BLK_SIZE), 0);
+   ensure_equal((size % LOG_DEV_BLK_SIZE), 0);
+   ensure(offset >= log_start_offset);
+   ensure(offset + size <= log_file_offset + log_dev_size);
+   u64 range[2] = {offset, size};
+   if (ioctl(log_dev_fd, BLKDISCARD, &range) != 0) {
+      LOG_ERROR(logger, "BLKDISCARD [%lu, %lu) failed: %s, disabling log trims", offset, offset + size, strerror(errno));
+      trim_enabled.store(false, std::memory_order_relaxed);
+      return;
+   }
+   log_stats.bytes_trimed.fetch_add(size, std::memory_order_relaxed);
+   LOG_INFO(logger, "Discarded log range [%lu, %lu) : %.4f GiB", offset, offset + size, size / 1073741824.0);
 }
 
 /// TODO(mfd) : remove the block_full variable and take care of alignment here.
@@ -200,15 +226,15 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    if (size == 0)
       return;
    auto& lseg = meta->log_segments[log_i];
-   ensure((lseg.start_off + lseg.offset) < log_dev_size);
+   ensure((lseg.start_off + lseg.offset) < (log_file_offset + log_dev_size));
    ensure_equal((lseg.offset % 4096), 0);
    ensure_equal((lseg.start_off % 4096), 0);
    auto& logging = all_logs[log_i];
    const u64 file_offset = lseg.start_off + lseg.offset;
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   [[maybe_unused]] ruh_id_t wal_ruh = 0;
-   io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset);
+   [[maybe_unused]] ruh_id_t wal_ruh = 2;
+   nvme_io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset, wal_ruh);
    io_slot++;
    lseg.offset += size;
    COUNTERS_BLOCK(log_space_usage)
@@ -269,7 +295,7 @@ void LogManager::submitAndWait()
 void LogManager::persistMetaBlock()
 {
    if (!FLAGS_wal_pwrite) return;
-   s64 ret = pwrite(log_dev_fd, meta, meta_size, 0);
+   s64 ret = pwrite(log_dev_fd, meta, meta_size, log_file_offset);
    ensure_equal(ret, s64(meta_size));
    COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += meta_size; }
    if (FLAGS_wal_fsync) {

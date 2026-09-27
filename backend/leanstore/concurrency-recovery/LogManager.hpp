@@ -42,7 +42,10 @@ struct LogManager {
    const u32 log_count;
    const s32 log_dev_fd;
    // u64 nb_meta_blocks = 1;
-   u64 log_dev_size;
+   const u64 log_dev_size;
+   // The actual offset of the log file, 0 if a different device is used for the log.
+   const u64 log_file_offset;
+   // This is the offset of log itself, so it is log_file_offset + meta block size
    u64 log_start_offset;
    u64 log_segment_size;
    struct meta_block* meta = nullptr;
@@ -59,8 +62,9 @@ struct LogManager {
    // -------------------------------------------------------------------------------------
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
+   std::atomic<bool> trim_enabled = true;
 
-   LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_dev_size);
+   LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log_dev_size);
    ~LogManager();
 
    static Logging& getLog(storage::BufferFrame *bf);
@@ -80,6 +84,7 @@ struct LogManager {
    void submitAndWait();
 
    void persistMetaBlock();
+   void trimRange(u64 start_offset, u64 size);
 
    bool isPartitionedByWorker() { return partition_by == PARTITION_BY::WORKER; }
    bool isPartitionedByPage() { return partition_by == PARTITION_BY::PAGE; }
@@ -87,6 +92,7 @@ struct LogManager {
    // -------------------------------------------------------------------------------------
    struct Stats {
       atomic<u64> bytes_used = 0;
+      atomic<u64> bytes_trimed = 0;
    } log_stats;
 };
 // -------------------------------------------------------------------------------------

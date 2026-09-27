@@ -141,6 +141,9 @@ DECLARE_uint64(tx_rate);
 // -------------------------------------------------------------------------------------
 DECLARE_string(redo_log_file);
 DECLARE_uint64(log_dev_size_gib);
+DECLARE_bool(log_same_namespace);
+DECLARE_double(log_space_pct);
+DECLARE_bool(log_discard_on_reclaim);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_fdp);
 DECLARE_string(fdp_placement_policy);

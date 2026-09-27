@@ -15,8 +15,9 @@ namespace cr
 CRManager* CRManager::global = nullptr;
 std::atomic<u64> CRManager::fsync_counter = 0;
 // -------------------------------------------------------------------------------------
-CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_dev_fd, u64 log_device_size)
-    : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), log_dev_size(log_device_size), versions_space(versions_space)
+CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_dev_fd, u64 log_start_offset, u64 log_size)
+    : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), log_start_offset(log_start_offset),
+      log_size(log_size), versions_space(versions_space)
 {
    workers_count = FLAGS_worker_threads;
    ensure(workers_count < MAX_WORKER_THREADS);
@@ -25,7 +26,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal) {
       u32 log_count = FLAGS_wal_partition_by == "worker" ? workers_count : FLAGS_wal_partitions_count;
-      log_manager = std::make_unique<cr::LogManager>(log_count, log_dev_fd, log_device_size);
+      log_manager = std::make_unique<cr::LogManager>(log_count, log_dev_fd, log_start_offset, log_size);
    } else {
       log_manager = nullptr;
    }

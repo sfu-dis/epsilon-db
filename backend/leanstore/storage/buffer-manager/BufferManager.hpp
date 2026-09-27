@@ -42,6 +42,7 @@ namespace storage
 template <typename T> class CustomSlabAllocator;  // Forward declaration
 class RUEpochManager;  // Forward declaration
 class RUBackgroundPageFixer;  // Forward declaration
+class SSDLayout;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -165,7 +166,7 @@ public:
    static thread_local BufferFrame* last_read_bf;
   public:
    // -------------------------------------------------------------------------------------
-   BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs);
+   BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_open_ru_epochs);
    ~BufferManager();
    // -------------------------------------------------------------------------------------
    BufferFrame& allocatePage();

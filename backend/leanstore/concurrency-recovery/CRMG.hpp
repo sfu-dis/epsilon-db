@@ -47,12 +47,13 @@ class CRManager
    // -------------------------------------------------------------------------------------
    const s32 ssd_fd; // TODO(mfd) : Remove
    const s32 log_dev_fd;
-   const u64 log_dev_size;
+   const u64 log_start_offset;
+   const u64 log_size;
    HistoryTreeInterface& versions_space;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<cr::LogManager> log_manager;
    // -------------------------------------------------------------------------------------
-   CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 log_dev_size);
+   CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 log_start_offset, u64 log_size);
    ~CRManager();
    // -------------------------------------------------------------------------------------
    void registerMeAsSpecialWorker();
@@ -97,12 +98,8 @@ class CRManager
 
   private:
    static std::atomic<u64> fsync_counter;
-   static std::atomic<u64> g_ssd_offset;
    // -------------------------------------------------------------------------------------
    void groupCommiter();
-   void groupCommitCordinator();
-   void groupCommiter1();
-   void groupCommiter2();
    // -------------------------------------------------------------------------------------
    /**
     * @brief Set the Job to specific worker.

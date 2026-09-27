@@ -5,6 +5,7 @@
 #include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
 #include "PageState.hpp"
+#include "SSDLayout.hpp"
 #include "RUBackgroundPageFixer.hpp"
 #include "RUEpochManagerThread.hpp"
 #include "leanstore/Config.hpp"
@@ -42,11 +43,11 @@ thread_local BufferFrame* BufferManager::last_read_bf = nullptr;
 thread_local s32 tls_writer_thread_id = -1;
 u64 BufferManager::RU_SIZE = 3193344UL; // Hardcoded for now, we will read from the device later.
 // -------------------------------------------------------------------------------------
-BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_ru_epochs) :
+BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_open_ru_epochs) :
   ssd_fd(ssd_fd),
   io_writer_threads_count(FLAGS_pp_threads + FLAGS_ru_gc_threads),
   max_open_ru_epochs(max_open_ru_epochs),
-  persistant_ru_state_offset(total_blocks_in_ssd * PAGE_SIZE)
+  persistant_ru_state_offset(ssd_layout.persistant_ru_state_offset)
 {
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
@@ -75,22 +76,22 @@ BufferManager::BufferManager(s32 ssd_fd, u64 total_blocks_in_ssd, u32 max_open_r
       logger = std::make_unique<utils::Logger>("buffer_manager_journal.txt");
       // -------------------------------------------------------------------------------------
       if (FLAGS_enable_discarding) {
-         void *entries_p = mmap(nullptr, total_blocks_in_ssd * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         void *entries_p = mmap(nullptr, ssd_layout.dbPages() * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
          if (entries_p == MAP_FAILED) {
             perror("Failed to allocated memory for the Discard Set\n");
             SetupFailed("Do you have enough memory ?");
          }
          discard_state = static_cast<PageState*>(entries_p);
          PageState::global_discard_state = discard_state;
-         madvise(entries_p, total_blocks_in_ssd * sizeof(PageState), MADV_HUGEPAGE);
-         int rc = mlock(entries_p, total_blocks_in_ssd * sizeof(PageState));
+         madvise(entries_p, ssd_layout.dbPages() * sizeof(PageState), MADV_HUGEPAGE);
+         int rc = mlock(entries_p, ssd_layout.dbPages() * sizeof(PageState));
          if (rc == -1) {
             perror("mlock");
             raise(SIGTRAP);
          }
          COUNTERS_BLOCK(discard_state_peak_mem_usage)
          {
-            bm_stats.discard_state_peak_mem_usage.store(total_blocks_in_ssd * sizeof(PageState));
+            bm_stats.discard_state_peak_mem_usage.store(ssd_layout.dbPages() * sizeof(PageState));
          }
          max_pending_lsn = FLAGS_per_page_logging ? FLAGS_ppl_merge_threshold : FLAGS_max_log_records_to_discard;
          if (max_pending_lsn > MAX_PENDING_LSN_COUNT) {

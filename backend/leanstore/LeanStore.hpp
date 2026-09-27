@@ -6,6 +6,7 @@
 #include "leanstore/storage/btree/BTreeLL.hpp"
 #include "leanstore/storage/btree/BTreeVI.hpp"
 #include "leanstore/storage/buffer-manager/BufferManager.hpp"
+#include "leanstore/storage/buffer-manager/SSDLayout.hpp"
 #include "rapidjson/document.h"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
@@ -28,6 +29,7 @@ class LeanStore
    // -------------------------------------------------------------------------------------
    s32 ssd_fd;
    s32 log_dev_fd;
+   storage::SSDLayout ssd_layout;
    // -------------------------------------------------------------------------------------
    unique_ptr<storage::BufferManager> buffer_manager;
    unique_ptr<cr::CRManager> cr_manager;
@@ -49,7 +51,9 @@ class LeanStore
    void deserializeFlags();
    void serializeState();
    void deserializeState();
+   void verifyPersistedSSDLayout();
    void profilingThread();
+   void checkFlags();
 
   public:
    LeanStore();

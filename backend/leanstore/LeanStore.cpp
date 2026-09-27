@@ -5,7 +5,6 @@
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/storage/NvmeDevice.hpp"
 #include "leanstore/storage/buffer-manager/RUEpochDiscardSet.hpp"
-// #include "leanstore/utils/FVector.hpp"
 #include "leanstore/utils/ThreadLocalAggregator.hpp"
 // -------------------------------------------------------------------------------------
 #include "gflags/gflags.h"
@@ -47,46 +46,7 @@ LeanStore::LeanStore()
    }
    // -------------------------------------------------------------------------------------
    // Check if configurations make sense
-   if ((FLAGS_vi) && !FLAGS_wal) {
-      SetupFailed("You have to enable WAL");
-   }
-   if (FLAGS_isolation_level == "si" && (!FLAGS_mv | !FLAGS_vi)) {
-      SetupFailed("You have to enable mv an vi (multi-versioning)");
-   }
-   if (!FLAGS_wal && FLAGS_wal_pwrite) {
-      SetupFailed("You have to enable wal or turn of wal_pwrite");
-   }
-   FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
-   if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
-      SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
-   }
-   if (FLAGS_enable_discarding) {
-      if (FLAGS_ru_gc_threads == 0) {
-         SetupFailed("You have to create at least one RU GC thread to enable discarding");
-      }
-      if (FLAGS_wal_partition_by != "ru_epoch") {
-         SetupFailed("You have to partition the log by ru_epoch to enable discarding");
-      }
-      if (FLAGS_contention_split) {
-         SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
-      }
-   }
-   if (FLAGS_ru_size == 0) {
-      SetupFailed("Please specify an RU size in units of number of 4KiB pages");
-   }
-   if (FLAGS_opportunistic_log_compaction && !FLAGS_per_page_logging) {
-      SetupFailed("Opportunistic Log Compaction is only implemented when PPL is enabled");
-   }
-   if (FLAGS_per_page_logging && !FLAGS_enable_discarding) {
-      // per page logging is only relevant when discarding is enabled, silently turn it off.
-      FLAGS_per_page_logging = false;
-   }
-   if (FLAGS_enable_fdp) {
-#ifndef WITH_FDP
-      SetupFailed("You have requested fdp support at runtime but compiled with FDP support disabled."
-                  "Please turned on by passing -DWITH_FDP to cmake.");
-#endif
-   }
+   verifyFlags();
    // -------------------------------------------------------------------------------------
    logger = std::make_unique<utils::Logger>("leanstore_log.txt", true);
    // -------------------------------------------------------------------------------------
@@ -114,52 +74,14 @@ LeanStore::LeanStore()
    }
    ensure(fcntl(ssd_fd, F_GETFL) != -1);
    // -------------------------------------------------------------------------------------
-   u64 ssd_size_in_bytes;
+   u64 ssd_size_in_bytes = 0;
    if (ioctl(ssd_fd, BLKGETSIZE64, &ssd_size_in_bytes) == 0) {
       LOG_INFO(logger, "SSD size: %.2f GiB", ssd_size_in_bytes / 1073741824.0);
    } else {
       perror("ioctl");
    }
-   if (FLAGS_ssd_gib == 0) {
-      FLAGS_ssd_gib = ssd_size_in_bytes / 1073741824;
-   }
-   u64 total_blocks_in_ssd = (FLAGS_ssd_gib * 1048576) / 4;
-   BufferManager::RU_SIZE = FLAGS_ru_size;
-   u64 max_open_ru_epochs = total_blocks_in_ssd / BufferManager::RU_SIZE;
-   if (FLAGS_overprovisioning_ru_epochs == 0) {
-      FLAGS_overprovisioning_ru_epochs = max_open_ru_epochs * FLAGS_overprovisioning_ratio;
-   }
-   max_open_ru_epochs += FLAGS_overprovisioning_ru_epochs;
-   LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
-   LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
-   u64 persistant_state_blocks = utils::upAlign(sizeof(storage::PersistantRUState) + max_open_ru_epochs * sizeof(u32), 4096) / 4096;
-   total_blocks_in_ssd -= persistant_state_blocks;
-   // Adjust ssd_gib
-   FLAGS_ssd_gib = (total_blocks_in_ssd * 4) / 1048576;
-   LOG_INFO(logger, "Space reserved for database pages: %.2f GiB", FLAGS_ssd_gib);
-   // -------------------------------------------------------------------------------------
-   buffer_manager = make_unique<storage::BufferManager>(ssd_fd, total_blocks_in_ssd, max_open_ru_epochs);
-   ensure_equal(BMC::global_bf, buffer_manager.get());
-   BMC::global_bf = buffer_manager.get();
-   // -------------------------------------------------------------------------------------
-   if (FLAGS_wal_partition_by == "ru_epoch") {
-      FLAGS_wal_partitions_count = max_open_ru_epochs + FLAGS_wal_sink_logs;
-      if (FLAGS_wal_partitions_count > 1023) {
-         SetupFailed("Too many RUs, please verify the size of the RU epoch");
-      }
-      LOG_INFO(logger, "Number of Log partitions : %lu", FLAGS_wal_partitions_count);
-   }
-   // -------------------------------------------------------------------------------------
-   DTRegistry::global_dt_registry.registerDatastructureType(0, storage::btree::BTreeLL::getMeta());
-   DTRegistry::global_dt_registry.registerDatastructureType(2, storage::btree::BTreeVI::getMeta());
-   // -------------------------------------------------------------------------------------
-   if (FLAGS_recover) {
-      deserializeState();
-   }
-   // -------------------------------------------------------------------------------------
-   history_tree = std::make_unique<cr::HistoryTree>();
-   u64 log_device_size;
-   if (FLAGS_wal) {
+   u64 log_device_size = 0;
+   if (FLAGS_wal && !FLAGS_log_same_namespace) {
       ensure(FLAGS_redo_log_file != "");
       ensure(FLAGS_redo_log_file != FLAGS_ssd_path);
       log_dev_fd = open(FLAGS_redo_log_file.c_str(), O_RDWR | O_DIRECT);
@@ -185,7 +107,55 @@ LeanStore::LeanStore()
          LOG_INFO(logger, "set the placement-id (%ld) to log file", hint);
       }
    }
-   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, log_device_size);
+   const storage::SSDLayoutPlan plan = storage::computeSSDLayout({
+       .ssd_bytes = ssd_size_in_bytes,
+       .ssd_gib = FLAGS_ssd_gib,
+       .log_same_namespace = FLAGS_log_same_namespace,
+       .log_space_pct = FLAGS_log_space_pct,
+       .log_device_bytes = log_device_size,
+       .ru_size = FLAGS_ru_size,
+       .overprovisioning_ru_epochs = FLAGS_overprovisioning_ru_epochs,
+       .overprovisioning_ratio = FLAGS_overprovisioning_ratio,
+   });
+   ssd_layout = plan.layout;
+   FLAGS_overprovisioning_ru_epochs = plan.overprovisioning_ru_epochs;
+   FLAGS_ssd_gib = plan.ssd_gib;
+   const u64 max_open_ru_epochs = plan.max_open_ru_epochs;
+   LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
+   LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
+   LOG_INFO(logger, "Space reserved for database pages: %.2f GiB", FLAGS_ssd_gib);
+   LOG_INFO(logger, "SSD layout: %s", ssd_layout.toString().c_str());
+   if (FLAGS_recover) {
+      // Before the buffer manager reads the persistant RU state at persistant_ru_state_offset.
+      verifyPersistedSSDLayout();
+   }
+   if (FLAGS_wal && FLAGS_log_same_namespace) {
+      // Same fd as the database, the log is confined to [log_offset, log_offset + log_size).
+      log_dev_fd = ssd_fd;
+   }
+   // -------------------------------------------------------------------------------------
+   buffer_manager = make_unique<storage::BufferManager>(ssd_fd, ssd_layout, max_open_ru_epochs);
+   ensure_equal(BMC::global_bf, buffer_manager.get());
+   BMC::global_bf = buffer_manager.get();
+   // -------------------------------------------------------------------------------------
+   // TODO(mfd) : Move this to the LogManager Ctor
+   if (FLAGS_wal_partition_by == "ru_epoch") {
+      FLAGS_wal_partitions_count = max_open_ru_epochs + FLAGS_wal_sink_logs;
+      if (FLAGS_wal_partitions_count > 1023) {
+         SetupFailed("Too many RUs, please verify the size of the RU epoch");
+      }
+      LOG_INFO(logger, "Number of Log partitions : %lu", FLAGS_wal_partitions_count);
+   }
+   // -------------------------------------------------------------------------------------
+   DTRegistry::global_dt_registry.registerDatastructureType(0, storage::btree::BTreeLL::getMeta());
+   DTRegistry::global_dt_registry.registerDatastructureType(2, storage::btree::BTreeVI::getMeta());
+   // -------------------------------------------------------------------------------------
+   if (FLAGS_recover) {
+      deserializeState();
+   }
+   // -------------------------------------------------------------------------------------
+   history_tree = std::make_unique<cr::HistoryTree>();
+   cr_manager = make_unique<cr::CRManager>(*history_tree.get(), ssd_fd, log_dev_fd, ssd_layout.log_offset, ssd_layout.log_size);
    cr::CRManager::global = cr_manager.get();
    if (FLAGS_vi) {
       cr_manager->scheduleJobSync(0, [&]() {
@@ -267,6 +237,15 @@ void LeanStore::serializeState()
       bm_serialized.AddMember(k, v, allocator);
    }
    d.AddMember("buffer_manager", bm_serialized, allocator);
+   // -------------------------------------------------------------------------------------
+   rs::Value layout_serialized(rs::kObjectType);
+   for (const auto& [key, value] : ssd_layout.serialize()) {
+      rs::Value k, v;
+      k.SetString(key.c_str(), key.length(), allocator);
+      v.SetString(value.c_str(), value.length(), allocator);
+      layout_serialized.AddMember(k, v, allocator);
+   }
+   d.AddMember("ssd_layout", layout_serialized, allocator);
    // -------------------------------------------------------------------------------------
    rs::Value dts(rs::kArrayType);
    for (auto& dt : DTRegistry::global_dt_registry.dt_instances_ht) {
@@ -370,6 +349,31 @@ void LeanStore::deserializeState()
    }
 }
 // -------------------------------------------------------------------------------------
+void LeanStore::verifyPersistedSSDLayout()
+{
+   std::ifstream json_file;
+   json_file.open(FLAGS_recover_file);
+   rs::IStreamWrapper isw(json_file);
+   rs::Document d;
+   d.ParseStream(isw);
+   // -------------------------------------------------------------------------------------
+   if (!d.IsObject() || !d.HasMember("ssd_layout")) {
+      LOG_INFO(logger, "%s has no ssd_layout, cannot verify the SSD layout", FLAGS_recover_file.c_str());
+      return;
+   }
+   const rs::Value& layout = d["ssd_layout"];
+   std::unordered_map<std::string, std::string> serialized_layout_map;
+   for (rs::Value::ConstMemberIterator itr = layout.MemberBegin(); itr != layout.MemberEnd(); ++itr) {
+      serialized_layout_map[itr->name.GetString()] = itr->value.GetString();
+   }
+   const storage::SSDLayout persisted = storage::SSDLayout::deserialize(serialized_layout_map);
+   const std::string mismatch = ssd_layout.incompatibilityWith(persisted);
+   if (!mismatch.empty()) {
+      LOG_ERROR(logger, "SSD layout mismatch with %s: %s", FLAGS_recover_file.c_str(), mismatch.c_str());
+      SetupFailed("SSD layout differs from the persisted one (" + mismatch + "), load and run must use the same layout flags ");
+   }
+}
+// -------------------------------------------------------------------------------------
 void LeanStore::deserializeFlags()
 {
    std::ifstream json_file;
@@ -388,6 +392,69 @@ void LeanStore::deserializeFlags()
    }
    for (auto flags : persisted_s64_flags) {
       *std::get<1>(flags) = atoi(flags_serialized[std::get<0>(flags)].c_str());
+   }
+}
+// -------------------------------------------------------------------------------------
+void verifyFlags()
+{
+   if ((FLAGS_vi) && !FLAGS_wal) {
+      SetupFailed("You have to enable WAL");
+   }
+   if (FLAGS_isolation_level == "si" && (!FLAGS_mv | !FLAGS_vi)) {
+      SetupFailed("You have to enable mv an vi (multi-versioning)");
+   }
+   if (!FLAGS_wal && FLAGS_wal_pwrite) {
+      SetupFailed("You have to enable wal or turn of wal_pwrite");
+   }
+   FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
+   if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
+      SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
+   }
+   if (FLAGS_enable_discarding) {
+      if (FLAGS_ru_gc_threads == 0) {
+         SetupFailed("You have to create at least one RU GC thread to enable discarding");
+      }
+      if (FLAGS_wal_partition_by != "ru_epoch") {
+         SetupFailed("You have to partition the log by ru_epoch to enable discarding");
+      }
+      if (FLAGS_contention_split) {
+         SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
+      }
+   }
+   if (FLAGS_ru_size == 0) {
+      SetupFailed("Please specify an RU size in units of number of 4KiB pages");
+   }
+   if (FLAGS_opportunistic_log_compaction && !FLAGS_per_page_logging) {
+      SetupFailed("Opportunistic Log Compaction is only implemented when PPL is enabled");
+   }
+   if (FLAGS_per_page_logging && !FLAGS_enable_discarding) {
+      // per page logging is only relevant when discarding is enabled, silently turn it off.
+      FLAGS_per_page_logging = false;
+   }
+   if (FLAGS_enable_fdp) {
+#ifndef WITH_FDP
+      SetupFailed("You have requested fdp support at runtime but compiled with FDP support disabled."
+                  "Please turned on by passing -DWITH_FDP to cmake.");
+#endif
+   }
+   if (FLAGS_log_same_namespace) {
+      if (FLAGS_log_dev_size_gib != 0) {
+         SetupFailed("log_dev_size_gib is only for a separate log device, use log_space_pct with log_same_namespace");
+      }
+      if (FLAGS_log_same_device_fdp) {
+         SetupFailed("log_same_device_fdp sets a write hint on the whole ssd_path inode, it cannot be combined with log_same_namespace");
+      }
+      if (!FLAGS_redo_log_file.empty() && FLAGS_redo_log_file != FLAGS_ssd_path) {
+         SetupFailed("redo_log_file must be empty (or equal to ssd_path) with log_same_namespace");
+      }
+      if (!FLAGS_enable_fdp) {
+         SetupFailed("Sorry, we will disallow you from running with database pages and log traffic " \
+                     "on the same device without FDP isolation because this results in bad SSD WAF.\n" \
+                     "If you still want that for whatever reason, remove this line " \
+                     "and recompile at you own risks.");
+      }
+      // Everyone that opens the log by path (e.g. the bg page fixer mmap) now opens the data device.
+      FLAGS_redo_log_file = FLAGS_ssd_path;
    }
 }
 // -------------------------------------------------------------------------------------

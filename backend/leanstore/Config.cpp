@@ -146,6 +146,9 @@ DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(redo_log_file, "", ""); // Should provide a log file for now
 DEFINE_uint64(log_dev_size_gib, 0, "Size of the log device, 0 value will read actual device size");
+DEFINE_bool(log_same_namespace, true, "Place the WAL in a disjoint LBA range at the end of ssd_path instead of a separate device");
+DEFINE_double(log_space_pct, 10.0, "Percentage of ssd_path reserved for the WAL when log_same_namespace is set");
+DEFINE_bool(log_discard_on_reclaim, true, "Trim (BLKDISCARD) the log segment of an RU epoch once it is reclaimed");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");
 DEFINE_string(fdp_placement_policy, "Default", "");
