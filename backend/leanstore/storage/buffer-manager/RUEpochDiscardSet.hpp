@@ -97,19 +97,24 @@ struct RUEpochsState {
 // On disk RU metadata, stored right after the database pages.
 struct alignas(4096) PersistantRUState {
    u64 max_open_ru_epochs; // serves as a magic debugging number also.
-   s64 ru_epoch;
-   s64 oldest_active_ru_epoch;
-   s64 reclaimed_ru_epoch;
-   u64 total_host_writes;
-   u64 expected_extra_gc_writes;
+   std::array<ru_epoch_t, NUM_RUHS> ru_epoch;
+   std::array<ru_epoch_t, NUM_RUHS> oldest_active_ru_epoch;
+   std::array<ru_epoch_t, NUM_RUHS> reclaimed_ru_epoch;
    // XXX(mfd) : Persisting only totals is enough for now, we assume
    //  invalid count is always 0. In other words, we assume we're
    //   recovering from a load only workload.
+   // Laid out RUH major, max_open_ru_epochs slots per RUH, see total().
    u32 totals[0];
 
    PersistantRUState(u32 max_open_ru_epochs);
-   u64 getSize() const {
-      return sizeof(PersistantRUState) + max_open_ru_epochs * sizeof(u32);
+   static u64 sizeFor(u64 max_open_ru_epochs) {
+      return sizeof(PersistantRUState) + max_open_ru_epochs * NUM_RUHS * sizeof(u32);
+   }
+   u64 getSize() const { return sizeFor(max_open_ru_epochs); }
+   // Total of the i-th RU epoch of ruh, counted from its oldest active RU epoch.
+   u32& total(ruh_id_t ruh, u64 i) {
+      ensure_lt(i, max_open_ru_epochs);
+      return totals[ruh * max_open_ru_epochs + i];
    }
    void loadFromPersistantStorage(int fd, u64 offset);
    void writetoPersistantStorage(int fd, u64 offset);
