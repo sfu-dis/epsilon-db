@@ -10,12 +10,15 @@
 #include "leanstore/storage/btree/core/WALMacros.hpp"
 #include "leanstore/utils/RandomGenerator.hpp"
 // -------------------------------------------------------------------------------------
+#include <array>
 #include <vector>
 using std::vector;
 DEFINE_bool(steady_tpcc, true, "");
 // XXX(mfd) : All these below are used just for an ablation study of TPC-C effect on WAF.
 DEFINE_bool(modified_tpcc_uniform, false, "Modified TPC-C with uniform access pattern");
 DEFINE_bool(customer_only_by_id, false, "Do not acces to the customer by name");
+DEFINE_bool(tpcc_skip_neworder, false,
+            "HACK: do not touch the neworder table during the run; delivery uses an in-memory per-district order cursor (requires warehouse affinity)");
 #define HISTORY 1
 #define TPCC_NEXT_OID_DEBUG 0
 #define ORDER_ORDERLINE_UPDATE 0
@@ -49,6 +52,37 @@ class TPCCWorkload
    const Integer tpcc_remove;
    const bool manually_handle_isolation_anomalies;
    const bool warehouse_affinity;
+   // -------------------------------------------------------------------------------------
+   // XXX(mfd): HACK for FLAGS_tpcc_skip_neworder. Replaces the neworder table with per-warehouse,
+   // per-district cursors (index = d_id - 1). No concurrency control: correct only because warehouse
+   // affinity guarantees a warehouse is touched by a single worker. Not rolled back on abort.
+   std::vector<std::array<u64, 10>> no_last_delivered_o_id;  // last o_id handed to delivery
+   std::vector<std::array<u64, 10>> no_last_inserted_o_id;   // last o_id created by newOrder
+   std::vector<u8> no_cursor_initialized;  // not vector<bool>: bit packing would race across workers
+   // Lazily seed the cursors of a warehouse from the persisted state (one-time neworder scan per district)
+   void initNewOrderCursors(Integer w_id)
+   {
+      if (no_cursor_initialized[w_id])
+         return;
+      for (Integer d_id = 1; d_id <= 10; d_id++) {
+         const u64 last_inserted = district.lookupField({w_id, d_id}, &district_t::d_next_o_id) - 1;
+         Integer oldest_undelivered = minInteger;
+         neworder.scan(
+             {w_id, d_id, minInteger},
+             [&](const neworder_t::Key& key, const neworder_t&) {
+                if (key.no_w_id == w_id && key.no_d_id == d_id) {
+                   oldest_undelivered = key.no_o_id;
+                }
+                return false;
+             },
+             [&]() { oldest_undelivered = minInteger; });
+         no_last_inserted_o_id[w_id][d_id - 1] = last_inserted;
+         no_last_delivered_o_id[w_id][d_id - 1] = (oldest_undelivered == minInteger) ? last_inserted : oldest_undelivered - 1;
+      }
+      no_cursor_initialized[w_id] = true;
+      fprintf(stdout, "[TPCCWorkload.hpp] Initialized neworder cursors for w_id = %d (d_id 1: last_delivered = %lu, last_inserted = %lu)\n", w_id,
+              no_last_delivered_o_id[w_id][0], no_last_inserted_o_id[w_id][0]);
+   }
    // -------------------------------------------------------------------------------------
    Integer urandexcept(Integer low, Integer high, Integer v)
    {
@@ -200,7 +234,12 @@ class TPCCWorkload
          ensure(c_id <= 3000 && c_id > 0);
          order_wdc.insert({w_id, d_id, c_id, o_id}, {});
       }
-      neworder.insert({w_id, d_id, o_id}, {});
+      if (FLAGS_tpcc_skip_neworder) {
+         initNewOrderCursors(w_id);
+         no_last_inserted_o_id[w_id][d_id - 1] = o_id;
+      } else {
+         neworder.insert({w_id, d_id, o_id}, {});
+      }
       leanstore::WorkerCounters::myCounters().tpcc_neworder_insert++;
 
       for (unsigned i = 0; i < lineNumbers.size(); i++) {
@@ -385,15 +424,26 @@ class TPCCWorkload
    {
       for (Integer d_id = 1; d_id <= 10; d_id++) {
          Integer o_id = minInteger;
-         neworder.scan(
-             {w_id, d_id, minInteger},
-             [&](const neworder_t::Key& key, const neworder_t&) {
-                if (key.no_w_id == w_id && key.no_d_id == d_id) {
-                   o_id = key.no_o_id;
-                }
-                return false;
-             },
-             [&]() { o_id = minInteger; });
+         if (FLAGS_tpcc_skip_neworder) {
+            initNewOrderCursors(w_id);
+            auto& last_delivered = no_last_delivered_o_id[w_id][d_id - 1];
+            if (last_delivered < no_last_inserted_o_id[w_id][d_id - 1]) {
+               o_id = last_delivered + 1;
+               if (tpcc_remove) {
+                  last_delivered++;
+               }
+            }
+         } else {
+            neworder.scan(
+                {w_id, d_id, minInteger},
+                [&](const neworder_t::Key& key, const neworder_t&) {
+                   if (key.no_w_id == w_id && key.no_d_id == d_id) {
+                      o_id = key.no_o_id;
+                   }
+                   return false;
+                },
+                [&]() { o_id = minInteger; });
+         }
          // -------------------------------------------------------------------------------------
          if (o_id == minInteger) {  // Should rarely happen
             //cout << "WARNING: delivery tx skipped for warehouse = " << w_id << ", district = " << d_id << endl;
@@ -403,8 +453,10 @@ class TPCCWorkload
          // -------------------------------------------------------------------------------------
          if (tpcc_remove) {
             leanstore::WorkerCounters::myCounters().tpcc_neworder_erase++;
-            const auto ret = neworder.erase({w_id, d_id, o_id});
-            ensure(ret || manually_handle_isolation_anomalies);
+            if (!FLAGS_tpcc_skip_neworder) {
+               const auto ret = neworder.erase({w_id, d_id, o_id});
+               ensure(ret || manually_handle_isolation_anomalies);
+            }
          }
          // -------------------------------------------------------------------------------------
          Integer ol_cnt = minInteger, c_id;
@@ -1002,6 +1054,13 @@ class TPCCWorkload
          manually_handle_isolation_anomalies(manually_handle_isolation_anomalies),
          warehouse_affinity(warehouse_affinity)
    {
+      if (FLAGS_tpcc_skip_neworder) {
+         // The in-memory neworder cursors have no concurrency control
+         ensure(warehouse_affinity);
+         no_last_delivered_o_id.resize(warehouseCount + 1);  // w_id is 1-based
+         no_last_inserted_o_id.resize(warehouseCount + 1);
+         no_cursor_initialized.assign(warehouseCount + 1, false);
+      }
    }
    // -------------------------------------------------------------------------------------
    // [0, n)
@@ -1420,6 +1479,8 @@ class TPCCWorkload
             ensure(false);
          }
       } else if (query_no == 3) {
+         if (FLAGS_tpcc_skip_neworder)
+            return;
          u64 olap_counter = 0;
          neworder_t::Key last_key;
          last_key.no_o_id = -1;
