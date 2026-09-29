@@ -36,7 +36,19 @@ struct RUEpochDiscardSet {
    atomic<bool> active{false};
    // -------------------------------------------------------------------------------------
    atomic<u32> undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::SIZE] = {0};
-
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   // Per table (dt_id) breakdown of total/invalid/inserted/deleted, for debugging TPC-C.
+   // Sized to the 11 TPC-C tables, larger dt_ids are not tracked.
+   static constexpr DTID MAX_TRACKED_DT_ID = 11;
+   struct PerTableStats {
+      atomic<s32> total{0};
+      atomic<s32> invalid{0};
+      atomic<s32> inserted{0};
+      atomic<s32> deleted{0};
+   };
+   PerTableStats per_table[MAX_TRACKED_DT_ID];
+   PerTableStats* tableStats(DTID dt_id) { return (dt_id >= 0 && dt_id < MAX_TRACKED_DT_ID) ? &per_table[dt_id] : nullptr; }
+#endif
    void open(ru_epoch_t new_ru_epoch);
    // Both resets leave advancing the RUH's reclaimed_ru_epoch to the caller.
    void reset();

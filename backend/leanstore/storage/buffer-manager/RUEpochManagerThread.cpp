@@ -1,6 +1,7 @@
 #include "RUEpochManagerThread.hpp"
 
 #include "BufferManager.hpp"
+#include "DTRegistry.hpp"
 #include "Exceptions.hpp"
 #include "RUBackgroundPageFixer.hpp"
 #include "leanstore/Config.hpp"
@@ -160,17 +161,47 @@ void RUEpochManager::traceThresholds(FILE* tfp)
       // bg page fixer threads.
       ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
       ru_epoch_t newest = bm.ru_epoch[ruh].load(std::memory_order_relaxed);
-      fprintf(tfp, "RUH : %u, Active RUs : %u\n", ruh, newest - oldest + 1);
+      fprintf(tfp, "RUH : %u, Active RUs : %ld\n", ruh, newest - oldest + 1);
       for (ru_epoch_t r = oldest; r < newest; ++r) {
          // TODO(mfd) : Left to handle ru_discard_set per RUH
          auto& set = bm.ru_discard_set[ruh][r];
          // fprintf(tfp, "(%ld,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed));
-         fprintf(tfp, "(%ld,%d,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed), set.invalid.load(std::memory_order_relaxed));
+         fprintf(tfp, "(%ld,%.2f,%d)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed), set.invalid.load(std::memory_order_relaxed));
       }
       fprintf(tfp, "\n");
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+      tracePerTableStats(tfp, ruh, oldest, newest);
+#endif
    }
    fflush(tfp);
 }
+// -------------------------------------------------------------------------------------
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+// One line per table per active RU epoch (the open one included), all percentages are of the RU epoch's total.
+void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest)
+{
+   for (ru_epoch_t r = oldest; r <= newest; ++r) {
+      auto& set = bm.ru_discard_set[ruh][r];
+      const s32 ru_total = set.total.load(std::memory_order_relaxed);
+      fprintf(tfp, "RUH %u, RU epoch %ld%s, total = %d\n", ruh, r, r == newest ? " (open)" : "", ru_total);
+      if (ru_total == 0) {
+         continue;
+      }
+      for (DTID dt_id = 0; dt_id < RUEpochDiscardSet::MAX_TRACKED_DT_ID; ++dt_id) {
+         auto& t = *set.tableStats(dt_id);
+         const s32 total = t.total.load(std::memory_order_relaxed);
+         if (total == 0) {
+            continue;
+         }
+         const s32 invalid = t.invalid.load(std::memory_order_relaxed);
+         const s32 discarded = t.inserted.load(std::memory_order_relaxed) - t.deleted.load(std::memory_order_relaxed);
+         fprintf(tfp, "   %s: %.2f%%, invalid %.2f%%, discarded %.2f%%, ru_usage %.2f%%\n",
+                 DTRegistry::global_dt_registry.getDTName(dt_id).c_str(), total * 100.0 / ru_total, invalid * 100.0 / ru_total,
+                 discarded * 100.0 / ru_total, (invalid + discarded) * 100.0 / ru_total);
+      }
+   }
+}
+#endif
 // -------------------------------------------------------------------------------------
 // Free RU epochs left in the budget shared by all RUHs once one more RU epoch gets opened.
 s64 RUEpochManager::freeRUEpochsAfterOpeningOne()

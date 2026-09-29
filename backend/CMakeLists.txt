@@ -71,6 +71,11 @@ IF(PARANOID)
   target_compile_definitions(leanstore PUBLIC PARANOID)
 ENDIF(PARANOID)
 # ---------------------------------------------------------------------------
+OPTION(PER_TPCC_TABLE_STATS_DEBUG "Track per table (dt_id) RU epoch stats and print them in thresholds.txt" ON)
+IF(PER_TPCC_TABLE_STATS_DEBUG)
+  target_compile_definitions(leanstore PUBLIC PER_TPCC_TABLE_STATS_DEBUG)
+ENDIF(PER_TPCC_TABLE_STATS_DEBUG)
+# ---------------------------------------------------------------------------
 SET(COUNTERS_LEVEL "" CACHE STRING "Which counters to leave in leanstore build")
 IF(COUNTERS_LEVEL STREQUAL "all")
   target_compile_definitions(leanstore PUBLIC MACRO_COUNTERS_ALL)

@@ -37,6 +37,9 @@ class RUEpochManager
    void checkForNewRUEpoch(ruh_id_t ruh);
    void dispatchOldestRUEpochToGC();
    void traceThresholds(FILE* tfp);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   void tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest);
+#endif
    s64 freeRUEpochsAfterOpeningOne();
    void forceGCOldestRUEpochs();
    void tryReclaimNonDefaultRUEpoch(ruh_id_t ruh);

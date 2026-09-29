@@ -73,6 +73,14 @@ void RUEpochDiscardSet::clear()
    for (auto& counter : undiscardable_cause_distribution) {
       counter.store(0, std::memory_order_relaxed);
    }
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   for (auto& t : per_table) {
+      t.total.store(0, std::memory_order_relaxed);
+      t.invalid.store(0, std::memory_order_relaxed);
+      t.inserted.store(0, std::memory_order_relaxed);
+      t.deleted.store(0, std::memory_order_relaxed);
+   }
+#endif
 }
 // -------------------------------------------------------------------------------------
 void RUEpochDiscardSet::dump()

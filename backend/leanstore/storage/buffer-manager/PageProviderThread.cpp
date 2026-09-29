@@ -310,6 +310,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // I simply allow this, this is a very rare event, and these are
             // stats just to approximate thresolhold of GC in RU epoch.
             ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).inserted.fetch_add(1);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+            if (auto* t = ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).tableStats(bf.page.dt_id)) {
+               t->inserted.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
             COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }

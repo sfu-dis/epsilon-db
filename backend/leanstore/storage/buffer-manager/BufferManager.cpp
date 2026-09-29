@@ -744,6 +744,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
          ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).deleted.fetch_add(1);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+         if (auto* t = ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).tableStats(bf.page.dt_id)) {
+            t->deleted.fetch_add(1, std::memory_order_relaxed);
+         }
+#endif
          ensure_equal(bf.page.ru_epoch, ru_epoch);
       }
       paranoid(bf.header.state == BufferFrame::STATE::FREE);
@@ -919,8 +924,18 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
    if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
    // Update the stats here
    ru_discard_set[ruh][page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   if (auto* t = ru_discard_set[ruh][page.ru_epoch].tableStats(page.dt_id)) {
+      t->total.fetch_add(1, std::memory_order_relaxed);
+   }
+#endif
    if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
       ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+      if (auto* t = ru_discard_set[prev_ruh].at(prev_ru_epoch).tableStats(page.dt_id)) {
+         t->invalid.fetch_add(1, std::memory_order_relaxed);
+      }
+#endif
    }
    ensure(tls_writer_thread_id != -1);
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(1, std::memory_order_relaxed);
