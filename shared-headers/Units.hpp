@@ -40,7 +40,8 @@ using ru_epoch_t = s64;
 constexpr ru_epoch_t UNMAPPED_RU_EPOCH = ru_epoch_t(-1);
 using ruh_id_t = u8;
 constexpr ruh_id_t DEFAULT_RUH = 0;
-constexpr u32 NUM_RUHS = 2;  // RUH 0 = log-backed, RUH 1 = sink-log-backed
+constexpr ruh_id_t FREEZING_RUH = 1;
+constexpr u32 NUM_RUHS = 2;  // Does not include the WAL RUH if enabled.
 constexpr ruh_id_t UNMAPPED_RUH = ruh_id_t(-1);
 // -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);

@@ -57,5 +57,16 @@ inline void nvme_close(int fd)
    }
 }
 // -------------------------------------------------------------------------------------
+// Number of RUHs available to write to on an FDP device opened with nvme_open(),
+// -1 with errno set on failure.
+inline int nvme_get_nruh([[maybe_unused]] int fd)
+{
+#ifdef WITH_FDP
+   return fdp_get_nruh(fd);
+#else
+   UNREACHABLE();
+#endif
+}
+// -------------------------------------------------------------------------------------
 }  // namespace leanstore
 // -------------------------------------------------------------------------------------

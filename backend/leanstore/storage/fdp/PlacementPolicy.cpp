@@ -3,6 +3,7 @@
 #include "leanstore/Config.hpp"
 #include "placement-policies/DefaultPlacementPolicy.hpp"
 #include "placement-policies/FreezeNewlyAllocatedPlacementPolicy.hpp"
+#include "placement-policies/FreezeTablesPlacementPolicy.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -58,6 +59,8 @@ std::unique_ptr<PlacementPolicy::Impl> makeImpl()
       return std::make_unique<PolicyAdapter<DefaultPlacementPolicy>>();
    } else if (FLAGS_fdp_placement_policy == "FreezeNewlyAllocated") {
       return std::make_unique<PolicyAdapter<FreezeNewlyAllocatedPlacementPolicy>>();
+   } else if (FLAGS_fdp_placement_policy == "FreezeTables") {
+      return std::make_unique<PolicyAdapter<FreezeTablesPlacementPolicy>>();
    } else {
       throw std::invalid_argument("FLAGS_fdp_placememt_policy");
    }
