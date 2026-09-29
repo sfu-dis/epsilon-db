@@ -395,7 +395,7 @@ void LeanStore::deserializeFlags()
    }
 }
 // -------------------------------------------------------------------------------------
-void verifyFlags()
+void LeanStore::verifyFlags()
 {
    if ((FLAGS_vi) && !FLAGS_wal) {
       SetupFailed("You have to enable WAL");

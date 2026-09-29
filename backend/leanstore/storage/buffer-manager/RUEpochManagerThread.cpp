@@ -154,13 +154,18 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
 void RUEpochManager::traceThresholds(FILE* tfp)
 {
    for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      // This method is run only by the ru_epoch_mgr thread who is responsible for incrementing
+      // the oldest_uncollected_ru_epoch. That's why I don't use oldest_active_ru_epoch even
+      // though it reports more information since it may be advanced concurrently by the
+      // bg page fixer threads.
       ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
       ru_epoch_t newest = bm.ru_epoch[ruh].load(std::memory_order_relaxed);
-      fprintf(tfp, "RUH : %u\n", ruh);
+      fprintf(tfp, "RUH : %u, Active RUs : %u\n", ruh, newest - oldest + 1);
       for (ru_epoch_t r = oldest; r < newest; ++r) {
          // TODO(mfd) : Left to handle ru_discard_set per RUH
          auto& set = bm.ru_discard_set[ruh][r];
-         fprintf(tfp, "(%ld,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed));
+         // fprintf(tfp, "(%ld,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed));
+         fprintf(tfp, "(%ld,%d,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed), set.invalid.load(std::memory_order_relaxed));
       }
       fprintf(tfp, "\n");
    }
