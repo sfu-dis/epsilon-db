@@ -28,15 +28,6 @@ DECLARE_bool(profile_latency);
 DECLARE_bool(crc_check);
 DECLARE_uint32(print_debug_interval_s);
 // -------------------------------------------------------------------------------------
-DECLARE_bool(contention_split);
-DECLARE_uint64(cm_update_on);
-DECLARE_uint64(cm_period);
-DECLARE_uint64(cm_slowpath_threshold);
-// -------------------------------------------------------------------------------------
-DECLARE_bool(xmerge);
-DECLARE_uint64(xmerge_k);
-DECLARE_double(xmerge_target_pct);
-// -------------------------------------------------------------------------------------
 DECLARE_bool(optimistic_scan);
 DECLARE_bool(measure_time);
 // -------------------------------------------------------------------------------------

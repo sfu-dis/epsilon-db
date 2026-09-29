@@ -223,7 +223,6 @@ OP_RESULT BTreeVI::executeDeterministricUpdate(u8* o_key,
       // -------------------------------------------------------------------------------------
       tuple_head.unlock();
       iterator.markAsDirty();
-      iterator.contentionSplit();
       // -------------------------------------------------------------------------------------
       jumpmu_return OP_RESULT::OK;
    }
@@ -279,7 +278,6 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
          // Attention: tuple pointer is not valid here
          // -------------------------------------------------------------------------------------
          iterator.markAsDirty();
-         iterator.contentionSplit();
          // -------------------------------------------------------------------------------------
          if (!res) {
             // Converted back to chained -> restart
@@ -386,7 +384,6 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
       // -------------------------------------------------------------------------------------
       tuple_head.unlock();
       iterator.markAsDirty();
-      iterator.contentionSplit();
       // -------------------------------------------------------------------------------------
       jumpmu_return OP_RESULT::OK;
    }
@@ -645,50 +642,9 @@ void BTreeVI::undo(void* btree_object, const u8* wal_entry_ptr, const u64)
    }
 }
 // -------------------------------------------------------------------------------------
-SpaceCheckResult BTreeVI::checkSpaceUtilization(void* btree_object, BufferFrame& bf)
+SpaceCheckResult BTreeVI::checkSpaceUtilization(void*, BufferFrame&)
 {
-   auto& btree = *reinterpret_cast<BTreeVI*>(btree_object);
-   // -------------------------------------------------------------------------------------
-   if (!FLAGS_xmerge) {
-      return SpaceCheckResult::NOTHING;
-   }
-   // -------------------------------------------------------------------------------------
-   if (!FLAGS_vi_fat_tuple_decompose) {
-      return BTreeGeneric::checkSpaceUtilization(static_cast<BTreeGeneric*>(&btree), bf);
-   }
-   // -------------------------------------------------------------------------------------
-   Guard bf_guard(bf.header.latch);
-   bf_guard.toOptimisticOrJump();
-   if (bf.page.dt_id != btree.dt_id) {
-      jumpmu::jump();
-   }
-   HybridPageGuard<BTreeNode> c_guard(std::move(bf_guard), &bf);
-   if (!c_guard->is_leaf || !triggerPageWiseGarbageCollection(c_guard)) {
-      return BTreeGeneric::checkSpaceUtilization(static_cast<BTreeGeneric*>(&btree), bf);
-   }
-   // -------------------------------------------------------------------------------------
-   c_guard.toExclusive();
-   c_guard.incrementGSN();
-   for (u16 s_i = 0; s_i < c_guard->count; s_i++) {
-      auto& tuple = *reinterpret_cast<Tuple*>(c_guard->getPayload(s_i));
-      if (tuple.tuple_format == TupleFormat::FAT_TUPLE_DIFFERENT_ATTRIBUTES) {
-         auto& fat_tuple = *reinterpret_cast<FatTupleDifferentAttributes*>(c_guard->getPayload(s_i));
-         const u32 new_length = fat_tuple.value_length + sizeof(ChainedTuple);
-         fat_tuple.convertToChained(btree.dt_id);
-         ensure(new_length < c_guard->getPayloadLength(s_i));
-         c_guard->shortenPayload(s_i, new_length);
-         ensure(tuple.tuple_format == TupleFormat::CHAINED);
-      }
-   }
-   c_guard->has_garbage = false;
-   c_guard.unlock();
-   // -------------------------------------------------------------------------------------
-   const SpaceCheckResult xmerge_ret = BTreeGeneric::checkSpaceUtilization(static_cast<BTreeGeneric*>(&btree), bf);
-   if (xmerge_ret == SpaceCheckResult::PICK_ANOTHER_BF) {
-      return SpaceCheckResult::PICK_ANOTHER_BF;
-   } else {
-      return SpaceCheckResult::RESTART_SAME_BF;
-   }
+   return SpaceCheckResult::NOTHING;
 }
 // -------------------------------------------------------------------------------------
 void BTreeVI::todo(void* btree_object, const u8* entry_ptr, const u64 version_worker_id, const u64 version_tx_id, const bool called_before)

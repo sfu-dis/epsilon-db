@@ -54,10 +54,6 @@ void DTTable::open()
       });
    }
    // -------------------------------------------------------------------------------------
-   columns.emplace("contention_split_succ_counter",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::contention_split_succ_counter, dt_id); });
-   columns.emplace("contention_split_fail_counter",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::contention_split_fail_counter, dt_id); });
    columns.emplace("dt_split", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::dt_split, dt_id) * PAGE_SIZE) / 1048576.0; });
    columns.emplace("dt_merge_succ", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_merge_succ, dt_id); });
    columns.emplace("dt_merge_fail", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_merge_fail, dt_id); });
@@ -65,10 +61,6 @@ void DTTable::open()
                    [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_merge_parent_succ, dt_id); });
    columns.emplace("dt_merge_parent_fail",
                    [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_merge_parent_fail, dt_id); });
-   columns.emplace("xmerge_partial_counter",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::xmerge_partial_counter, dt_id); });
-   columns.emplace("xmerge_full_counter",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::xmerge_full_counter, dt_id); });
    // -------------------------------------------------------------------------------------
    columns.emplace("dt_find_parent", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_find_parent, dt_id); });
    columns.emplace("dt_find_parent_root",

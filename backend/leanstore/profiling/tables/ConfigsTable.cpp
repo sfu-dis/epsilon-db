@@ -37,14 +37,6 @@ void ConfigsTable::open()
    columns.emplace("c_bulk_insert", [&](Column& col) { col << FLAGS_bulk_insert; });
    columns.emplace("c_nc_reallocation", [&](Column& col) { col << FLAGS_nc_reallocation; });
    // -------------------------------------------------------------------------------------
-   columns.emplace("c_contention_split", [&](Column& col) { col << FLAGS_contention_split; });
-   columns.emplace("c_cm_update_on", [&](Column& col) { col << FLAGS_cm_update_on; });
-   columns.emplace("c_cm_period", [&](Column& col) { col << FLAGS_cm_period; });
-   columns.emplace("c_cm_slowpath_threshold", [&](Column& col) { col << FLAGS_cm_slowpath_threshold; });
-   // -------------------------------------------------------------------------------------
-   columns.emplace("c_xmerge_k", [&](Column& col) { col << FLAGS_xmerge_k; });
-   columns.emplace("c_xmerge", [&](Column& col) { col << FLAGS_xmerge; });
-   columns.emplace("c_xmerge_target_pct", [&](Column& col) { col << FLAGS_xmerge_target_pct; });
    columns.emplace("c_btree_prefix_compression", [&](Column& col) { col << FLAGS_btree_prefix_compression; });
    columns.emplace("c_btree_heads", [&](Column& col) { col << FLAGS_btree_heads; });
    columns.emplace("c_btree_hints", [&](Column& col) { col << FLAGS_btree_hints; });

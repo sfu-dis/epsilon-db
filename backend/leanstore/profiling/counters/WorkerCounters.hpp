@@ -55,15 +55,11 @@ struct WorkerCounters {
    atomic<u64> read_operations_histogram[1+MAX_PENDING_LSN_COUNT] = {0};
    // -------------------------------------------------------------------------------------
    // Space and contention management
-   atomic<u64> contention_split_succ_counter[max_dt_id] = {0};
-   atomic<u64> contention_split_fail_counter[max_dt_id] = {0};
    atomic<u64> dt_split[max_dt_id] = {0};
    atomic<u64> dt_merge_succ[max_dt_id] = {0};
    atomic<u64> dt_merge_parent_succ[max_dt_id] = {0};
    atomic<u64> dt_merge_fail[max_dt_id] = {0};
    atomic<u64> dt_merge_parent_fail[max_dt_id] = {0};
-   atomic<u64> xmerge_partial_counter[max_dt_id] = {0};
-   atomic<u64> xmerge_full_counter[max_dt_id] = {0};
    // -------------------------------------------------------------------------------------
    atomic<u64> dt_page_reads[max_dt_id] = {0};
    atomic<u64> dt_page_writes[max_dt_id] = {0};

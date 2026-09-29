@@ -445,7 +445,6 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          callback(current_value.data(), current_value.length());
          iterator.markAsDirty();
       }
-      // iterator.contentionSplit();
       jumpmu_return OP_RESULT::OK;
    }
    jumpmuCatch() {}
@@ -692,10 +691,9 @@ struct DTRegistry::DTMeta BTreeLL::getMeta()
    return btree_meta;
 }
 // -------------------------------------------------------------------------------------
-SpaceCheckResult BTreeLL::checkSpaceUtilization(void* btree_object, BufferFrame& bf)
+SpaceCheckResult BTreeLL::checkSpaceUtilization(void*, BufferFrame&)
 {
-   auto& btree = *reinterpret_cast<BTreeLL*>(btree_object);
-   return BTreeGeneric::checkSpaceUtilization(static_cast<BTreeGeneric*>(&btree), bf);
+   return SpaceCheckResult::NOTHING;
 }
 // -------------------------------------------------------------------------------------
 struct ParentSwipHandler BTreeLL::findParent(void* btree_object, BufferFrame& to_find)

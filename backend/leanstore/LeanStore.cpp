@@ -417,9 +417,6 @@ void LeanStore::verifyFlags()
       if (FLAGS_wal_partition_by != "ru_epoch") {
          SetupFailed("You have to partition the log by ru_epoch to enable discarding");
       }
-      if (FLAGS_contention_split) {
-         SetupFailed("Contention Split is not tested with discarding enabled, please turn it off!");
-      }
    }
    if (FLAGS_ru_size == 0) {
       SetupFailed("Please specify an RU size in units of number of 4KiB pages");

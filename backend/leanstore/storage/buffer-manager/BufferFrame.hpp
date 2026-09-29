@@ -76,20 +76,6 @@ struct BufferFrame {
       // 4. It belongs to an already reclaimed RU epoch. (Simplicity)
       std::atomic<bool> discardable = false;
       // -------------------------------------------------------------------------------------
-      // Contention Split data structure
-      struct ContentionTracker {
-         u32 restarts_counter = 0;
-         u32 access_counter = 0;
-         s32 last_modified_pos = -1;
-         void reset()
-         {
-            restarts_counter = 0;
-            access_counter = 0;
-            last_modified_pos = -1;
-         }
-      };
-      ContentionTracker contention_tracker;
-      // -------------------------------------------------------------------------------------
       struct OptimisticParentPointer {
          BufferFrame* parent_bf = nullptr;
          PID parent_pid;
@@ -129,7 +115,6 @@ struct BufferFrame {
          fixed_at_plsn = 0;
          discardable = false;
          flush_sink_log = false;
-         contention_tracker.reset();
          keep_in_memory = false;
          pending_lsn_count = 0;
          undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
