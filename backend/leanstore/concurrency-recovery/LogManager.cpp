@@ -234,7 +234,11 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
    [[maybe_unused]] ruh_id_t wal_ruh = 2;
-   nvme_io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset, wal_ruh);
+   if (FLAGS_log_same_namespace) {
+      nvme_io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset, wal_ruh);
+   } else {
+      io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset);
+   }
    io_slot++;
    lseg.offset += size;
    COUNTERS_BLOCK(log_space_usage)
@@ -275,7 +279,7 @@ void LogManager::submitAndWait()
       s32 i = 0;
       io_uring_for_each_cqe(&ring, head, cqe)
       {
-         if (FLAGS_enable_fdp) {
+         if (FLAGS_enable_fdp && FLAGS_log_same_namespace) {
             ensure_equal(s64(cqe->res), 0);
          } else {
             ensure(s64(cqe->res) > 0);
