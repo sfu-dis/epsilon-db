@@ -566,6 +566,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       {
          WorkerCounters::myCounters().dirty_read_operations_counter++;
       }
+      if (bf.page.dt_id == 10 || bf.page.dt_id == 6) {
+         WorkerCounters::myCounters().dirty_orderlike_counter++;
+      }
       if (FLAGS_fake_log_reapply) {
          bf.page.PLSN += nb_log_records;
          bf.page.last_written_lsn = lsn_list[nb_log_records -1];

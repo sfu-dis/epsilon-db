@@ -312,6 +312,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).inserted.fetch_add(1);
             parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
+            COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
          } else {
             parent_handler.swip.evict(evicted_pid);
             if (FLAGS_enable_discarding) {
@@ -425,6 +426,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                            }
                         }
                      }
+                     ++PPCounters::myCounters().written_back_pages_per_dtid[page.dt_id];
                      /// We directly update the header information because we need this information
                      /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
                      cooled_bf->ppl.absorbed_writes = 0;

@@ -35,6 +35,9 @@ struct PPCounters {
    atomic<u64> absorbed_writes_histogram[64] = {0};
    atomic<s64> eviction_count_histogram[1000][64] = {0};
    // -------------------------------------------------------------------------------------
+   atomic<u64> discarded_pages_per_dtid[MAX_DT_ID] = {0};
+   atomic<u64> written_back_pages_per_dtid[MAX_DT_ID] = {0};
+   // -------------------------------------------------------------------------------------
    static tbb::enumerable_thread_specific<PPCounters> pp_counters;
    static tbb::enumerable_thread_specific<PPCounters>::reference myCounters() { return pp_counters.local(); }
 };

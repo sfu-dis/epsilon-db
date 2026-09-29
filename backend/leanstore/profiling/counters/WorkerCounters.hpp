@@ -170,6 +170,8 @@ struct WorkerCounters {
    bool experienced_buffer_miss = false;
    atomic<u64> txns_experienced_buffer_miss = 0;
    // -------------------------------------------------------------------------------------
+   atomic<u64> dirty_orderlike_counter = 0;
+   // -------------------------------------------------------------------------------------
    static atomic<u64> workers_counter;
    static tbb::enumerable_thread_specific<WorkerCounters> worker_counters;
    static tbb::enumerable_thread_specific<WorkerCounters>::reference myCounters() { return worker_counters.local(); }

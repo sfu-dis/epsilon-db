@@ -257,6 +257,24 @@ void BMTable::open()
    columns.emplace("txns_experienced_buffer_miss", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::txns_experienced_buffer_miss);
    });
+   // -------------------------------------------------------------------------------------
+#if 1
+   columns.emplace("stock_discard_mib", [this](Column& col) {
+      col << sum(PPCounters::pp_counters, &PPCounters::discarded_pages_per_dtid, 9) * PAGE_SIZE / 1048576.0;
+   });
+   columns.emplace("stock_w_mib", [this](Column& col) {
+      col << sum(PPCounters::pp_counters, &PPCounters::written_back_pages_per_dtid, 9) * PAGE_SIZE / 1048576.0;
+   });
+   columns.emplace("orderline_discard_mib", [this](Column& col) {
+      col << sum(PPCounters::pp_counters, &PPCounters::discarded_pages_per_dtid, 10) * PAGE_SIZE / 1048576.0;
+   });
+   columns.emplace("orderline_w_mib", [this](Column& col) {
+      col << sum(PPCounters::pp_counters, &PPCounters::written_back_pages_per_dtid, 10) * PAGE_SIZE / 1048576.0;
+   });
+#endif
+   columns.emplace("dirty_ol_mib", [this](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_orderlike_counter) * PAGE_SIZE / 1048576.0;
+   });
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()
