@@ -13,10 +13,13 @@
 #include <vector>
 using std::vector;
 DEFINE_bool(steady_tpcc, true, "");
+// XXX(mfd) : All these below are used just for an ablation study of TPC-C effect on WAF.
 DEFINE_bool(modified_tpcc_uniform, false, "Modified TPC-C with uniform access pattern");
 DEFINE_bool(customer_only_by_id, false, "Do not acces to the customer by name");
 #define HISTORY 1
 #define TPCC_NEXT_OID_DEBUG 0
+#define ORDER_ORDERLINE_UPDATE 0
+#define ORDER_LINE 0
 // -------------------------------------------------------------------------------------
 template <template <typename> class AdapterType>
 class TPCCWorkload
@@ -272,9 +275,11 @@ class TPCCWorkload
                   throw;
             }
          });
+#if ORDER_LINE
          Numeric ol_amount = qty * i_price * (1.0 + w_tax + d_tax) * (1.0 - c_discount);
          Timestamp ol_delivery_d = 0;  // NULL
          orderline.insert({w_id, d_id, o_id, lineNumber}, {itemid, supware, ol_delivery_d, qty, ol_amount, s_dist});
+#endif
          // TODO: i_data, s_data
       }
       /*
@@ -440,10 +445,15 @@ class TPCCWorkload
                continue;
          }
          // -------------------------------------------------------------------------------------
+#if ORDER_ORDERLINE_UPDATE
+         if (d_id == 1) {
          UpdateDescriptorGenerator1(order_update_descriptor, order_t, o_carrier_id);
          order.update1(
              {w_id, d_id, o_id}, [&](order_t& rec) { rec.o_carrier_id = carrier_id; }, order_update_descriptor);
+         }
+#endif
          // -------------------------------------------------------------------------------------
+#if ORDER_LINE
          if (manually_handle_isolation_anomalies) {
             // First check if all orderlines have been inserted, a hack because of the missing transaction and concurrency control
             bool is_safe_to_continue = false;
@@ -462,8 +472,10 @@ class TPCCWorkload
                continue;
             }
          }
+#endif
          // -------------------------------------------------------------------------------------
          Numeric ol_total = 0;
+#if ORDER_ORDERLINE_UPDATE
          for (Integer ol_number = 1; ol_number <= ol_cnt; ol_number++) {
             UpdateDescriptorGenerator1(orderline_update_descriptor, orderline_t, ol_delivery_d);
             orderline.update1(
@@ -473,7 +485,11 @@ class TPCCWorkload
                    rec.ol_delivery_d = datetime;
                 },
                 orderline_update_descriptor);
+            break;
          }
+#else
+         ol_total = 7;
+#endif
          // UpdateDescriptorGenerator4(customer_update_descriptor, customer_t, c_data, c_balance, c_ytd_payment, c_payment_cnt);
          UpdateDescriptorGenerator2(customer_update_descriptor, customer_t, c_balance, c_delivery_cnt);
          customer.update1(
@@ -1086,6 +1102,7 @@ class TPCCWorkload
             ensure(o_c_id <= 3000 && o_c_id > 0);
             order_wdc.insert({w_id, d_id, o_c_id, o_id}, {});
          }
+#if ORDER_LINE
          for (Integer ol_number = 1; ol_number <= o_ol_cnt; ol_number++) {
             Timestamp ol_delivery_d = 0;
             if (o_id < x2100+1)
@@ -1094,6 +1111,7 @@ class TPCCWorkload
             const Integer ol_i_id = rnd(ITEMS_NO) + 1;
             orderline.insert({w_id, d_id, o_id, ol_number}, {ol_i_id, w_id, ol_delivery_d, 5, ol_amount, randomastring<24>(24, 24)});
          }
+#endif
          o_id++;
       }
       for (Integer i = x2100; i <= static_cast<Integer>(c_ids.size()); i++)
@@ -1281,6 +1299,8 @@ class TPCCWorkload
 #else
             order_wdc.erase({w_id, d_id, o_c_id, o_id});
 #endif
+
+#if ORDER_LINE
             vector<typename orderline_t::Key> orderlineKeys;
             orderline.scan(
                {w_id, d_id, o_id, minInteger},
@@ -1295,6 +1315,7 @@ class TPCCWorkload
             for (auto& ol_key : orderlineKeys) {
                orderline.erase(ol_key);
             }
+#endif
             // std::cout << "order deleted: " << o_id << std::endl;
             order.erase({w_id, d_id, o_id});
             COUNTERS_BLOCK()
