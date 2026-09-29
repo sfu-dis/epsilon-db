@@ -16,4 +16,4 @@
 --wal_sink_logs=32
 
 --clean_recover
-
+--nolog_same_namespace

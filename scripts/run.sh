@@ -11,6 +11,16 @@ fi
 set -euo pipefail
 # set -x
 
+sudo -v || exit 1
+
+# refresh sudo every 50 seconds until the script ends
+while true; do
+    sudo -n true
+    sleep 50
+    kill -0 "$$" 2>/dev/null || exit
+done &
+KEEPALIVE=$!
+
 trap 'echo "Error: command failed: $BASH_COMMAND"' ERR
 
 STATS_DIR=/home/mfd4/fdp/paper
@@ -35,7 +45,7 @@ trim=0
 sanitize=0
 run_for_seconds=7200 # default to 5 hours
 
-worker_threads=96
+worker_threads=64
 ru_size=
 
 prefix=""
@@ -53,7 +63,7 @@ ycsb_dead_tuple_ratio=0
 distribution=
 zipfian_skew=0.8
 database_size_gib=
-dram_gib=80
+dram_gib=64
 
 subdir=
 
@@ -62,7 +72,7 @@ force_no_stats_dir=0
 load_only=0
 run_only=0
 description=0
-override_stats_dir=0
+override_stats_dir=1
 
 bg_page_fixer_threads=2
 
@@ -72,6 +82,9 @@ blktrace=0
 
 # whether the device has FDP support or not, this is for samling the WAF.
 fdp=0
+enable_fdp=0
+fdp_reformat=0
+fdp_nruh=0
 
 original_args=("$@")
 
@@ -193,6 +206,10 @@ while [[ $# -gt 0 ]]; do
            ycsb_read_ratio="$2"
            shift 2
            ;;
+        --ru_size)
+           ru_size="$2"
+           shift 2
+           ;;
         --ycsb_dead_tuple_ratio)
            ycsb_dead_tuple_ratio="$2"
            shift 2
@@ -212,6 +229,18 @@ while [[ $# -gt 0 ]]; do
         --fdp)
            fdp=1
            shift 1
+           ;;
+        --enable_fdp)
+           enable_fdp=1
+           shift 1
+           ;;
+        --fdp_reformat)
+           fdp_reformat=1
+           shift 1
+           ;;
+        --fdp_nruh)
+           fdp_nruh="$2"
+           shift 2
            ;;
         *)
             echo "Unknown argument: $1"
@@ -295,6 +324,7 @@ if (( missing )); then
     exit 1
 fi
 
+
 if (( dry_run == 0 && trim == 0 && run_only == 0)); then
    echo "You are not doing a dry run but trim is disabled, have you forgotten the option --trim"
    #TODO(mfd) : Add a timeout.
@@ -320,6 +350,79 @@ if (( run_only == 1 && trim == 1)); then
    exit 1
 fi
 
+# Get controller device by removing 'n' and digits after it
+controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
+
+# Make sure we're running as root
+# The use of root here is for 2 purpouses, first one can be avoided
+# 1. direct access to the block device
+# 2. To sample waf from device
+need_sudo=0
+if [[ $EUID -ne 0 ]]; then
+    # echo "This script must be run as root. Re-running with sudo..."
+    need_sudo=1
+    # exec sudo bash "$0" "$original_args"
+fi
+
+run () {
+  if [ "$need_sudo" -eq 1 ]; then
+    # Use cached credentials if available; otherwise prompt once via sudo -v below.
+    sudo -n true 2>/dev/null || sudo -v
+    sudo -n "$@"
+  else
+    "$@"
+  fi
+}
+
+
+
+sanitize_nvme() {
+    if (( sanitize )); then
+       echo "sanitize"
+       run nvme sanitize --sanact=2 "${device}"
+       sleep 1m
+       run nvme sanitize-log "${controller}"
+       sleep 1m
+    fi
+    run blkdiscard -v "${device}"
+    sleep 1m
+}
+
+if (( trim == 1)); then
+   echo "Trimmimg the device"
+   if (( fdp_reformat == 1 )); then
+      # bash ${DEVICE_RESET_SCRIPT} --dev "${controller}"
+      NUM_NS=$(sudo nvme list-ns ${controller} -a | wc -l)
+      echo $NUM_NS
+      for ((i=1; i <= NUM_NS; i++)); do
+          sudo nvme delete-ns ${controller} -n ${i}
+      done
+      sleep 2
+      set -x
+      sudo nvme set-feature ${controller} -f 0x1D -c 0 -s
+      sudo nvme set-feature ${controller} -f 0x1D -c 1 -s
+      sudo nvme get-feature ${controller} -f 0x1D -H
+      sleep 2
+      # size_bytes=$(blockdev --getsize64 )
+      total_cap=$(nvme id-ctrl "${controller}" | awk -F: '/^tnvmcap/ {gsub(/[ \t]/,"",$2); print $2}')
+      DEV_SIZE=$(( total_cap / 4096 ))
+      sequence=$(seq -s ',' 0 $((fdp_nruh - 1)))
+      echo ${sequence}
+      PLID_ARG=
+      if (( fdp_nruh > 0 )); then
+          PLID_ARG="--nphndls=${fdp_nruh} --phndls=${sequence}"
+      fi
+      echo $PLID_ARG
+      sudo nvme create-ns ${controller} -b 4096 --nsze=${DEV_SIZE}  --ncap=${DEV_SIZE} ${PLID_ARG}
+      sudo nvme attach-ns ${controller} --namespace-id=1 --controllers=0x7
+      set +x
+      sleep 2
+   fi
+   sanitize_nvme
+fi
+
+
+
 skew="${distribution}"
 
 if [[ "$distribution" == "zipfian" ]]; then
@@ -330,8 +433,6 @@ if (( ycsb_dead_tuple_ratio > 0 )); then
    skew="${skew}_0.25dead"
 fi
 
-# Get controller device by removing 'n' and digits after it
-controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
 model=$(lsblk -ndo MODEL ${device} | tr ' ' '_')
 echo "$model"
 
@@ -358,16 +459,18 @@ fi
 short="${MODEL_MAP[$model]}"
 echo $short
 if [[ -z "$short" ]]; then
-   # TODO(mfd) : Prompt me for a mnemonic for the model.
-   exit 0
-   dir_name="${STATS_DIR}/${prefix}${benchmark}"
-else
-   dir_name="${STATS_DIR}/${short}/${prefix}${benchmark}"
+   short="$model"
 fi
+
+dir_name="${STATS_DIR}/${short}/${prefix}${benchmark}"
 
 if [[ -z "${ru_size}" ]]; then
    ru_size="${RU_SIZE_MAP[$model]}"
    echo "Unspecified RU Size, will use ${ru_size}"
+else
+   # If I provided an ru_size I add it to the dir.
+   ru_size_gb=$((ru_size / 250000))
+   dir_name="${dir_name}_ru${ru_size_gb}GB"
 fi
 
 if [[ -z "$ru_size" ]]; then
@@ -375,10 +478,8 @@ if [[ -z "$ru_size" ]]; then
    exit 1
 fi
 
+
 if [[ "$benchmark" == "ycsb" ]]; then
-   # tib_int=$(( database_size_gib / 1024 ))
-   # tib_dec=$(( (database_size_gib * 10 / 1024) % 10 ))
-   # database_size_tib="${tib_int}.${tib_dec}"
    util="${database_size_gib}G"
    dir_name="${dir_name}_${skew}_${util}"
 else
@@ -407,7 +508,7 @@ else
 fi
 
 #TODO(mfd) : Either run for a period of time or until a fixed number of media writes
-
+# TODO(mfd) : Add chmod for the device.
 
 # if (( 0 )); then
 if [[ -d "$dir_name" && "$stats_dir" -eq 1 && "$override_stats_dir" -eq 0 ]]; then
@@ -445,7 +546,7 @@ passwd=""
 # fdp=0
 waf() {
    # echo "Background WAF sampling process: starting"
-   if (( fdp == 1 )); then
+   if (( fdp_reformat == 1 )); then
       while true; do
          wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
          echo "${wafstr}"
@@ -498,20 +599,23 @@ cp "$FLAGS_FILE" "$run_flags"
    else
       echo "--tpcc_warehouse_count=${tpcc_warehouse_count}"
    fi
+
+   if (( enable_fdp )); then
+      echo "--enable_fdp"
+   fi
+
+   if [[ "$benchmark" == "ycsb" ]]; then
+      cat "$YCSB_FLAGS_FILE"
+      echo "--ycsb_read_ratio=${ycsb_read_ratio}"
+      echo "--ycsb_dead_tuple_ratio=${ycsb_dead_tuple_ratio}"
+   else
+      cat "$TPCC_FLAGS_FILE"
+   fi
+
 } > "${common_flags}"
 
 cat "${common_flags}" >> "${load_flags}"
 cat "${common_flags}" >> "${run_flags}"
-
-if [[ "$benchmark" == "ycsb" ]]; then
-   cat "$YCSB_FLAGS_FILE" >> "$load_flags"
-   cat "$YCSB_FLAGS_FILE" >> "$run_flags"
-   echo "--ycsb_read_ratio=${ycsb_read_ratio}" >> "$run_flags"
-   echo "--ycsb_dead_tuple_ratio=${ycsb_dead_tuple_ratio}" >> "$run_flags"
-else
-   cat "$TPCC_FLAGS_FILE" >> "$load_flags"
-   cat "$TPCC_FLAGS_FILE" >> "$run_flags"
-fi
 
 {
    echo "--persist"
@@ -533,6 +637,10 @@ fi
    echo "--run_for_seconds=${run_for_seconds}"
    echo "--wal_pwrite"
    echo "--bulk_insert"
+   echo "--fdp_placement_policy=FreezeNewlyAllocated"
+
+   ### Temporary
+   ## echo "--log_same_device_fdp"
 
    echo "--redo_log_file=${log_device}"
 
@@ -548,11 +656,11 @@ fi
          echo "--per_page_logging"
          echo "--ppl_merge_threshold=4"
          echo "--opportunistic_log_compaction"
-         echo "--max_log_records_to_discard=7"
+         # echo "--max_log_records_to_discard=7"
       else
          echo "--noper_page_logging"
-         echo "--max_log_records_to_discard=${max_log_records_to_discard}"
       fi
+      echo "--max_log_records_to_discard=${max_log_records_to_discard}"
    fi
 
    if [[ "$benchmark" == "ycsb" ]]; then
@@ -585,62 +693,15 @@ flagfile_to_line() {
 }
 
 
-# Make sure we're running as root
-# The use of root here is for 2 purpouses, first one can be avoided
-# 1. direct access to the block device
-# 2. To sample waf from device
-if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run as root. Re-running with sudo..."
-    exec sudo bash "$0" "$original_args"
-fi
-
-
-sanitize_nvme() {
-    if (( sanitize )); then
-       echo "sanitize"
-       sudo nvme sanitize --sanact=2 "${device}"
-       sleep 1m
-       sudo nvme sanitize-log "${controller}"
-       sleep 1m
-    fi
-    sudo blkdiscard -v "${device}"
-    sleep 1m
-}
-
-if (( trim == 1)); then
-   echo "Trimmimg the device"
-   if (( fdp == 1 )); then
-      bash ${DEVICE_RESET_SCRIPT} --dev "${controller}"
-      NUM_NS=$(sudo nvme list-ns ${controller} -a | wc -l)
-      echo $NUM_NS
-      for ((i=1; i <= NUM_NS; i++)); do
-	 sudo nvme delete-ns ${controller} -n ${i}
-      done
-      sleep 10
-      sudo nvme set-feature ${controller} -f 0x1D -c 0 -s
-      sudo nvme set-feature ${controller} -f 0x1D -c 1 -s
-      sudo nvme get-feature ${controller} -f 0x1D -H
-      sleep 10
-      # size_bytes=$(blockdev --getsize64 )
-      total_cap=$(nvme id-ctrl "${controller}" | awk -F: '/Total NVM Capacity/ {gsub(/ /,"",$2); print $2}')
-      DEV_SIZE=$(( total_cap / 4096 ))
-      # This command may change from one device to another depending on the supported formatting
-      sudo nvme create-ns ${controller} -b 4096 --nsze=${DEV_SIZE}  --ncap=${DEV_SIZE}
-      sudo nvme attach-ns ${controller} --namespace-id=1 --controllers=0x7
-      sleep 10
-   fi
-   sanitize_nvme
-fi
-
-
 # Validate flags before running long experiments.
-sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$load_flags")
-sudo ${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$run_flags")
+${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$load_flags")
+${BENCHMARK_BINARY} --validate_flags_and_exit $(flagfile_to_line "$run_flags")
 
 
 # sudo ${BENCHMARK_BINARY} --flagfile="$load_flags"
 if (( run_only == 0 )); then
-   sudo ${BENCHMARK_BINARY} $(flagfile_to_line "$load_flags") | tee load_log.txt
+   # set -x
+   ${BENCHMARK_BINARY} $(flagfile_to_line "$load_flags") | tee load_log.txt
 fi
 
 if (( load_only == 1 )); then
@@ -649,7 +710,9 @@ fi
 
 # lauch the WAF calculator in the background
 if (( stats_dir == 1 )); then
-   waf > "${dir_name}/waf" &
+   # run waf > "${dir_name}/waf" &
+   run bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}" > "${dir_name}/waf" &
+
    waf_pid=$!
 
    if (( blktrace )); then
@@ -658,9 +721,11 @@ if (( stats_dir == 1 )); then
    fi
 fi
 
+# FIXME(mfd) : This shutdown is run twice, I don't know why.
 shutdown() {
     echo "stopping background waf calculator job..."
     set +e
+    echo "$PWD"
 
     if (( stats_dir == 1)); then
        cp log_bm.csv ${dir_name}
@@ -679,8 +744,10 @@ shutdown() {
           # mv blkparse_out ${dir_name}
        fi
        echo "results are saved to ${dir_name}"
+       run chmod 777 ${dir_name}
        popd
     fi
+    kill "$KEEPALIVE" 2>/dev/null
     exit 0
 }
 
@@ -693,5 +760,5 @@ if (( gdb == 1 )); then
     PREFIX="gdb --ex run --args "
 fi
 
-sudo ${PREFIX}${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
+${PREFIX}${BENCHMARK_BINARY} $(flagfile_to_line "$run_flags")
 
