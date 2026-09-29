@@ -53,7 +53,7 @@ class LeanStore
    void deserializeState();
    void verifyPersistedSSDLayout();
    void profilingThread();
-   void checkFlags();
+   void verifyFlags();
 
   public:
    LeanStore();
