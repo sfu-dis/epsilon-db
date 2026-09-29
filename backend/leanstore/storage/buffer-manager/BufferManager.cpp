@@ -3,6 +3,7 @@
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
 #include "CustomSlabAllocator.hpp"
+#include "DTRegistry.hpp"
 #include "Exceptions.hpp"
 #include "PageState.hpp"
 #include "SSDLayout.hpp"
@@ -19,6 +20,10 @@
 #include "leanstore/utils/RandomGenerator.hpp"
 // -------------------------------------------------------------------------------------
 #include <gflags/gflags.h>
+#include "rapidjson/document.h"
+#include "rapidjson/istreamwrapper.h"
+#include "rapidjson/prettywriter.h"
+#include "rapidjson/stringbuffer.h"
 // -------------------------------------------------------------------------------------
 #include <fcntl.h>
 #include <sys/resource.h>
@@ -180,6 +185,9 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             used_ru_epochs += newest_active_ru_epoch - oldest + 1;
          }
          ensure_lte(used_ru_epochs, max_open_ru_epochs);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+         recoverPerTableStats();
+#endif
       } else {
          for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
             persistant_ru_state->ru_epoch[ruh] = 0;
@@ -308,7 +316,107 @@ void BufferManager::writeAllBufferFrames()
       }
    }
    persistant_ru_state->writetoPersistantStorage(ssd_fd, persistant_ru_state_offset);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   persistPerTableStats();
+#endif
 }
+// -------------------------------------------------------------------------------------
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+// Only the tables with a non zero total are written, the dt name is informative only.
+void BufferManager::persistPerTableStats()
+{
+   namespace rs = rapidjson;
+   rs::Document d;
+   d.SetObject();
+   auto& allocator = d.GetAllocator();
+   d.AddMember("max_open_ru_epochs", max_open_ru_epochs, allocator);
+   d.AddMember("max_tracked_dt_id", RUEpochDiscardSet::MAX_TRACKED_DT_ID, allocator);
+   rs::Value ruhs(rs::kArrayType);
+   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      rs::Value ruh_json(rs::kObjectType);
+      ruh_json.AddMember("ruh", ruh, allocator);
+      rs::Value epochs(rs::kArrayType);
+      const ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load();
+      const ru_epoch_t newest = ru_epoch[ruh].load();
+      for (ru_epoch_t e = oldest; e <= newest; ++e) {
+         auto& set = ru_discard_set[ruh][e];
+         rs::Value epoch_json(rs::kObjectType);
+         epoch_json.AddMember("ru_epoch", static_cast<s64>(e), allocator);
+         rs::Value tables(rs::kArrayType);
+         for (DTID dt_id = 0; dt_id < RUEpochDiscardSet::MAX_TRACKED_DT_ID; ++dt_id) {
+            auto& t = *set.tableStats(dt_id);
+            if (t.total.load() == 0) {
+               continue;
+            }
+            rs::Value table_json(rs::kObjectType);
+            table_json.AddMember("dt_id", dt_id, allocator);
+            rs::Value dt_name;
+            dt_name.SetString(DTRegistry::global_dt_registry.getDTName(dt_id).c_str(), allocator);
+            table_json.AddMember("dt_name", dt_name, allocator);
+            table_json.AddMember("total", t.total.load(), allocator);
+            table_json.AddMember("invalid", t.invalid.load(), allocator);
+            table_json.AddMember("inserted", t.inserted.load(), allocator);
+            table_json.AddMember("deleted", t.deleted.load(), allocator);
+            tables.PushBack(table_json, allocator);
+         }
+         epoch_json.AddMember("tables", tables, allocator);
+         epochs.PushBack(epoch_json, allocator);
+      }
+      ruh_json.AddMember("epochs", epochs, allocator);
+      ruhs.PushBack(ruh_json, allocator);
+   }
+   d.AddMember("ruhs", ruhs, allocator);
+   // -------------------------------------------------------------------------------------
+   rs::StringBuffer sb;
+   rs::PrettyWriter<rs::StringBuffer> writer(sb);
+   d.Accept(writer);
+   std::ofstream json_file(FLAGS_ru_table_stats_file, std::ios::trunc);
+   json_file << sb.GetString();
+   ensure(json_file.good());
+   LOG_INFO(logger, "Persisted the per table RU epoch stats to %s", FLAGS_ru_table_stats_file.c_str());
+}
+// -------------------------------------------------------------------------------------
+// Must run after the RU epochs of all RUHs got recovered from the PersistantRUState.
+void BufferManager::recoverPerTableStats()
+{
+   namespace rs = rapidjson;
+   std::ifstream json_file(FLAGS_ru_table_stats_file);
+   if (!json_file.is_open()) {
+      LOG_WARN(logger, "%s not found, the per table RU epoch stats start from 0", FLAGS_ru_table_stats_file.c_str());
+      return;
+   }
+   rs::IStreamWrapper isw(json_file);
+   rs::Document d;
+   d.ParseStream(isw);
+   ensure(!d.HasParseError() && d.IsObject());
+   ensure_equal(d["max_open_ru_epochs"].GetUint(), max_open_ru_epochs);
+   ensure_equal(d["max_tracked_dt_id"].GetInt(), RUEpochDiscardSet::MAX_TRACKED_DT_ID);
+   for (auto& ruh_json : d["ruhs"].GetArray()) {
+      const ruh_id_t ruh = ruh_json["ruh"].GetUint();
+      ensure_lt(ruh, NUM_RUHS);
+      const ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load();
+      const ru_epoch_t newest = ru_epoch[ruh].load();
+      for (auto& epoch_json : ruh_json["epochs"].GetArray()) {
+         const ru_epoch_t e = epoch_json["ru_epoch"].GetInt64();
+         ensure(e >= oldest && e <= newest);
+         auto& set = ru_discard_set[ruh][e];
+         s32 tables_total = 0;
+         for (auto& table_json : epoch_json["tables"].GetArray()) {
+            auto* t = set.tableStats(table_json["dt_id"].GetInt());
+            ensure(t != nullptr);
+            t->total.store(table_json["total"].GetInt());
+            t->invalid.store(table_json["invalid"].GetInt());
+            t->inserted.store(table_json["inserted"].GetInt());
+            t->deleted.store(table_json["deleted"].GetInt());
+            tables_total += table_json["total"].GetInt();
+         }
+         // Tables beyond MAX_TRACKED_DT_ID are not tracked.
+         ensure_lte(tables_total, set.total.load());
+      }
+   }
+   LOG_INFO(logger, "Recovered the per table RU epoch stats from %s", FLAGS_ru_table_stats_file.c_str());
+}
+#endif
 // -------------------------------------------------------------------------------------
 u64 BufferManager::consumedPages()
 {

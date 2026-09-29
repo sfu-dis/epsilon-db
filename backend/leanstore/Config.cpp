@@ -114,6 +114,7 @@ DEFINE_bool(recover, false, "");
 DEFINE_bool(clean_recover, false, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
 DEFINE_string(persist_file, "./leanstore.json", "Where should the persist config be saved to?");
 DEFINE_string(recover_file, "./leanstore.json", "Where should the recover config be loaded from?");
+DEFINE_string(ru_table_stats_file, "./ru_table_stats.json", "Where the per table (dt_id) RU epoch stats are persisted to and recovered from");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(io_trace, false, "");
 DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");

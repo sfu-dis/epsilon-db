@@ -211,6 +211,11 @@ public:
    void writeAllBufferFrames();
    std::unordered_map<std::string, std::string> serialize();
    void deserialize(std::unordered_map<std::string, std::string> map);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   // Kept apart from the PersistantRUState, in FLAGS_ru_table_stats_file.
+   void persistPerTableStats();
+   void recoverPerTableStats();
+#endif
    // -------------------------------------------------------------------------------------
    u64 getPoolSize() { return dram_pool_size; }
    DTRegistry& getDTRegistry() { return DTRegistry::global_dt_registry; }

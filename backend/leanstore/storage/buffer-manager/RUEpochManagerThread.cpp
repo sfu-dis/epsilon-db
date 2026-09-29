@@ -177,7 +177,7 @@ void RUEpochManager::traceThresholds(FILE* tfp)
 }
 // -------------------------------------------------------------------------------------
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
-// One line per table per active RU epoch (the open one included), all percentages are of the RU epoch's total.
+// One line per table per active RU epoch (the open one included), all percentages but the relative threshold are of the RU epoch's total.
 void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest)
 {
    for (ru_epoch_t r = oldest; r <= newest; ++r) {
@@ -195,9 +195,10 @@ void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t olde
          }
          const s32 invalid = t.invalid.load(std::memory_order_relaxed);
          const s32 discarded = t.inserted.load(std::memory_order_relaxed) - t.deleted.load(std::memory_order_relaxed);
-         fprintf(tfp, "   %s: %.2f%%, invalid %.2f%%, discarded %.2f%%, ru_usage %.2f%%\n",
+         // relative : of the table's own total in this RU epoch, global : of the RU epoch's total.
+         fprintf(tfp, "   %s: %.2f%%, invalid %.2f%%, discarded %.2f%%, relative threshold %.2f%%, global threshold %.2f%%\n",
                  DTRegistry::global_dt_registry.getDTName(dt_id).c_str(), total * 100.0 / ru_total, invalid * 100.0 / ru_total,
-                 discarded * 100.0 / ru_total, (invalid + discarded) * 100.0 / ru_total);
+                 discarded * 100.0 / ru_total, (invalid + discarded) * 100.0 / total, (invalid + discarded) * 100.0 / ru_total);
       }
    }
 }
