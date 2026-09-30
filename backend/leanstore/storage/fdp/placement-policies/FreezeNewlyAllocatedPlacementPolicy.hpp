@@ -11,7 +11,7 @@ namespace fdp
 class FreezeNewlyAllocatedPlacementPolicy
 {
   public:
-   FreezeNewlyAllocatedPlacementPolicy() = default;
+   FreezeNewlyAllocatedPlacementPolicy() { freezing_ruh = allocateRUH(); }
 
    ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf)
    {
@@ -35,9 +35,6 @@ class FreezeNewlyAllocatedPlacementPolicy
       ensure_equal(bf.header.next_ruh, UNMAPPED_RUH);
       bf.header.next_ruh = DEFAULT_RUH;
    }
-
-  private:
-   ruh_id_t freezing_ruh = ruh_id_t{1};
 };
 }  // namespace fdp
 }  // namespace storage

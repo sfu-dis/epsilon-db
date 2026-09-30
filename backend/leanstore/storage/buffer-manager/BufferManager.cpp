@@ -132,8 +132,9 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       });
       // -------------------------------------------------------------------------------------
       // Every RUH gets a ring as large as the global budget since a single RUH may hold all open RU epochs.
-      ru_discard_set.reserve(NUM_RUHS);
-      for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      // The unused RUHs get a state as well since a recovered page may still point to one of them.
+      ru_discard_set.reserve(MAX_RUHS);
+      for (ruh_id_t ruh = 0; ruh < MAX_RUHS; ++ruh) {
          ru_discard_set.emplace_back(max_open_ru_epochs);
          for (u32 i = 0; i < max_open_ru_epochs; ++i) {
             auto& set = ru_discard_set[ruh].at(i);
@@ -157,7 +158,13 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          persistant_ru_state->loadFromPersistantStorage(ssd_fd, persistant_ru_state_offset);
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          u64 used_ru_epochs = 0;
-         for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+         for (ruh_id_t ruh = fdp::num_ruhs; ruh < MAX_RUHS; ++ruh) {
+            if (persistant_ru_state->ru_epoch[ruh] != 0 || persistant_ru_state->total(ruh, 0) != 0) {
+               LOG_WARN(logger, "RUH %u is not used by the %s placement policy but holds persisted pages, ignoring its RU state", ruh,
+                        FLAGS_fdp_placement_policy.c_str());
+            }
+         }
+         for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
             const ru_epoch_t newest_active_ru_epoch = persistant_ru_state->ru_epoch[ruh];
             LOG_INFO(logger, "Recovering RUH %u, Newest Active RU epoch is %ld", ruh, newest_active_ru_epoch);
             ensure(newest_active_ru_epoch >= 0 && newest_active_ru_epoch < max_open_ru_epochs);
@@ -189,7 +196,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          recoverPerTableStats();
 #endif
       } else {
-         for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+         for (ruh_id_t ruh = 0; ruh < MAX_RUHS; ++ruh) {
             persistant_ru_state->ru_epoch[ruh] = 0;
             persistant_ru_state->oldest_active_ru_epoch[ruh] = 0;
             persistant_ru_state->reclaimed_ru_epoch[ruh] = -1;
@@ -278,7 +285,7 @@ void BufferManager::writeAllBufferFrames()
    ensure_equal(ru_bg_page_fixer->runningThreads(), 0);
    ensure(shutdown_flush_in_progress.load(std::memory_order_acquire));
 
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       ensure_lt(ru_discard_set[ruh][ru_epoch[ruh].load()].total.load(), static_cast<s32>(RU_SIZE));
    }
 
@@ -303,7 +310,15 @@ void BufferManager::writeAllBufferFrames()
    });
    stopRUEpochManagerThread();
    // TODO(mfd) : Move this as the responsability of the RU Epoch Manager.
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < MAX_RUHS; ++ruh) {
+      if (ruh >= fdp::num_ruhs) {
+         // Unused by the placement policy, persisted as empty.
+         persistant_ru_state->ru_epoch[ruh] = 0;
+         persistant_ru_state->oldest_active_ru_epoch[ruh] = 0;
+         persistant_ru_state->reclaimed_ru_epoch[ruh] = -1;
+         persistant_ru_state->total(ruh, 0) = 0;
+         continue;
+      }
       ensure_equal(oldest_uncollected_ru_epoch[ruh].load(), 0);
       ensure_equal(reclaimed_ru_epoch[ruh].load(), -1);
       const ru_epoch_t newest_ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
@@ -332,7 +347,7 @@ void BufferManager::persistPerTableStats()
    d.AddMember("max_open_ru_epochs", max_open_ru_epochs, allocator);
    d.AddMember("max_tracked_dt_id", RUEpochDiscardSet::MAX_TRACKED_DT_ID, allocator);
    rs::Value ruhs(rs::kArrayType);
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       rs::Value ruh_json(rs::kObjectType);
       ruh_json.AddMember("ruh", ruh, allocator);
       rs::Value epochs(rs::kArrayType);
@@ -393,7 +408,10 @@ void BufferManager::recoverPerTableStats()
    ensure_equal(d["max_tracked_dt_id"].GetInt(), RUEpochDiscardSet::MAX_TRACKED_DT_ID);
    for (auto& ruh_json : d["ruhs"].GetArray()) {
       const ruh_id_t ruh = ruh_json["ruh"].GetUint();
-      ensure_lt(ruh, NUM_RUHS);
+      ensure_lt(ruh, MAX_RUHS);
+      if (ruh >= fdp::num_ruhs) {
+         continue;
+      }
       const ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load();
       const ru_epoch_t newest = ru_epoch[ruh].load();
       for (auto& epoch_json : ruh_json["epochs"].GetArray()) {

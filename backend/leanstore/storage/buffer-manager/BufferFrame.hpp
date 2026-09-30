@@ -171,7 +171,7 @@ struct BufferFrame {
       ruh_id_t prev_ruh = UNMAPPED_RUH;
       ruh_id_t ruh = UNMAPPED_RUH;
       LID last_written_lsn = INVALID_LSN;
-      u32 write_back_count = 0;          // TODO(mfd) : Used just for debugging, remove later
+      u32 write_back_count = 0;          // Number of write backs since allocation, used by the HardcodedTPCC placement policy
       u32 bg_page_fixed_count = 0;       // TODO(mfd) : Used just for debugging, remove later
    };
    // -------------------------------------------------------------------------------------

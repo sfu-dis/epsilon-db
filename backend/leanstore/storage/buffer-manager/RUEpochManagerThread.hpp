@@ -28,8 +28,8 @@ class RUEpochManager
   private:
    BufferManager& bm;
    // Per RUH: pages written in the open RU epoch, and the last seen counter of each writer thread.
-   std::array<u64, NUM_RUHS> tot_page_written{};
-   std::array<std::vector<u64>, NUM_RUHS> last_seen;
+   std::array<u64, MAX_RUHS> tot_page_written{};
+   std::array<std::vector<u64>, MAX_RUHS> last_seen;
    // -------------------------------------------------------------------------------------
    void run();
    void initWriteCounters();

@@ -39,9 +39,10 @@ using DTID = s64;  // Datastructure ID
 using ru_epoch_t = s64;
 constexpr ru_epoch_t UNMAPPED_RU_EPOCH = ru_epoch_t(-1);
 using ruh_id_t = u8;
+// DEFAULT_RUH (the discardable RUH) is always in use, the other RUH IDs are assigned at runtime by the
+// FDP placement policy (see storage/fdp/PlacementPolicy.hpp).
 constexpr ruh_id_t DEFAULT_RUH = 0;
-constexpr ruh_id_t FREEZING_RUH = 1;
-constexpr u32 NUM_RUHS = 2;  // Does not include the WAL RUH if enabled.
+constexpr u32 MAX_RUHS = 3;  // Capacity of the per RUH state, does not include the WAL RUH if enabled.
 constexpr ruh_id_t UNMAPPED_RUH = ruh_id_t(-1);
 // -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);

@@ -4,6 +4,7 @@
 #include "placement-policies/DefaultPlacementPolicy.hpp"
 #include "placement-policies/FreezeNewlyAllocatedPlacementPolicy.hpp"
 #include "placement-policies/FreezeTablesPlacementPolicy.hpp"
+#include "placement-policies/HardcodedTPCCPlacementPolicy.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -11,6 +12,17 @@ namespace storage
 {
 namespace fdp
 {
+// -------------------------------------------------------------------------------------
+u32 num_ruhs = 0;
+ruh_id_t freezing_ruh = UNMAPPED_RUH;
+ruh_id_t hot_ruh = UNMAPPED_RUH;
+ruh_id_t wal_ruh = UNMAPPED_RUH;
+// -------------------------------------------------------------------------------------
+ruh_id_t allocateRUH()
+{
+   ensure_lt(num_ruhs, MAX_RUHS);
+   return static_cast<ruh_id_t>(num_ruhs++);
+}
 // -------------------------------------------------------------------------------------
 class PlacementPolicy::Impl
 {
@@ -61,14 +73,29 @@ std::unique_ptr<PlacementPolicy::Impl> makeImpl()
       return std::make_unique<PolicyAdapter<FreezeNewlyAllocatedPlacementPolicy>>();
    } else if (FLAGS_fdp_placement_policy == "FreezeTables") {
       return std::make_unique<PolicyAdapter<FreezeTablesPlacementPolicy>>();
+   } else if (FLAGS_fdp_placement_policy == "HardcodedTPCC") {
+      return std::make_unique<PolicyAdapter<HardcodedTPCCPlacementPolicy>>();
    } else {
       throw std::invalid_argument("FLAGS_fdp_placememt_policy");
    }
    UNREACHABLE();
 }
+// -------------------------------------------------------------------------------------
+std::unique_ptr<PlacementPolicy::Impl> assignRUHsAndMakeImpl()
+{
+   num_ruhs = 0;
+   freezing_ruh = hot_ruh = wal_ruh = UNMAPPED_RUH;
+   ensure_equal(allocateRUH(), DEFAULT_RUH);
+   auto impl = makeImpl();
+   // The WAL is not accounted in num_ruhs, it just takes the next RUH ID.
+   if (FLAGS_log_same_namespace) {
+      wal_ruh = static_cast<ruh_id_t>(num_ruhs);
+   }
+   return impl;
+}
 }  // namespace
 // -------------------------------------------------------------------------------------
-PlacementPolicy::PlacementPolicy() : impl(makeImpl()) {}
+PlacementPolicy::PlacementPolicy() : impl(assignRUHsAndMakeImpl()) {}
 PlacementPolicy::~PlacementPolicy() = default;
 PlacementPolicy::PlacementPolicy(PlacementPolicy&&) noexcept = default;
 PlacementPolicy& PlacementPolicy::operator=(PlacementPolicy&&) noexcept = default;

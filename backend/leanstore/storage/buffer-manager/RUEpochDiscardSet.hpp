@@ -97,9 +97,9 @@ struct RUEpochsState {
 // On disk RU metadata, stored right after the database pages.
 struct alignas(4096) PersistantRUState {
    u64 max_open_ru_epochs; // serves as a magic debugging number also.
-   std::array<ru_epoch_t, NUM_RUHS> ru_epoch;
-   std::array<ru_epoch_t, NUM_RUHS> oldest_active_ru_epoch;
-   std::array<ru_epoch_t, NUM_RUHS> reclaimed_ru_epoch;
+   std::array<ru_epoch_t, MAX_RUHS> ru_epoch;
+   std::array<ru_epoch_t, MAX_RUHS> oldest_active_ru_epoch;
+   std::array<ru_epoch_t, MAX_RUHS> reclaimed_ru_epoch;
    // XXX(mfd) : Persisting only totals is enough for now, we assume
    //  invalid count is always 0. In other words, we assume we're
    //   recovering from a load only workload.
@@ -108,7 +108,7 @@ struct alignas(4096) PersistantRUState {
 
    PersistantRUState(u32 max_open_ru_epochs);
    static u64 sizeFor(u64 max_open_ru_epochs) {
-      return sizeof(PersistantRUState) + max_open_ru_epochs * NUM_RUHS * sizeof(u32);
+      return sizeof(PersistantRUState) + max_open_ru_epochs * MAX_RUHS * sizeof(u32);
    }
    u64 getSize() const { return sizeFor(max_open_ru_epochs); }
    // Total of the i-th RU epoch of ruh, counted from its oldest active RU epoch.

@@ -10,7 +10,7 @@ namespace storage
 namespace fdp
 {
 // -------------------------------------------------------------------------------------
-// Places the pages of the frozen data structures (see freeze_dt()) in FREEZING_RUH and
+// Places the pages of the frozen data structures (see freeze_dt()) in freezing_ruh and
 // everything else in DEFAULT_RUH.
 class FreezeTablesPlacementPolicy
 {
@@ -24,6 +24,7 @@ class FreezeTablesPlacementPolicy
 
    FreezeTablesPlacementPolicy()
    {
+      freezing_ruh = allocateRUH();
       freeze_dt(TPCC_HISTORY_DT_ID);
       freeze_dt(TPCC_ORDER_DT_ID);
       freeze_dt(TPCC_ITEM_DT_ID);
@@ -63,7 +64,7 @@ class FreezeTablesPlacementPolicy
    ruh_id_t ruhOf(DTID dt_id) const
    {
       ensure(dt_id >= 0 && dt_id < MAX_DT_ID);
-      return frozen[dt_id] ? FREEZING_RUH : DEFAULT_RUH;
+      return frozen[dt_id] ? freezing_ruh : DEFAULT_RUH;
    }
 };
 }  // namespace fdp

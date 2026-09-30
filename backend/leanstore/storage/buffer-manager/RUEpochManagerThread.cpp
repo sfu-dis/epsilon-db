@@ -38,10 +38,11 @@ void RUEpochManager::run()
       checkForNewRUEpochs();
       if (FLAGS_enable_discarding) {
          dispatchOldestRUEpochToGC();
-         // Reclaim the non discardable RU Epochs inline.
-         // For the first 2 RUH set up that I will use
-         // This will never fire.
-         // Because the other RUH contains dead pages.
+         // The HOT RUH holds the self invalidating pages, its RU epochs are reclaimed inline.
+         // TODO(mfd) : Force reclaiming the HOT RUH as well when running out of free RU epochs.
+         if (fdp::hot_ruh != UNMAPPED_RUH) {
+            tryReclaimNonDefaultRUEpoch(fdp::hot_ruh);
+         }
       }
       // each minute
       if (FLAGS_trace_ru_threshold && FLAGS_enable_discarding) {
@@ -64,7 +65,7 @@ void RUEpochManager::run()
    checkForNewRUEpochs();
    // sanity check block
    {
-      for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
          for (u64 io_handler = 0; io_handler < bm.io_writer_threads_count; ++io_handler) {
             ensure_equal(bm.writers_iostat[io_handler].io_counter[ruh], last_seen[ruh][io_handler]);
          }
@@ -75,7 +76,7 @@ void RUEpochManager::run()
 // -------------------------------------------------------------------------------------
 void RUEpochManager::initWriteCounters()
 {
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       tot_page_written[ruh] = 0;
       last_seen[ruh].assign(bm.io_writer_threads_count, 0);
       if (FLAGS_recover) {
@@ -89,7 +90,7 @@ void RUEpochManager::initWriteCounters()
 // -------------------------------------------------------------------------------------
 void RUEpochManager::checkForNewRUEpochs()
 {
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       checkForNewRUEpoch(ruh);
    }
 }
@@ -154,7 +155,7 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
 // -------------------------------------------------------------------------------------
 void RUEpochManager::traceThresholds(FILE* tfp)
 {
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       // This method is run only by the ru_epoch_mgr thread who is responsible for incrementing
       // the oldest_uncollected_ru_epoch. That's why I don't use oldest_active_ru_epoch even
       // though it reports more information since it may be advanced concurrently by the
@@ -208,7 +209,7 @@ void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t olde
 s64 RUEpochManager::freeRUEpochsAfterOpeningOne()
 {
    s64 used_ru_epochs = 1;
-   for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       used_ru_epochs += bm.ru_epoch[ruh].load(std::memory_order_relaxed) - bm.reclaimed_ru_epoch[ruh].load(std::memory_order_relaxed);
    }
    ensure_lte(used_ru_epochs, bm.max_open_ru_epochs);

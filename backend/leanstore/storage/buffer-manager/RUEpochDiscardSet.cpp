@@ -49,7 +49,7 @@ void RUEpochDiscardSet::reset()
 void RUEpochDiscardSet::resetWithoutGC()
 {
    ensure(FLAGS_enable_discarding);
-   ensure(id != DEFAULT_RUH);
+   ensure(ruh != DEFAULT_RUH);
    ensure_equal(done_gc, FLAGS_ru_gc_threads);
    clear();
 }

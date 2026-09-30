@@ -112,7 +112,7 @@ class BufferManager
    // -------------------------------------------------------------------------------------
    // Threads managements
    struct alignas(CACHE_LINE_SIZE) padded_iostat {
-     std::array<atomic<u64>, NUM_RUHS> io_counter{};
+     std::array<atomic<u64>, MAX_RUHS> io_counter{};
      u8 pad[CACHE_LINE_SIZE - sizeof(io_counter)];
    };
    static_assert(sizeof(padded_iostat) == CACHE_LINE_SIZE, "");
@@ -140,9 +140,9 @@ class BufferManager
    // -------------------------------------------------------------------------------------
 public:
    // One independent RU epoch stream per RUH. Only DEFAULT_RUH is persisted for now.
-   std::array<atomic<ru_epoch_t>, NUM_RUHS> ru_epoch;
-   std::array<atomic<ru_epoch_t>, NUM_RUHS> oldest_uncollected_ru_epoch;
-   std::array<atomic<ru_epoch_t>, NUM_RUHS> reclaimed_ru_epoch;
+   std::array<atomic<ru_epoch_t>, MAX_RUHS> ru_epoch;
+   std::array<atomic<ru_epoch_t>, MAX_RUHS> oldest_uncollected_ru_epoch;
+   std::array<atomic<ru_epoch_t>, MAX_RUHS> reclaimed_ru_epoch;
    // DEFAULT_RUH only: advanced by the page-fixing GC threads.
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad1[7];

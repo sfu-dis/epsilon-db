@@ -220,7 +220,7 @@ void BMTable::open()
    // TODO(mfd) : decompose per ruh usage
    columns.emplace("total_in_use_ru", [this](Column& col) {
       s64 in_use_ru = 0;
-      for (ruh_id_t ruh = 0; ruh < NUM_RUHS; ++ruh) {
+      for (ruh_id_t ruh = 0; ruh < storage::fdp::num_ruhs; ++ruh) {
          in_use_ru += bm.ru_epoch[ruh].load(std::memory_order_acquire) - bm.reclaimed_ru_epoch[ruh].load(std::memory_order_acquire);
       }
       col << (in_use_ru * 100.0 / bm.max_open_ru_epochs);

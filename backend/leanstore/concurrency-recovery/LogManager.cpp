@@ -233,9 +233,9 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    const u64 file_offset = lseg.start_off + lseg.offset;
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
    ensure(sqe != nullptr);
-   [[maybe_unused]] ruh_id_t wal_ruh = 2;
    if (FLAGS_log_same_namespace) {
-      nvme_io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset, wal_ruh);
+      paranoid(storage::fdp::wal_ruh != UNMAPPED_RUH);
+      nvme_io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset, storage::fdp::wal_ruh);
    } else {
       io_uring_prep_write(sqe, log_dev_fd, logging.wal_buffer + buffer_offset, size, file_offset);
    }

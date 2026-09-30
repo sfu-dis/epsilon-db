@@ -144,4 +144,4 @@ DEFINE_double(log_space_pct, 10.0, "Percentage of ssd_path reserved for the WAL 
 DEFINE_bool(log_discard_on_reclaim, true, "Trim (BLKDISCARD) the log segment of an RU epoch once it is reclaimed");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");
-DEFINE_string(fdp_placement_policy, "Default", "FDP placement policy: Default, FreezeNewlyAllocated or FreezeTables");
+DEFINE_string(fdp_placement_policy, "Default", "FDP placement policy: Default, FreezeNewlyAllocated, FreezeTables or HardcodedTPCC");
