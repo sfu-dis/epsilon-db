@@ -79,19 +79,19 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
       // a new left node fails.
       auto new_root_h = HybridPageGuard<BTreeNode>(dt_id, false);
       auto new_root = ExclusivePageGuard<BTreeNode>(std::move(new_root_h));
-      auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
-      auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
+      auto new_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
+      auto new_node = ExclusivePageGuard<BTreeNode>(std::move(new_node_h));
       // -------------------------------------------------------------------------------------
       // XXX(mfd) : The root should be already undiscardable.
       c_x_guard.bf()->markUnDiscardable(INNER_NODE);
       if (config.enable_wal) {
          // TODO: System transactions
          new_root.incrementGSN();
-         new_left_node.incrementGSN();
+         new_node.incrementGSN();
          c_x_guard.incrementGSN();
       } else {
          new_root.markAsDirty();
-         new_left_node.markAsDirty();
+         new_node.markAsDirty();
          c_x_guard.markAsDirty();
       }
       // -------------------------------------------------------------------------------------
@@ -101,25 +101,25 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          new_root->upper = c_x_guard.bf();
          p_x_guard->upper = new_root.bf();
          // -------------------------------------------------------------------------------------
-         new_left_node.init(c_x_guard->is_leaf);
+         new_node.init(c_x_guard->is_leaf);
          c_x_guard->getSep(sep_key, sep_info);
-         c_x_guard->split(new_root, new_left_node, sep_info.slot, sep_key, sep_info.length);
+         c_x_guard->split(new_root, new_node, sep_info.slot, sep_key, sep_info.length);
       };
       if (config.enable_wal) {
          auto new_root_init_wal = new_root.reserveWALEntry<WALInitPage>(0);
          new_root_init_wal->type = WAL_LOG_TYPE::WALInitPage;
          new_root_init_wal->dt_id = dt_id;
          new_root_init_wal.submit();
-         auto new_left_init_wal = new_left_node.reserveWALEntry<WALInitPage>(0);
-         new_left_init_wal->type = WAL_LOG_TYPE::WALInitPage;
-         new_left_init_wal->dt_id = dt_id;
-         new_left_init_wal.submit();
+         auto new_node_init_wal = new_node.reserveWALEntry<WALInitPage>(0);
+         new_node_init_wal->type = WAL_LOG_TYPE::WALInitPage;
+         new_node_init_wal->dt_id = dt_id;
+         new_node_init_wal.submit();
          // -------------------------------------------------------------------------------------
          WALLogicalSplit logical_split_entry;
          logical_split_entry.type = WAL_LOG_TYPE::WALLogicalSplit;
-         logical_split_entry.right_pid = c_x_guard.bf()->header.pid;
+         logical_split_entry.right_pid = (FLAGS_btree_split_alloc_right ? new_node : c_x_guard).bf()->header.pid;
          logical_split_entry.parent_pid = new_root.bf()->header.pid;
-         logical_split_entry.left_pid = new_left_node.bf()->header.pid;
+         logical_split_entry.left_pid = (FLAGS_btree_split_alloc_right ? c_x_guard : new_node).bf()->header.pid;
          // -------------------------------------------------------------------------------------
          auto current_right_wal = c_x_guard.reserveWALEntry<WALLogicalSplit>(0);
          *current_right_wal = logical_split_entry;
@@ -132,14 +132,14 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          *root_wal = logical_split_entry;
          root_wal.submit();
          // -------------------------------------------------------------------------------------
-         auto left_wal = new_left_node.reserveWALEntry<WALLogicalSplit>(0);
+         auto left_wal = new_node.reserveWALEntry<WALLogicalSplit>(0);
          *left_wal = logical_split_entry;
          left_wal.submit();
       } else {
          exec();
       }
       new_root.unPin();
-      new_left_node.unPin();
+      new_node.unPin();
       // -------------------------------------------------------------------------------------
       node_count++;
       height++;
@@ -157,36 +157,36 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
          assert(&meta_node_bf.asBufferFrame() != p_x_guard.bf());
          assert(!p_x_guard->is_leaf);
          // -------------------------------------------------------------------------------------
-         auto new_left_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
-         auto new_left_node = ExclusivePageGuard<BTreeNode>(std::move(new_left_node_h));
+         auto new_node_h = HybridPageGuard<BTreeNode>(dt_id, true);
+         auto new_node = ExclusivePageGuard<BTreeNode>(std::move(new_node_h));
          // -------------------------------------------------------------------------------------
          p_x_guard.bf()->markUnDiscardable(INNER_NODE);
          c_x_guard.bf()->markUnDiscardable(JUST_SPLITTED);
-         ensure(!new_left_node.bf()->isDiscardable());
+         ensure(!new_node.bf()->isDiscardable());
          // Increment GSNs before writing WAL to make sure that these pages marked as dirty
          // regardless of the FLAGS_wal
          if (config.enable_wal) {
             p_x_guard.incrementGSN();
-            new_left_node.incrementGSN();
+            new_node.incrementGSN();
             c_x_guard.incrementGSN();
          } else {
             p_x_guard.markAsDirty();
-            new_left_node.markAsDirty();
+            new_node.markAsDirty();
             c_x_guard.markAsDirty();
          }
          // -------------------------------------------------------------------------------------
          auto exec = [&]() {
-            new_left_node.init(c_x_guard->is_leaf);
+            new_node.init(c_x_guard->is_leaf);
             c_x_guard->getSep(sep_key, sep_info);
-            c_x_guard->split(p_x_guard, new_left_node, sep_info.slot, sep_key, sep_info.length);
+            c_x_guard->split(p_x_guard, new_node, sep_info.slot, sep_key, sep_info.length);
          };
          // -------------------------------------------------------------------------------------
          if (config.enable_wal) {
             WALLogicalSplit logical_split_entry;
             logical_split_entry.type = WAL_LOG_TYPE::WALLogicalSplit;
-            logical_split_entry.right_pid = c_x_guard.bf()->header.pid;
+            logical_split_entry.right_pid = (FLAGS_btree_split_alloc_right ? new_node : c_x_guard).bf()->header.pid;
             logical_split_entry.parent_pid = p_x_guard.bf()->header.pid;
-            logical_split_entry.left_pid = new_left_node.bf()->header.pid;
+            logical_split_entry.left_pid = (FLAGS_btree_split_alloc_right ? c_x_guard : new_node).bf()->header.pid;
             // -------------------------------------------------------------------------------------
             auto current_right_wal = c_x_guard.reserveWALEntry<WALLogicalSplit>(0);
             *current_right_wal = logical_split_entry;
@@ -198,17 +198,17 @@ void BTreeGeneric::trySplit(BufferFrame& to_split, s16 favored_split_pos)
             *parent_wal = logical_split_entry;
             parent_wal.submit();
             // -------------------------------------------------------------------------------------
-            auto left_init_wal = new_left_node.reserveWALEntry<WALInitPage>(0);
-            left_init_wal->type = WAL_LOG_TYPE::WALInitPage;
-            left_init_wal->dt_id = dt_id;
-            left_init_wal.submit();
-            auto left_wal = new_left_node.reserveWALEntry<WALLogicalSplit>(0);
+            auto new_node_init_wal = new_node.reserveWALEntry<WALInitPage>(0);
+            new_node_init_wal->type = WAL_LOG_TYPE::WALInitPage;
+            new_node_init_wal->dt_id = dt_id;
+            new_node_init_wal.submit();
+            auto left_wal = new_node.reserveWALEntry<WALLogicalSplit>(0);
             *left_wal = logical_split_entry;
             left_wal.submit();
          } else {
             exec();
          }
-         new_left_node.unPin();
+         new_node.unPin();
          node_count++;
          COUNTERS_BLOCK(dt_splits) { WorkerCounters::myCounters().dt_split[dt_id]++; }
       } else {

@@ -3,6 +3,7 @@
 #include "leanstore/sync-primitives/PageGuard.hpp"
 // -------------------------------------------------------------------------------------
 #include "gflags/gflags.h"
+#include <utility>
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
@@ -363,36 +364,69 @@ Swip<BTreeNode>& BTreeNode::lookupInner(const u8* key, u16 keyLength)
    return getChild(pos);
 }
 // -------------------------------------------------------------------------------------
-// This = right
-void BTreeNode::split(ExclusivePageGuard<BTreeNode>& parent, ExclusivePageGuard<BTreeNode>& nodeLeft, u16 sepSlot, u8* sepKey, u16 sepLength)
+// Internal split: distributes the entries of this node into nodeLeft ([lower_fence, sep]) and nodeRight
+// ((sep, upper_fence]) and registers the separator in the parent. this is only read, the caller decides which of
+// nodeLeft/nodeRight is the freshly allocated page and which is a temporary to be copied back into this.
+//
+// Parent update: parent->insert(sep, new_swip) always places sep in front of the entry E that pointed to this
+// node (E is the child of the next slot, or parent->upper when sep becomes the largest separator):
+//    before:  ... k_i [this] k_i+1 ...          (sep lands between k_i and k_i+1)
+//    after :  ... k_i [new] sep [this] k_i+1 ...
+// A separator's child holds the keys <= sep, so this is correct as is when the new page is the left half. When the
+// new page is the right half we swap the two swips:  ... k_i [this] sep [new] k_i+1 ...
+void BTreeNode::splitImpl(ExclusivePageGuard<BTreeNode>& parent,
+                          BTreeNode* nodeLeft,
+                          BTreeNode* nodeRight,
+                          SwipType new_swip,
+                          bool new_is_right,
+                          u16 sepSlot,
+                          u8* sepKey,
+                          u16 sepLength)
 {
-   // PRE: current, parent and nodeLeft are x locked
-   // assert(sepSlot > 0); TODO: really ?
+   // PRE: current, parent and the new node are x locked
    assert(sepSlot < (EFFECTIVE_PAGE_SIZE / sizeof(SwipType)));
+   assert(nodeLeft != this && nodeRight != this);
    // -------------------------------------------------------------------------------------
    nodeLeft->setFences(getLowerFenceKey(), lower_fence.length, sepKey, sepLength);
-   BTreeNode tmp(is_leaf);
-   BTreeNode* nodeRight = &tmp;
    nodeRight->setFences(sepKey, sepLength, getUpperFenceKey(), upper_fence.length);
    assert(parent->canInsert(sepLength, sizeof(SwipType)));
-   auto swip = nodeLeft.swip();
-   parent->insert(sepKey, sepLength, reinterpret_cast<u8*>(&swip), sizeof(SwipType));
+   // -------------------------------------------------------------------------------------
+   const s32 sep_pos = parent->insert(sepKey, sepLength, reinterpret_cast<u8*>(&new_swip), sizeof(SwipType));
+   if (new_is_right) {
+      SwipType& old_child = (sep_pos + 1 < parent->count) ? parent->getChild(sep_pos + 1) : parent->upper;
+      std::swap(parent->getChild(sep_pos), old_child);
+   }
+   // -------------------------------------------------------------------------------------
    if (is_leaf) {
-      copyKeyValueRange(nodeLeft.ptr(), 0, 0, sepSlot + 1);
+      // The separator is a copy of the key at sepSlot, which stays in the left half
+      copyKeyValueRange(nodeLeft, 0, 0, sepSlot + 1);
       copyKeyValueRange(nodeRight, 0, nodeLeft->count, count - nodeLeft->count);
       // -------------------------------------------------------------------------------------
       nodeRight->has_garbage = has_garbage;
       nodeLeft->has_garbage = has_garbage;
    } else {
-      copyKeyValueRange(nodeLeft.ptr(), 0, 0, sepSlot);
+      // The separator moves up to the parent, its child becomes the upper swip of the left half
+      copyKeyValueRange(nodeLeft, 0, 0, sepSlot);
       copyKeyValueRange(nodeRight, 0, nodeLeft->count + 1, count - nodeLeft->count - 1);
       nodeLeft->upper = getChild(nodeLeft->count);
       nodeRight->upper = upper;
    }
    nodeLeft->makeHint();
    nodeRight->makeHint();
-   // -------------------------------------------------------------------------------------
-   memcpy(reinterpret_cast<char*>(this), nodeRight, sizeof(BTreeNode));
+}
+// -------------------------------------------------------------------------------------
+// With FLAGS_btree_split_alloc_right the new node takes the right half and this keeps the left half, otherwise the
+// new node takes the left half. With bulk insert (split at count - 2) allocating right leaves the new page almost empty.
+void BTreeNode::split(ExclusivePageGuard<BTreeNode>& parent, ExclusivePageGuard<BTreeNode>& new_node, u16 sepSlot, u8* sepKey, u16 sepLength)
+{
+   // The half that stays in this is built in tmp and copied back, since splitImpl reads from this
+   BTreeNode tmp(is_leaf);
+   if (FLAGS_btree_split_alloc_right) {
+      splitImpl(parent, &tmp, new_node.ptr(), new_node.swip(), true, sepSlot, sepKey, sepLength);
+   } else {
+      splitImpl(parent, new_node.ptr(), &tmp, new_node.swip(), false, sepSlot, sepKey, sepLength);
+   }
+   memcpy(reinterpret_cast<char*>(this), &tmp, sizeof(BTreeNode));
 }
 // -------------------------------------------------------------------------------------
 bool BTreeNode::removeSlot(u16 slotId)

@@ -425,6 +425,8 @@ struct BTreeNode : public BTreeNodeHeader {
    void copyKeyValue(u16 srcSlot, BTreeNode* dst, u16 dstSlot);
    void insertFence(FenceKey& fk, u8* key, u16 keyLength);
    void setFences(u8* lowerKey, u16 lowerLen, u8* upperKey, u16 upperLen);
+   // Split this node in two. FLAGS_btree_split_alloc_right decides whether new_node becomes the right half (this keeps
+   // the left half) or the left half (this keeps the right half).
    void split(ExclusivePageGuard<BTreeNode>& parent, ExclusivePageGuard<BTreeNode>& new_node, u16 sepSlot, u8* sepKey, u16 sepLength);
    u16 commonPrefix(u16 aPos, u16 bPos);
    SeparatorInfo findSep();
@@ -435,6 +437,19 @@ struct BTreeNode : public BTreeNodeHeader {
    bool removeSlot(u16 slotId);
    bool remove(const u8* key, const u16 keyLength);
    void reset();
+   // -------------------------------------------------------------------------------------
+  private:
+   // Used by split(): moves the entries of this into nodeLeft and nodeRight (neither may be this) and inserts sepKey
+   // into the parent so that it routes to both halves. new_swip is the swip of the newly allocated page, which is
+   // nodeRight if new_is_right, nodeLeft otherwise.
+   void splitImpl(ExclusivePageGuard<BTreeNode>& parent,
+                  BTreeNode* nodeLeft,
+                  BTreeNode* nodeRight,
+                  SwipType new_swip,
+                  bool new_is_right,
+                  u16 sepSlot,
+                  u8* sepKey,
+                  u16 sepLength);
 };  // namespace btree
 // -------------------------------------------------------------------------------------
 static_assert(sizeof(BTreeNode) == EFFECTIVE_PAGE_SIZE, "BTreeNode must be equal to one page");
