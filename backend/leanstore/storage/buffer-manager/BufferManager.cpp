@@ -11,6 +11,7 @@
 #include "RUEpochManagerThread.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/storage/btree/core/BTreeGeneric.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -302,7 +303,7 @@ void BufferManager::writeAllBufferFrames()
             pageWriteBackPrologue(bf);
             ++bf.page.write_back_count;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
-            s64 ret = pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE);
+            s64 ret = nvme_pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE, bf.header.next_ruh);
             ensure_equal(ret, PAGE_SIZE);
          }
          bf.header.latch.mutex.unlock();

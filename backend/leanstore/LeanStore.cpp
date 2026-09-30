@@ -434,6 +434,11 @@ void LeanStore::verifyFlags()
                   "Please turned on by passing -DWITH_FDP to cmake.");
 #endif
    }
+   if (FLAGS_log_same_namespace && (!FLAGS_redo_log_file.empty() && FLAGS_redo_log_file != FLAGS_ssd_path)) {
+      // No need for error here, just turn off the flag
+      printf("Turning iff the log_same_namespace");
+      FLAGS_log_same_namespace = false;
+   }
    if (FLAGS_log_same_namespace) {
       if (FLAGS_log_dev_size_gib != 0) {
          SetupFailed("log_dev_size_gib is only for a separate log device, use log_space_pct with log_same_namespace");

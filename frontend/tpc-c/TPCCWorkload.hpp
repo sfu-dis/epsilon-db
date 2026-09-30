@@ -22,7 +22,7 @@ DEFINE_bool(tpcc_skip_neworder, false,
 #define HISTORY 1
 #define TPCC_NEXT_OID_DEBUG 0
 #define ORDER_ORDERLINE_UPDATE 0
-#define ORDER_LINE 0
+#define ORDER_LINE 1
 // -------------------------------------------------------------------------------------
 template <template <typename> class AdapterType>
 class TPCCWorkload
@@ -80,8 +80,8 @@ class TPCCWorkload
          no_last_delivered_o_id[w_id][d_id - 1] = (oldest_undelivered == minInteger) ? last_inserted : oldest_undelivered - 1;
       }
       no_cursor_initialized[w_id] = true;
-      fprintf(stdout, "[TPCCWorkload.hpp] Initialized neworder cursors for w_id = %d (d_id 1: last_delivered = %lu, last_inserted = %lu)\n", w_id,
-              no_last_delivered_o_id[w_id][0], no_last_inserted_o_id[w_id][0]);
+      // fprintf(stdout, "[TPCCWorkload.hpp] Initialized neworder cursors for w_id = %d (d_id 1: last_delivered = %lu, last_inserted = %lu)\n", w_id,
+      //        no_last_delivered_o_id[w_id][0], no_last_inserted_o_id[w_id][0]);
    }
    // -------------------------------------------------------------------------------------
    Integer urandexcept(Integer low, Integer high, Integer v)
@@ -498,11 +498,9 @@ class TPCCWorkload
          }
          // -------------------------------------------------------------------------------------
 #if ORDER_ORDERLINE_UPDATE
-         if (d_id == 1) {
          UpdateDescriptorGenerator1(order_update_descriptor, order_t, o_carrier_id);
          order.update1(
              {w_id, d_id, o_id}, [&](order_t& rec) { rec.o_carrier_id = carrier_id; }, order_update_descriptor);
-         }
 #endif
          // -------------------------------------------------------------------------------------
 #if ORDER_LINE
@@ -537,7 +535,6 @@ class TPCCWorkload
                    rec.ol_delivery_d = datetime;
                 },
                 orderline_update_descriptor);
-            break;
          }
 #else
          ol_total = 7;

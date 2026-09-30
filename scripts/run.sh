@@ -628,6 +628,8 @@ cat "${common_flags}" >> "${run_flags}"
    # to avoid generating and shuffling the key array
    echo "--zipf_factor=0"
 
+   echo "--fdp_placement_policy=FreezeTables"
+
 } >> "$load_flags"
 
 
@@ -726,7 +728,7 @@ shutdown() {
     echo "stopping background waf calculator job..."
     set +e
     echo "$PWD"
-
+    pushd ${BUILD_DIR}
     if (( stats_dir == 1)); then
        cp log_bm.csv ${dir_name}
        cp log_cr.csv ${dir_name}
@@ -745,9 +747,9 @@ shutdown() {
        fi
        echo "results are saved to ${dir_name}"
        run chmod 777 ${dir_name}
-       popd
     fi
     kill "$KEEPALIVE" 2>/dev/null
+    popd
     exit 0
 }
 

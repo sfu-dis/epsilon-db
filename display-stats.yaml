@@ -235,3 +235,8 @@ columns:
     field: "Redo ns"
     enabled: false
     source: bm
+
+  dirty_ol_mib:
+    field: "DirtyO"
+    enabled: true
+    source: bm

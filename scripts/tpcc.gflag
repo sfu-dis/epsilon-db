@@ -1,4 +1,5 @@
 --tpcc_abort_pct=0
---steady_tpcc
---nomodified_tpcc_uniform
-# --bulk_insert
+--nosteady_tpcc
+--modified_tpcc_uniform
+--tpcc_skip_neworder
+--noorder_wdc_index
