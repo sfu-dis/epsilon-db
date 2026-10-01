@@ -48,7 +48,7 @@ LeanStore::LeanStore()
    // Check if configurations make sense
    verifyFlags();
    // -------------------------------------------------------------------------------------
-   logger = std::make_unique<utils::Logger>("leanstore_log.txt", true);
+   logger = std::make_unique<utils::Logger>("leanstore_log.txt");
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool
@@ -137,6 +137,13 @@ LeanStore::LeanStore()
    buffer_manager = make_unique<storage::BufferManager>(ssd_fd, ssd_layout, max_open_ru_epochs);
    ensure_equal(BMC::global_bf, buffer_manager.get());
    BMC::global_bf = buffer_manager.get();
+   {
+      // The RUHs are assigned by the placement policy, constructed with the buffer manager.
+      auto ruh_str = [](ruh_id_t ruh) { return ruh == UNMAPPED_RUH ? std::string("unmapped") : std::to_string(ruh); };
+      LOG_INFO(logger, "RUH mapping (%s placement policy): num_ruhs=%u, default=%s, freezing=%s, hot=%s, wal=%s",
+               FLAGS_fdp_placement_policy.c_str(), storage::fdp::num_ruhs, ruh_str(DEFAULT_RUH).c_str(),
+               ruh_str(storage::fdp::freezing_ruh).c_str(), ruh_str(storage::fdp::hot_ruh).c_str(), ruh_str(storage::fdp::wal_ruh).c_str());
+   }
    // -------------------------------------------------------------------------------------
    // TODO(mfd) : Move this to the LogManager Ctor
    if (FLAGS_wal_partition_by == "ru_epoch") {
@@ -174,6 +181,8 @@ LeanStore::LeanStore()
 // -------------------------------------------------------------------------------------
 void LeanStore::startProfilingThread()
 {
+   // The profiling thread owns stdout from here on.
+   utils::Logger::duplicate_to_stdout = false;
    std::thread profiling_thread([this]() { this->profilingThread(); });
    bg_threads_counter++;
    profiling_thread.detach();

@@ -6,7 +6,7 @@ namespace leanstore
 namespace utils
 {
 // -------------------------------------------------------------------------------------
-Logger::Logger(const std::string& filename, const bool duplicate_to_stdout) : duplicate_to_stdout_(duplicate_to_stdout)
+Logger::Logger(const std::string& filename)
 {
    file_.open(filename, std::ios::trunc);
    if (!file_.is_open()) {
@@ -55,8 +55,8 @@ void Logger::log(const char* file, int line, const char* func, int level, const 
    ::vsnprintf(buf, sizeof(buf), fmt, args);
    va_end(args);
 
-   if (duplicate_to_stdout_) {
-      std::cout << "[INFO] " << buf << std::endl;
+   if (duplicate_to_stdout.load(std::memory_order_relaxed)) {
+      std::cout << "[" << typeStr(level) << "] " << buf << std::endl;
    }
 
    file_ << buf << "\n";

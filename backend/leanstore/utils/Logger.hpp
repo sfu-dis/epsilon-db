@@ -15,6 +15,7 @@
 
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <atomic>
 #include <cstdarg>
 #include <ctime>
 #include <fstream>
@@ -69,7 +70,10 @@ static constexpr int LOG_LEVEL = LOG_LEVEL_INFO;
 class Logger
 {
   public:
-   Logger(const std::string& filename, const bool duplicate_to_stdout = false);
+   // Global knob: when set, every Logger also duplicates its output to stdout.
+   static inline std::atomic<bool> duplicate_to_stdout{true};
+
+   explicit Logger(const std::string& filename);
    ~Logger();
 
    Logger(const Logger&) = delete;
@@ -79,7 +83,6 @@ class Logger
 
   private:
    std::ofstream file_;
-   bool duplicate_to_stdout_;
    const char* typeStr(int level);
    void OutputLogHeader(const char* file, int line, const char* func, int level);
 };
