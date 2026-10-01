@@ -8,16 +8,41 @@
 // -------------------------------------------------------------------------------------
 #include <gflags/gflags.h>
 // -------------------------------------------------------------------------------------
+#include <fcntl.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <string>
 #include <thread>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace storage
 {
+// -------------------------------------------------------------------------------------
+namespace
+{
+constexpr mode_t TRACE_FILE_MODE = 0660;
+constexpr mode_t TRACE_DIR_MODE = 0770;
+void makeTraceDir(const std::string& path)
+{
+   posix_check(mkdir(path.c_str(), TRACE_DIR_MODE) == 0 || errno == EEXIST);
+   posix_check(chmod(path.c_str(), TRACE_DIR_MODE) == 0);
+}
+FILE* openTraceFile(const std::string& path)
+{
+   const int fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, TRACE_FILE_MODE);
+   posix_check(fd >= 0);
+   posix_check(fchmod(fd, TRACE_FILE_MODE) == 0);
+   FILE* fp = fdopen(fd, "w");
+   posix_check(fp != nullptr);
+   return fp;
+}
+}  // namespace
 // -------------------------------------------------------------------------------------
 RUEpochManager::RUEpochManager(BufferManager& bm) : bm(bm) {}
 // -------------------------------------------------------------------------------------
@@ -31,7 +56,9 @@ void RUEpochManager::run()
    pthread_setname_np(pthread_self(), "ru_epoch_mgr");
    bm.bg_threads_counter++;
    initWriteCounters();
-   FILE* tfp = fopen("thresholds.txt", "w");
+   if (FLAGS_trace_ru_threshold) {
+      initThresholdsTrace();
+   }
    u64 milliseconds = 0;
    while (bm.bg_threads_keep_running || bm.shutdown_flush_in_progress.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -48,7 +75,7 @@ void RUEpochManager::run()
       if (FLAGS_trace_ru_threshold && FLAGS_enable_discarding) {
          if (milliseconds == (1000 * 60)) {
             milliseconds = 0;
-            traceThresholds(tfp);
+            traceThresholds(("minute " + std::to_string(sample_id + 1)).c_str());
          }
          milliseconds += 10;
       }
@@ -63,6 +90,16 @@ void RUEpochManager::run()
    }
    // No thread is able to write now
    checkForNewRUEpochs();
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   // Also for the load (no discarding), covers the shutdown flush.
+   if (FLAGS_trace_ru_threshold) {
+      traceThresholds("shutdown");
+   }
+#endif
+   if (summary_fp) {
+      fclose(summary_fp);
+      summary_fp = nullptr;
+   }
    // sanity check block
    {
       for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
@@ -153,8 +190,24 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
    }
 }
 // -------------------------------------------------------------------------------------
-void RUEpochManager::traceThresholds(FILE* tfp)
+// Starts from an empty THRESHOLDS_DIR so that no sample of a previous run is left behind.
+void RUEpochManager::initThresholdsTrace()
 {
+   std::filesystem::remove_all(THRESHOLDS_DIR);
+   makeTraceDir(THRESHOLDS_DIR);
+   summary_fp = openTraceFile(std::string(THRESHOLDS_DIR) + "/threshold.txt");
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
+      makeTraceDir(std::string(THRESHOLDS_DIR) + "/ruh_" + std::to_string(ruh));
+   }
+#endif
+}
+// -------------------------------------------------------------------------------------
+void RUEpochManager::traceThresholds(const char* label)
+{
+   const u64 sample = ++sample_id;
+   FILE* tfp = summary_fp;
+   fprintf(tfp, "==================== Sample %lu (%s) ====================\n", sample, label);
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       // This method is run only by the ru_epoch_mgr thread who is responsible for incrementing
       // the oldest_uncollected_ru_epoch. That's why I don't use oldest_active_ru_epoch even
@@ -162,16 +215,26 @@ void RUEpochManager::traceThresholds(FILE* tfp)
       // bg page fixer threads.
       ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
       ru_epoch_t newest = bm.ru_epoch[ruh].load(std::memory_order_relaxed);
-      fprintf(tfp, "RUH : %u, Active RUs : %ld\n", ruh, newest - oldest + 1);
+      fprintf(tfp, "RUH %u : %ld active RUs (closed %ld..%ld, open %ld)\n", ruh, newest - oldest + 1, oldest, newest - 1, newest);
+      if (oldest < newest) {
+         fprintf(tfp, "   %10s %10s %10s %10s %10s\n", "RU epoch", "total", "invalid", "discarded", "usage");
+      }
       for (ru_epoch_t r = oldest; r < newest; ++r) {
-         // TODO(mfd) : Left to handle ru_discard_set per RUH
          auto& set = bm.ru_discard_set[ruh][r];
-         // fprintf(tfp, "(%ld,%.2f)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed));
-         fprintf(tfp, "(%ld,%.2f,%d)", r, set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed), set.invalid.load(std::memory_order_relaxed));
+         // Same formula as ReclaimUnitUsage, but from a single load of each counter so that
+         // invalid% + discarded% always adds up to usage%.
+         const s32 total = set.total.load(std::memory_order_relaxed);
+         const s32 invalid = set.invalid.load(std::memory_order_relaxed);
+         const s32 discarded = set.inserted.load(std::memory_order_relaxed) - set.deleted.load(std::memory_order_relaxed);
+         fprintf(tfp, "   %10ld %10d %9.2f%% %9.2f%% %9.2f%%\n", r, total, invalid * 100.0 / total, discarded * 100.0 / total,
+                 (invalid + discarded) * 100.0 / total);
       }
       fprintf(tfp, "\n");
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
-      tracePerTableStats(tfp, ruh, oldest, newest);
+      FILE* rfp = openTraceFile(std::string(THRESHOLDS_DIR) + "/ruh_" + std::to_string(ruh) + "/sample_" + std::to_string(sample) + ".txt");
+      fprintf(rfp, "Sample %lu (%s), RUH %u\n", sample, label, ruh);
+      tracePerTableStats(rfp, ruh, oldest, newest);
+      fclose(rfp);
 #endif
    }
    fflush(tfp);

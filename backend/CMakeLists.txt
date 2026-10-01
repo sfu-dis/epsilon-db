@@ -71,7 +71,7 @@ IF(PARANOID)
   target_compile_definitions(leanstore PUBLIC PARANOID)
 ENDIF(PARANOID)
 # ---------------------------------------------------------------------------
-OPTION(PER_TPCC_TABLE_STATS_DEBUG "Track per table (dt_id) RU epoch stats and print them in thresholds.txt" ON)
+OPTION(PER_TPCC_TABLE_STATS_DEBUG "Track per table (dt_id) RU epoch stats and print them in thresholds/ruh_<ruh>/sample_<n>.txt" ON)
 IF(PER_TPCC_TABLE_STATS_DEBUG)
   target_compile_definitions(leanstore PUBLIC PER_TPCC_TABLE_STATS_DEBUG)
 ENDIF(PER_TPCC_TABLE_STATS_DEBUG)

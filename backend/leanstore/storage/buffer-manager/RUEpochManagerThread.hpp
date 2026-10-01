@@ -30,13 +30,19 @@ class RUEpochManager
    // Per RUH: pages written in the open RU epoch, and the last seen counter of each writer thread.
    std::array<u64, MAX_RUHS> tot_page_written{};
    std::array<std::vector<u64>, MAX_RUHS> last_seen;
+   // Threshold tracing: THRESHOLDS_DIR/threshold.txt holds the summary of all RUHs for every sample,
+   // THRESHOLDS_DIR/ruh_<ruh>/sample_<n>.txt the per table decomposition of one RUH for sample n.
+   static constexpr const char* THRESHOLDS_DIR = "thresholds";
+   FILE* summary_fp = nullptr;
+   u64 sample_id = 0;
    // -------------------------------------------------------------------------------------
    void run();
    void initWriteCounters();
    void checkForNewRUEpochs();
    void checkForNewRUEpoch(ruh_id_t ruh);
    void dispatchOldestRUEpochToGC();
-   void traceThresholds(FILE* tfp);
+   void initThresholdsTrace();
+   void traceThresholds(const char* label);
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    void tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest);
 #endif
