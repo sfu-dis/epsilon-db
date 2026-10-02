@@ -52,7 +52,7 @@ void CRManager::groupCommiter()
    per_worker_hardened_precommit_ts.resize(workers_count);
    std::vector<LID> per_log_last_seen_gsn(log_manager->log_count, 0);
    std::vector<LID> per_worker_last_seen_gsn(workers_count, 0);
-   if (FLAGS_recover) {
+   if (!FLAGS_initialize_leanstore) {
       for (u32 log_i = 0; log_i < log_manager->log_count; ++log_i) {
          per_log_last_seen_gsn[log_i] = log_manager->meta->log_segments[log_i].hardened_gsn;
       }

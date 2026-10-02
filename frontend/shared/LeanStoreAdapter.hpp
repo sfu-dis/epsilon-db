@@ -22,13 +22,13 @@ struct LeanStoreAdapter : Adapter<Record> {
    {
       btree::BTreeGeneric::Config config = {.enable_wal = FLAGS_wal, .use_bulk_insert = false, .discardable = discardable};
       if (FLAGS_vi) {
-         if (FLAGS_recover) {
+         if (!FLAGS_initialize_leanstore) {
             btree = &db.retrieveBTreeVI(name, config);
          } else {
             btree = &db.registerBTreeVI(name, config);
          }
       } else {
-         if (FLAGS_recover) {
+         if (!FLAGS_initialize_leanstore) {
             btree = &db.retrieveBTreeLL(name, config);
          } else {
             btree = &db.registerBTreeLL(name, config);

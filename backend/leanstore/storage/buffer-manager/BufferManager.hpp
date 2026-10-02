@@ -150,7 +150,7 @@ public:
    bool global_force_gc = false;
    PageState *discard_state;
    u32 max_open_ru_epochs;
-   u32 max_pending_lsn;
+   u32 max_pending_lsn = 0;
    u64 persistant_ru_state_offset;
    PersistantRUState *persistant_ru_state;
    std::vector<RUEpochsState> ru_discard_set; // one per RUH

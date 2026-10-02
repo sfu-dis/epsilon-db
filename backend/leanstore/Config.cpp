@@ -109,11 +109,12 @@ DEFINE_uint64(vi_max_chain_length, 1000, "");
 DEFINE_uint64(todo_batch_size, 1024, "");
 DEFINE_bool(history_tree_inserts, true, "");
 // -------------------------------------------------------------------------------------
-DEFINE_bool(persist, false, "");
-DEFINE_bool(recover, false, "");
-DEFINE_bool(clean_recover, false, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
-DEFINE_string(persist_file, "./leanstore.json", "Where should the persist config be saved to?");
-DEFINE_string(recover_file, "./leanstore.json", "Where should the recover config be loaded from?");
+DEFINE_bool(persist, false, "This run is persistent: on shutdown flush everything and write a recoverable state file for a later run");
+DEFINE_bool(initialize_leanstore, false,
+            "Initialize the database and the device (fresh SSD layout). Otherwise recover from leanstore_state_file, which "
+            "must have been written by a --persist run");
+DEFINE_bool(skip_wal_recovery, false, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
+DEFINE_string(leanstore_state_file, "./leanstore.json", "State file written by a --persist run and read when recovering");
 DEFINE_string(ru_table_stats_file, "./ru_table_stats.json", "Where the per table (dt_id) RU epoch stats are persisted to and recovered from");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(io_trace, false, "");

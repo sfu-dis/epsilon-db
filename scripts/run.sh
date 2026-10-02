@@ -618,6 +618,7 @@ cat "${common_flags}" >> "${load_flags}"
 cat "${common_flags}" >> "${run_flags}"
 
 {
+   echo "--initialize_leanstore"
    echo "--persist"
    echo "--run_for_seconds=0"
    echo "--noenable_discarding"
@@ -634,8 +635,7 @@ cat "${common_flags}" >> "${run_flags}"
 
 
 {
-   echo "--recover"
-   echo "--clean_recover"
+   echo "--skip_wal_recovery"
    echo "--run_for_seconds=${run_for_seconds}"
    echo "--wal_pwrite"
    echo "--bulk_insert"

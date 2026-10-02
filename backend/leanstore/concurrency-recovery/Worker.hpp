@@ -61,7 +61,8 @@ struct Worker {
       std::vector<std::tuple<WORKERID, TXID>> rfa_checks_at_precommit;
       void checkLogDepdency(WORKERID other_worker_id, TXID other_user_tx_id)
       {
-         if (FLAGS_recover)
+         // TODO(mfd) : Inherited from the old FLAGS_recover, unclear why recovered runs skip the RFA dependency tracking.
+         if (!FLAGS_initialize_leanstore)
             return;
          if (!remote_flush_dependency && Worker::my().worker_id != other_worker_id) {
             Worker* other = my().all_workers[other_worker_id];

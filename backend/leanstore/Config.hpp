@@ -105,10 +105,9 @@ DECLARE_uint64(todo_batch_size);
 DECLARE_bool(history_tree_inserts);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(persist);
-DECLARE_bool(recover);
-DECLARE_bool(clean_recover);
-DECLARE_string(persist_file);
-DECLARE_string(recover_file);
+DECLARE_bool(initialize_leanstore);
+DECLARE_bool(skip_wal_recovery);
+DECLARE_string(leanstore_state_file);
 DECLARE_string(ru_table_stats_file);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(io_trace);

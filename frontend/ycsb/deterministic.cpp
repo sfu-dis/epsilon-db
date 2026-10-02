@@ -87,7 +87,7 @@ int main(int argc, char** argv)
       return 0;
    }
    // -------------------------------------------------------------------------------------
-   if (!FLAGS_recover) {
+   if (FLAGS_initialize_leanstore) {
       cout << "Inserting " << ycsb_tuple_count << " values" << endl;
       begin = chrono::high_resolution_clock::now();
       utils::Parallelize::range(FLAGS_ycsb_insert_threads ? FLAGS_ycsb_insert_threads : FLAGS_worker_threads, n, [&](u64 t_i, u64 begin, u64 end) {

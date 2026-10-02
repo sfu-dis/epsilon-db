@@ -35,13 +35,8 @@ namespace leanstore
 LeanStore::LeanStore()
 {
    // LeanStore::addStringFlag("ssd_path", &FLAGS_ssd_path);
-   if (FLAGS_recover_file != "./leanstore.json") {
-      FLAGS_recover = true;
-   }
-   if (FLAGS_persist_file != "./leanstore.json") {
-      FLAGS_persist = true;
-   }
-   if (FLAGS_recover) {
+   if (!FLAGS_initialize_leanstore) {
+      verifyStateFileIsRecoverable();
       deserializeFlags();
    }
    // -------------------------------------------------------------------------------------
@@ -52,6 +47,10 @@ LeanStore::LeanStore()
    // -------------------------------------------------------------------------------------
    // Set the default logger to file logger
    // Init SSD pool
+   if (FLAGS_initialize_leanstore) {
+      // The device content no longer matches any previously persisted state.
+      invalidateStateFile();
+   }
    int flags = O_RDWR | O_DIRECT;
    if (FLAGS_trunc) {
       flags |= O_TRUNC | O_CREAT;
@@ -125,9 +124,11 @@ LeanStore::LeanStore()
    LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
    LOG_INFO(logger, "Space reserved for database pages: %.2f GiB", FLAGS_ssd_gib);
    LOG_INFO(logger, "SSD layout: %s", ssd_layout.toString().c_str());
-   if (FLAGS_recover) {
+   if (!FLAGS_initialize_leanstore) {
       // Before the buffer manager reads the persistant RU state at persistant_ru_state_offset.
       verifyPersistedSSDLayout();
+      // From here on the device diverges from the state file, only a clean --persist shutdown makes it recoverable again.
+      invalidateStateFile();
    }
    if (FLAGS_wal && FLAGS_log_same_namespace) {
       // Same fd as the database, the log is confined to [log_offset, log_offset + log_size).
@@ -157,7 +158,7 @@ LeanStore::LeanStore()
    DTRegistry::global_dt_registry.registerDatastructureType(0, storage::btree::BTreeLL::getMeta());
    DTRegistry::global_dt_registry.registerDatastructureType(2, storage::btree::BTreeVI::getMeta());
    // -------------------------------------------------------------------------------------
-   if (FLAGS_recover) {
+   if (!FLAGS_initialize_leanstore) {
       deserializeState();
    }
    // -------------------------------------------------------------------------------------
@@ -221,11 +222,11 @@ LeanStore::GlobalStats LeanStore::getGlobalStats()
 void LeanStore::serializeState()
 {
    // Serialize data structure instances
-   std::ofstream json_file;
-   json_file.open(FLAGS_persist_file, ios::trunc);
    rs::Document d;
    rs::Document::AllocatorType& allocator = d.GetAllocator();
    d.SetObject();
+   // Only written once all buffer frames and the RU state are on the device.
+   d.AddMember("recoverable", true, allocator);
    // -------------------------------------------------------------------------------------
    std::unordered_map<std::string, std::string> serialized_cr_map = cr_manager->serialize();
    rs::Value cr_serialized(rs::kObjectType);
@@ -284,10 +285,73 @@ void LeanStore::serializeState()
    d.AddMember("registered_datastructures", dts, allocator);
    // -------------------------------------------------------------------------------------
    serializeFlags(d);
+   writeStateFile(d);
+}
+// -------------------------------------------------------------------------------------
+void LeanStore::writeStateFile(const rs::Document& d)
+{
    rs::StringBuffer sb;
    rs::PrettyWriter<rs::StringBuffer> writer(sb);
    d.Accept(writer);
-   json_file << sb.GetString();
+   // Write to a temporary file and rename it so that a crash never leaves a partially written state file behind.
+   const std::string tmp_file = FLAGS_leanstore_state_file + ".tmp";
+   {
+      std::ofstream json_file(tmp_file, ios::trunc);
+      json_file << sb.GetString();
+      json_file.close();
+      if (json_file.fail()) {
+         SetupFailed("Could not write " + tmp_file);
+      }
+   }
+   int fd = open(tmp_file.c_str(), O_RDONLY);
+   ensure(fd != -1);
+   ensure_equal(fsync(fd), 0);
+   close(fd);
+   ensure_equal(rename(tmp_file.c_str(), FLAGS_leanstore_state_file.c_str()), 0);
+}
+// -------------------------------------------------------------------------------------
+void LeanStore::verifyStateFileIsRecoverable()
+{
+   std::ifstream json_file;
+   json_file.open(FLAGS_leanstore_state_file);
+   if (!json_file.is_open()) {
+      SetupFailed("No state file at " + FLAGS_leanstore_state_file + ", pass --initialize_leanstore to initialize the database and the device");
+   }
+   rs::IStreamWrapper isw(json_file);
+   rs::Document d;
+   d.ParseStream(isw);
+   if (d.HasParseError() || !d.IsObject()) {
+      SetupFailed(FLAGS_leanstore_state_file + " is not a valid state file, pass --initialize_leanstore to initialize the database and the device");
+   }
+   if (!d.HasMember("recoverable") || !d["recoverable"].IsBool() || !d["recoverable"].GetBool()) {
+      SetupFailed("Cannot recover from " + FLAGS_leanstore_state_file +
+                  ": it was not written by a clean shutdown of a --persist run (the last run on the device was not persistent, crashed, or "
+                  "is still running). Pass --initialize_leanstore to initialize the database and the device");
+   }
+}
+// -------------------------------------------------------------------------------------
+void LeanStore::invalidateStateFile()
+{
+   std::ifstream json_file;
+   json_file.open(FLAGS_leanstore_state_file);
+   if (!json_file.is_open()) {
+      return;
+   }
+   rs::IStreamWrapper isw(json_file);
+   rs::Document d;
+   d.ParseStream(isw);
+   json_file.close();
+   // Keep the content around for debugging, only mark it as not recoverable.
+   if (d.HasParseError() || !d.IsObject()) {
+      d.SetObject();
+   }
+   if (d.HasMember("recoverable")) {
+      d["recoverable"].SetBool(false);
+   } else {
+      d.AddMember("recoverable", false, d.GetAllocator());
+   }
+   writeStateFile(d);
+   LOG_INFO(logger, "Marked %s as not recoverable", FLAGS_leanstore_state_file.c_str());
 }
 // -------------------------------------------------------------------------------------
 void LeanStore::serializeFlags(rs::Document& d)
@@ -313,7 +377,7 @@ void LeanStore::serializeFlags(rs::Document& d)
 void LeanStore::deserializeState()
 {
    std::ifstream json_file;
-   json_file.open(FLAGS_recover_file);
+   json_file.open(FLAGS_leanstore_state_file);
    rs::IStreamWrapper isw(json_file);
    rs::Document d;
    d.ParseStream(isw);
@@ -361,13 +425,13 @@ void LeanStore::deserializeState()
 void LeanStore::verifyPersistedSSDLayout()
 {
    std::ifstream json_file;
-   json_file.open(FLAGS_recover_file);
+   json_file.open(FLAGS_leanstore_state_file);
    rs::IStreamWrapper isw(json_file);
    rs::Document d;
    d.ParseStream(isw);
    // -------------------------------------------------------------------------------------
    if (!d.IsObject() || !d.HasMember("ssd_layout")) {
-      LOG_INFO(logger, "%s has no ssd_layout, cannot verify the SSD layout", FLAGS_recover_file.c_str());
+      LOG_INFO(logger, "%s has no ssd_layout, cannot verify the SSD layout", FLAGS_leanstore_state_file.c_str());
       return;
    }
    const rs::Value& layout = d["ssd_layout"];
@@ -378,7 +442,7 @@ void LeanStore::verifyPersistedSSDLayout()
    const storage::SSDLayout persisted = storage::SSDLayout::deserialize(serialized_layout_map);
    const std::string mismatch = ssd_layout.incompatibilityWith(persisted);
    if (!mismatch.empty()) {
-      LOG_ERROR(logger, "SSD layout mismatch with %s: %s", FLAGS_recover_file.c_str(), mismatch.c_str());
+      LOG_ERROR(logger, "SSD layout mismatch with %s: %s", FLAGS_leanstore_state_file.c_str(), mismatch.c_str());
       SetupFailed("SSD layout differs from the persisted one (" + mismatch + "), load and run must use the same layout flags ");
    }
 }
@@ -386,7 +450,7 @@ void LeanStore::verifyPersistedSSDLayout()
 void LeanStore::deserializeFlags()
 {
    std::ifstream json_file;
-   json_file.open(FLAGS_recover_file);
+   json_file.open(FLAGS_leanstore_state_file);
    rs::IStreamWrapper isw(json_file);
    rs::Document d;
    d.ParseStream(isw);
@@ -497,8 +561,9 @@ LeanStore::~LeanStore()
    LOG_INFO(logger, "Shutting down...");
    if (FLAGS_persist) {
       buffer_manager->stopWriterThreads();
-      serializeState();
       buffer_manager->writeAllBufferFrames();
+      // Last, the state file is only marked recoverable once everything is on the device.
+      serializeState();
    } else {
       buffer_manager->stopBackgroundThreads();
    }

@@ -15,5 +15,5 @@
 --nowal_tuple_rfa
 --wal_sink_logs=32
 
---clean_recover
+--skip_wal_recovery
 --nolog_same_namespace

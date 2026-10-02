@@ -136,7 +136,7 @@ int main(int argc, char** argv)
                                        FLAGS_order_wdc_index, FLAGS_tpcc_warehouse_count, FLAGS_tpcc_remove,
                                        should_tpcc_driver_handle_isolation_anomalies, FLAGS_tpcc_warehouse_affinity);
    // -------------------------------------------------------------------------------------
-   if (!FLAGS_recover) {
+   if (FLAGS_initialize_leanstore) {
       cout << "Loading TPC-C" << endl;
       crm.scheduleJobSync(0, [&]() {
          cr::Worker::my().startTX(leanstore::TX_MODE::INSTANTLY_VISIBLE_BULK_INSERT);

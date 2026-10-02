@@ -107,7 +107,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          if (max_pending_lsn > 1) {
             per_pp_allocator = std::make_unique<CustomSlabAllocator<LID>[]>(FLAGS_pp_threads);
          }
-         if (FLAGS_recover) {
+         if (!FLAGS_initialize_leanstore) {
             // TODO(mfd) : Get all workers to reconstruct the discard state.
             // For now we just assume we recover from a clean state.
          }
@@ -153,7 +153,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       persistant_ru_state = reinterpret_cast<PersistantRUState*>(std::aligned_alloc(4096, aligned_size));
       ensure(persistant_ru_state != nullptr);
       new (persistant_ru_state) PersistantRUState(max_open_ru_epochs);
-      if (FLAGS_recover) {
+      if (!FLAGS_initialize_leanstore) {
          /// XXX(mfd) : We only support recovering from a load only workload, i.e. no RU epoch
          /// of any RUH has been discarded yet.
          persistant_ru_state->loadFromPersistantStorage(ssd_fd, persistant_ru_state_offset);
@@ -597,7 +597,7 @@ void BufferManager::reclaimPage(BufferFrame& bf)
 // Used for recovery. Only resolve meta node swip
 BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
 {
-   ensure(FLAGS_recover);
+   ensure(!FLAGS_initialize_leanstore);
    ensure(meta_swip.isEVICTED());
    ensure(!meta_swip.isDIRTY());
    PID meta_pid = meta_swip.asPageID();

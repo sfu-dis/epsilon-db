@@ -116,7 +116,7 @@ void RUEpochManager::initWriteCounters()
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       tot_page_written[ruh] = 0;
       last_seen[ruh].assign(bm.io_writer_threads_count, 0);
-      if (FLAGS_recover) {
+      if (!FLAGS_initialize_leanstore) {
          for (u32 io_handler = 0; io_handler < bm.io_writer_threads_count; ++io_handler) {
             last_seen[ruh][io_handler] = bm.writers_iostat[io_handler].io_counter[ruh].load();
             tot_page_written[ruh] += last_seen[ruh][io_handler];

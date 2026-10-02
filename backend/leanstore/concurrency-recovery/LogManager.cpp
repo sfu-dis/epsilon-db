@@ -48,7 +48,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
    LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size/1073741824.0);
    trim_enabled.store(FLAGS_log_discard_on_reclaim && FLAGS_wal_pwrite);
    // -------------------------------------------------------------------------------------
-   const bool recover_wal = FLAGS_recover && !FLAGS_clean_recover;
+   const bool recover_wal = !FLAGS_initialize_leanstore && !FLAGS_skip_wal_recovery;
    if (recover_wal) {
       s64 ret = pread(log_dev_fd, meta_block_buffer, meta_size, log_file_offset);
       ensure_equal(ret, s64(meta_size));

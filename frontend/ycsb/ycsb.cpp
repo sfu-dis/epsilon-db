@@ -119,7 +119,7 @@ int main(int argc, char** argv)
       return 0;
    }
    // -------------------------------------------------------------------------------------
-   if (FLAGS_recover) {
+   if (!FLAGS_initialize_leanstore) {
       // Warmup
       if (FLAGS_ycsb_warmup) {
          cout << "Warmup: Scanning..." << endl;
