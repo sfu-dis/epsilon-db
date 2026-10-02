@@ -35,7 +35,6 @@ void ConfigsTable::open()
    columns.emplace("c_target_gib", [&](Column& col) { col << FLAGS_target_gib; });
    columns.emplace("c_run_for_seconds", [&](Column& col) { col << FLAGS_run_for_seconds; });
    columns.emplace("c_bulk_insert", [&](Column& col) { col << FLAGS_bulk_insert; });
-   columns.emplace("c_nc_reallocation", [&](Column& col) { col << FLAGS_nc_reallocation; });
    // -------------------------------------------------------------------------------------
    columns.emplace("c_btree_prefix_compression", [&](Column& col) { col << FLAGS_btree_prefix_compression; });
    columns.emplace("c_btree_heads", [&](Column& col) { col << FLAGS_btree_heads; });

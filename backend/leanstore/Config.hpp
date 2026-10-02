@@ -50,7 +50,6 @@ DECLARE_bool(btree_print_tuples_count);
 DECLARE_bool(btree_prefix_compression);
 DECLARE_int64(btree_hints);
 DECLARE_bool(btree_heads);
-DECLARE_bool(nc_reallocation);
 DECLARE_bool(bulk_insert);
 DECLARE_bool(btree_split_alloc_right);
 // -------------------------------------------------------------------------------------

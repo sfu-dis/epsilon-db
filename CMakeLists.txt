@@ -51,17 +51,6 @@ include("${CMAKE_SOURCE_DIR}/libs/gflags.cmake")
 include("${CMAKE_SOURCE_DIR}/libs/tabluate.cmake")
 include("${CMAKE_SOURCE_DIR}/libs/rapidjson.cmake")
 include("${CMAKE_SOURCE_DIR}/libs/yaml-cpp.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/boost.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/rocksdb.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/googletest.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/benchmark.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/fastpfor.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/spdlog.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/tbb.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/psql.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/gdouble.cmake")
-#include("${CMAKE_SOURCE_DIR}/libs/turbo.cmake")
-#nclude("${CMAKE_SOURCE_DIR}/libs/lz4.cmake")
 
 # ---------------------------------------------------------------------------
 # Includes

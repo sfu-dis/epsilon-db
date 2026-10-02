@@ -134,8 +134,8 @@ bool RUEpochDiscardSet::shouldGC()
    } else {
       ok = per > FLAGS_ru_gc_threshold;
    }
-   if (ok || (++cnt % 1024) == 0) {
-      printf("\n ru_epoch = %ld tot = %d, invalid = %d, to_gc = %d => per %f %%\n", cur_ru_epoch, tot, i, d, per * 100);
+   if (ok || (++cnt[ruh] % 1024) == 0) {
+      printf("\n RUH = %u ru_epoch = %ld tot = %d, invalid = %d, to_gc = %d => per %f %%\n", ruh, cur_ru_epoch, tot, i, d, per * 100);
       const u32 c_none = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::NONE].load(std::memory_order_acquire);
       const u32 c_new = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::NEWLY_ALLOCATED].load(std::memory_order_acquire);
       const u32 c_ppl = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::PPL_BUFFER_FULL].load(std::memory_order_acquire);
