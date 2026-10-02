@@ -61,11 +61,11 @@ struct LeanStoreAdapter : Adapter<Record> {
       }
    }
    // -------------------------------------------------------------------------------------
-   void insert(const typename Record::Key& key, const Record& record) final
+   void insert(const typename Record::Key& key, const Record& record, bool freeze = false) final
    {
       u8 folded_key[Record::maxFoldLength()];
       u16 folded_key_len = Record::foldKey(folded_key, key);
-      const OP_RESULT res = btree->insert(folded_key, folded_key_len, (u8*)(&record), sizeof(Record));
+      const OP_RESULT res = btree->insert(folded_key, folded_key_len, (u8*)(&record), sizeof(Record), freeze);
       ensure(res == leanstore::OP_RESULT::OK || res == leanstore::OP_RESULT::ABORT_TX);
       if (res == leanstore::OP_RESULT::ABORT_TX) {
          cr::Worker::my().abortTX();
@@ -87,7 +87,10 @@ struct LeanStoreAdapter : Adapter<Record> {
       ensure(res == leanstore::OP_RESULT::OK);
    }
    // -------------------------------------------------------------------------------------
-   void update1(const typename Record::Key& key, const std::function<void(Record&)>& cb, UpdateSameSizeInPlaceDescriptor& update_descriptor) final
+   void update1(const typename Record::Key& key,
+                const std::function<void(Record&)>& cb,
+                UpdateSameSizeInPlaceDescriptor& update_descriptor,
+                bool freeze = false) final
    {
       u8 folded_key[Record::maxFoldLength()];
       u16 folded_key_len = Record::foldKey(folded_key, key);
@@ -109,7 +112,7 @@ struct LeanStoreAdapter : Adapter<Record> {
              Record& typed_payload = *reinterpret_cast<Record*>(payload);
              cb(typed_payload);
           },
-          update_descriptor);
+          update_descriptor, freeze);
       ensure(res != leanstore::OP_RESULT::NOT_FOUND);
       if (res == leanstore::OP_RESULT::ABORT_TX) {
          cr::Worker::my().abortTX();

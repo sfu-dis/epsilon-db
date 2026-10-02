@@ -75,6 +75,7 @@ s16 BTreeNode::insertDoNotCopyPayload(const u8* key, u16 key_len, u16 payload_le
    slot[slotId].head = head(key, key_len);
    slot[slotId].key_len = key_len;
    slot[slotId].payload_len = payload_length;
+   slot[slotId].frozen = 0;
    const u16 space = key_len + payload_length;
    data_offset -= space;
    space_used += space;
@@ -200,6 +201,7 @@ void BTreeNode::storeKeyValue(u16 slotId, const u8* key, u16 key_len, const u8* 
    slot[slotId].head = head(key, key_len);
    slot[slotId].key_len = key_len;
    slot[slotId].payload_len = payload_len;
+   slot[slotId].frozen = 0;
    // Value
    const u16 space = key_len + payload_len;
    data_offset -= space;
@@ -252,6 +254,7 @@ void BTreeNode::copyKeyValue(u16 srcSlot, BTreeNode* dst, u16 dstSlot)
    u8 key[fullLength];
    copyFullKey(srcSlot, key);
    dst->storeKeyValue(dstSlot, key, fullLength, getPayload(srcSlot), getPayloadLength(srcSlot));
+   dst->slot[dstSlot].frozen = slot[srcSlot].frozen;
 }
 // -------------------------------------------------------------------------------------
 void BTreeNode::insertFence(BTreeNodeHeader::FenceKey& fk, u8* key, u16 keyLength)

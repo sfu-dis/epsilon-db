@@ -121,7 +121,7 @@ u32 RUEpochDiscardSet::ReclaimUnitUsage()
 // -------------------------------------------------------------------------------------
 bool RUEpochDiscardSet::shouldGC()
 {
-   static u64 cnt = 0;
+   static u64 cnt[MAX_RUHS] = {0};
    s32 d = inserted.load(std::memory_order_acquire) - deleted.load(std::memory_order_acquire);
    s32 i = invalid.load(std::memory_order_acquire);
    s32 tot = total.load(std::memory_order_acquire);

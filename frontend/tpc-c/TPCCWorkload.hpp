@@ -21,8 +21,15 @@ DEFINE_bool(tpcc_skip_neworder, false,
             "HACK: do not touch the neworder table during the run; delivery uses an in-memory per-district order cursor (requires warehouse affinity)");
 #define HISTORY 1
 #define TPCC_NEXT_OID_DEBUG 0
-#define ORDER_ORDERLINE_UPDATE 0
+#define ORDER_ORDERLINE_UPDATE 1
 #define ORDER_LINE 1
+// -------------------------------------------------------------------------------------
+// Frozen records: an insert or update passes freeze = true when the record will not be updated anymore
+// (used by the FrozenRecords FDP placement policy). history, item, order_wdc and customerwdl records are
+// frozen on insert. order and orderline records are frozen by the delivery update, or on insert when
+// delivery does not update them (!ORDER_ORDERLINE_UPDATE). The loaded orders that are already delivered
+// are frozen on insert. warehouse, district, customer, stock and neworder are never frozen.
+constexpr bool FREEZE_ORDER_ON_INSERT = !ORDER_ORDERLINE_UPDATE;
 // -------------------------------------------------------------------------------------
 template <template <typename> class AdapterType>
 class TPCCWorkload
@@ -229,10 +236,10 @@ class TPCCWorkload
       Numeric cnt = lineNumbers.size();
       Integer carrier_id = 0; /*null*/
       leanstore::WorkerCounters::myCounters().tpcc_order_insert++;
-      order.insert({w_id, d_id, o_id}, {c_id, timestamp, carrier_id, cnt, all_local});
+      order.insert({w_id, d_id, o_id}, {c_id, timestamp, carrier_id, cnt, all_local}, FREEZE_ORDER_ON_INSERT);
       if (order_wdc_index) {
          ensure(c_id <= 3000 && c_id > 0);
-         order_wdc.insert({w_id, d_id, c_id, o_id}, {});
+         order_wdc.insert({w_id, d_id, c_id, o_id}, {}, true);
       }
       if (FLAGS_tpcc_skip_neworder) {
          initNewOrderCursors(w_id);
@@ -317,7 +324,7 @@ class TPCCWorkload
 #if ORDER_LINE
          Numeric ol_amount = qty * i_price * (1.0 + w_tax + d_tax) * (1.0 - c_discount);
          Timestamp ol_delivery_d = 0;  // NULL
-         orderline.insert({w_id, d_id, o_id, lineNumber}, {itemid, supware, ol_delivery_d, qty, ol_amount, s_dist});
+         orderline.insert({w_id, d_id, o_id, lineNumber}, {itemid, supware, ol_delivery_d, qty, ol_amount, s_dist}, FREEZE_ORDER_ON_INSERT);
 #endif
          // TODO: i_data, s_data
       }
@@ -500,7 +507,7 @@ class TPCCWorkload
 #if ORDER_ORDERLINE_UPDATE
          UpdateDescriptorGenerator1(order_update_descriptor, order_t, o_carrier_id);
          order.update1(
-             {w_id, d_id, o_id}, [&](order_t& rec) { rec.o_carrier_id = carrier_id; }, order_update_descriptor);
+             {w_id, d_id, o_id}, [&](order_t& rec) { rec.o_carrier_id = carrier_id; }, order_update_descriptor, true);
 #endif
          // -------------------------------------------------------------------------------------
 #if ORDER_LINE
@@ -534,7 +541,7 @@ class TPCCWorkload
                    ol_total += rec.ol_amount;
                    rec.ol_delivery_d = datetime;
                 },
-                orderline_update_descriptor);
+                orderline_update_descriptor, true);
          }
 #else
          ol_total = 7;
@@ -868,7 +875,7 @@ class TPCCWorkload
       Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;
       Integer t_id = (Integer)leanstore::WorkerCounters::myCounters().t_id.load();
       Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
-      history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data});
+      history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data}, true);
 #endif
    }
    // -------------------------------------------------------------------------------------
@@ -994,7 +1001,7 @@ class TPCCWorkload
       Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;
       Integer t_id = Integer(leanstore::WorkerCounters::myCounters().t_id.load());
       Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
-      history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data});
+      history.insert({t_id, h_id}, {c_id, c_d_id, c_w_id, d_id, w_id, datetime, h_amount, h_new_data}, true);
 #endif
    }
    // -------------------------------------------------------------------------------------
@@ -1124,12 +1131,12 @@ class TPCCWorkload
                                                randomastring<2>(2, 2), randomzip(), randomnstring(16, 16), now, c_credit, 50000.00,
                                                randomNumeric(0.0000, 0.5000), -10.00, 1, 0, 0, randomastring<500>(300, 500)});
          if (!FLAGS_customer_only_by_id) {
-            customerwdl.insert({w_id, d_id, c_last, c_first}, {i + 1});
+            customerwdl.insert({w_id, d_id, c_last, c_first}, {i + 1}, true);
          }
 #if HISTORY
          Integer t_id = (Integer)leanstore::WorkerCounters::myCounters().t_id;
          Integer h_id = (Integer)leanstore::WorkerCounters::myCounters().variable_for_workload++;
-         history.insert({t_id, h_id}, {i + 1, d_id, w_id, d_id, w_id, now, 10.00, randomastring<24>(12, 24)});
+         history.insert({t_id, h_id}, {i + 1, d_id, w_id, d_id, w_id, now, 10.00, randomastring<24>(12, 24)}, true);
 #endif
       }
    }
@@ -1153,10 +1160,12 @@ class TPCCWorkload
       for (Integer o_c_id : c_ids) {
          Integer o_carrier_id = (o_id < x2100+1) ? rnd(10) + 1 : 0;
          Numeric o_ol_cnt = rnd(10) + 5;
-         order.insert({w_id, d_id, o_id}, {o_c_id, now, o_carrier_id, o_ol_cnt, 1});
+         // The oldest x2100 orders are already delivered
+         const bool freeze = FREEZE_ORDER_ON_INSERT || o_id < x2100 + 1;
+         order.insert({w_id, d_id, o_id}, {o_c_id, now, o_carrier_id, o_ol_cnt, 1}, freeze);
          if (order_wdc_index) {
             ensure(o_c_id <= 3000 && o_c_id > 0);
-            order_wdc.insert({w_id, d_id, o_c_id, o_id}, {});
+            order_wdc.insert({w_id, d_id, o_c_id, o_id}, {}, true);
          }
 #if ORDER_LINE
          for (Integer ol_number = 1; ol_number <= o_ol_cnt; ol_number++) {
@@ -1165,7 +1174,7 @@ class TPCCWorkload
                ol_delivery_d = now;
             Numeric ol_amount = (o_id < x2100+1) ? 0 : randomNumeric(0.01, 9999.99);
             const Integer ol_i_id = rnd(ITEMS_NO) + 1;
-            orderline.insert({w_id, d_id, o_id, ol_number}, {ol_i_id, w_id, ol_delivery_d, 5, ol_amount, randomastring<24>(24, 24)});
+            orderline.insert({w_id, d_id, o_id, ol_number}, {ol_i_id, w_id, ol_delivery_d, 5, ol_amount, randomastring<24>(24, 24)}, freeze);
          }
 #endif
          o_id++;
@@ -1182,7 +1191,7 @@ class TPCCWorkload
             i_data.length = rnd(i_data.length - 8);
             i_data = i_data || Varchar<10>("ORIGINAL");
          }
-         item.insert({i}, {randomId(1, 10000), randomastring<24>(14, 24), randomNumeric(1.00, 100.00), i_data});
+         item.insert({i}, {randomId(1, 10000), randomastring<24>(14, 24), randomNumeric(1.00, 100.00), i_data}, true);
       }
    }
    // -------------------------------------------------------------------------------------

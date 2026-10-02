@@ -29,16 +29,21 @@ class BTreeLL : public KVInterface, public BTreeGeneric
       u16 image_size;
       u8 payload[];
    };
+   // freeze steals the MSB of key_length to keep the log record size unchanged.
    struct WALInsert : WALEntry {
-      u16 key_length;
+      u16 key_length : 15;
+      u16 freeze : 1;
       u16 value_length;
       u8 payload[];
    };
    struct WALUpdate : WALEntry {
-      u16 key_length;
+      u16 key_length : 15;
+      u16 freeze : 1;
       u16 delta_length;
       u8 payload[];
    };
+   static_assert(sizeof(WALInsert) == sizeof(WALEntry) + 2 * sizeof(u16), "freeze must not grow the log records");
+   static_assert(sizeof(WALUpdate) == sizeof(WALEntry) + 2 * sizeof(u16), "freeze must not grow the log records");
    struct WALRemove : WALEntry {
       u16 key_length;
       u16 value_length;
@@ -48,11 +53,12 @@ class BTreeLL : public KVInterface, public BTreeGeneric
    BTreeLL() = default;
    // -------------------------------------------------------------------------------------
    virtual OP_RESULT lookup(u8* key, u16 key_length, function<void(const u8*, u16)> payload_callback) override;
-   virtual OP_RESULT insert(u8* key, u16 key_length, u8* value, u16 value_length) override;
+   virtual OP_RESULT insert(u8* key, u16 key_length, u8* value, u16 value_length, bool freeze = false) override;
    virtual OP_RESULT updateSameSizeInPlace(u8* key,
                                            u16 key_length,
                                            function<void(u8* value, u16 value_size)>,
-                                           UpdateSameSizeInPlaceDescriptor&) override;
+                                           UpdateSameSizeInPlaceDescriptor&,
+                                           bool freeze = false) override;
    virtual OP_RESULT remove(u8* key, u16 key_length) override;
    virtual OP_RESULT scanAsc(u8* start_key,
                              u16 key_length,

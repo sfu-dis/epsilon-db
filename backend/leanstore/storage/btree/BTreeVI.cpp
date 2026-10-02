@@ -233,7 +233,8 @@ OP_RESULT BTreeVI::executeDeterministricUpdate(u8* o_key,
 OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
                                          u16 o_key_length,
                                          function<void(u8* value, u16 value_size)> callback,
-                                         UpdateSameSizeInPlaceDescriptor& update_descriptor)
+                                         UpdateSameSizeInPlaceDescriptor& update_descriptor,
+                                         bool freeze)
 {
    cr::activeTX().markAsWrite();
    if (cr::LogManager::global->isPartitionedByWorker()) {
@@ -277,6 +278,9 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
          reinterpret_cast<Tuple*>(iterator.mutableValue().data())->unlock();
          // Attention: tuple pointer is not valid here
          // -------------------------------------------------------------------------------------
+         if (res && freeze) {
+            iterator.leaf->freeze(iterator.cur);
+         }
          iterator.markAsDirty();
          // -------------------------------------------------------------------------------------
          if (!res) {
@@ -383,6 +387,9 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
       tuple_head.command_id = command_id;
       // -------------------------------------------------------------------------------------
       tuple_head.unlock();
+      if (freeze) {
+         iterator.leaf->freeze(iterator.cur);
+      }
       iterator.markAsDirty();
       // -------------------------------------------------------------------------------------
       jumpmu_return OP_RESULT::OK;
@@ -392,7 +399,7 @@ OP_RESULT BTreeVI::updateSameSizeInPlace(u8* o_key,
    return OP_RESULT::OTHER;
 }
 // -------------------------------------------------------------------------------------
-OP_RESULT BTreeVI::insert(u8* o_key, u16 o_key_length, u8* value, u16 value_length)
+OP_RESULT BTreeVI::insert(u8* o_key, u16 o_key_length, u8* value, u16 value_length, bool freeze)
 {
    cr::activeTX().markAsWrite();
 
@@ -437,6 +444,9 @@ OP_RESULT BTreeVI::insert(u8* o_key, u16 o_key_length, u8* value, u16 value_leng
          // -------------------------------------------------------------------------------------
          if (cr::activeTX().current_tx_mode == TX_MODE::INSTANTLY_VISIBLE_BULK_INSERT) {
             primary_version.tx_ts = MSB | 0;
+         }
+         if (freeze) {
+            iterator.leaf->freeze(iterator.cur);
          }
          // -------------------------------------------------------------------------------------
          iterator.markAsDirty();

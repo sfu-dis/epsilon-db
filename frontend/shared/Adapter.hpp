@@ -58,13 +58,15 @@ class Adapter
                          const std::function<bool(const typename Record::Key&, const Record&)>& found_record_cb,
                          std::function<void()> reset_if_scan_failed_cb) = 0;
    // -------------------------------------------------------------------------------------
-   virtual void insert(const typename Record::Key& key, const Record& record) = 0;
+   // freeze: the record will not be updated anymore after this operation (see leanstore::KVInterface).
+   virtual void insert(const typename Record::Key& key, const Record& record, bool freeze = false) = 0;
    // -------------------------------------------------------------------------------------
    virtual void lookup1(const typename Record::Key& key, const std::function<void(const Record&)>& callback) = 0;
    // -------------------------------------------------------------------------------------
    virtual void update1(const typename Record::Key& key,
                         const std::function<void(Record&)>& update_the_record_in_place_cb,
-                        leanstore::UpdateSameSizeInPlaceDescriptor& update_descriptor) = 0;
+                        leanstore::UpdateSameSizeInPlaceDescriptor& update_descriptor,
+                        bool freeze = false) = 0;
    // -------------------------------------------------------------------------------------
    // Returns false if the record was not found
    virtual bool erase(const typename Record::Key& key) = 0;

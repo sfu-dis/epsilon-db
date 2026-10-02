@@ -4,6 +4,7 @@
 #include "placement-policies/DefaultPlacementPolicy.hpp"
 #include "placement-policies/FreezeNewlyAllocatedPlacementPolicy.hpp"
 #include "placement-policies/FreezeTablesPlacementPolicy.hpp"
+#include "placement-policies/FrozenRecordsPlacementPolicy.hpp"
 #include "placement-policies/HardcodedTPCCPlacementPolicy.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
@@ -75,6 +76,8 @@ std::unique_ptr<PlacementPolicy::Impl> makeImpl()
       return std::make_unique<PolicyAdapter<FreezeTablesPlacementPolicy>>();
    } else if (FLAGS_fdp_placement_policy == "HardcodedTPCC") {
       return std::make_unique<PolicyAdapter<HardcodedTPCCPlacementPolicy>>();
+   } else if (FLAGS_fdp_placement_policy == "FrozenRecords") {
+      return std::make_unique<PolicyAdapter<FrozenRecordsPlacementPolicy>>();
    } else {
       throw std::invalid_argument("FLAGS_fdp_placememt_policy");
    }

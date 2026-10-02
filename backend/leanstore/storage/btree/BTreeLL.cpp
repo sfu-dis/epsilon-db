@@ -148,7 +148,7 @@ OP_RESULT BTreeLL::scanDesc(u8* start_key, u16 key_length, std::function<bool(co
    return OP_RESULT::OTHER;
 }
 // -------------------------------------------------------------------------------------
-OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_length)
+OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_length, bool freeze)
 {
    cr::activeTX().markAsWrite();
    const Slice key(o_key, o_key_length);
@@ -158,6 +158,9 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
       BTreeExclusiveIterator iterator(*static_cast<BTreeGeneric*>(this));
       OP_RESULT ret = iterator.insertKV(key, value);
       ensure_equal(ret, OP_RESULT::OK);
+      if (freeze) {
+         iterator.leaf->freeze(iterator.cur);
+      }
 
       if (config.enable_wal) {
          const u16 payload_size = key.length() + value.length();
@@ -166,6 +169,7 @@ OP_RESULT BTreeLL::insert(u8* o_key, u16 o_key_length, u8* o_value, u16 o_value_
             wal_entry.type = WAL_LOG_TYPE::WALInsert;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
             wal_entry.key_length = key.length();
+            wal_entry.freeze = freeze;
             wal_entry.value_length = value.length();
             std::memcpy(wal_entry.payload, key.data(), key.length());
             std::memcpy(wal_entry.payload + key.length(), value.data(), value.length());
@@ -380,7 +384,8 @@ OP_RESULT BTreeLL::append(std::function<void(u8*)> o_key,
 OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
                                          u16 o_key_length,
                                          function<void(u8* payload, u16 payload_size)> callback,
-                                         UpdateSameSizeInPlaceDescriptor& update_descriptor)
+                                         UpdateSameSizeInPlaceDescriptor& update_descriptor,
+                                         bool freeze)
 {
    cr::activeTX().markAsWrite();
    Slice key(o_key, o_key_length);
@@ -392,6 +397,9 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
          jumpmu_return ret;
       }
       auto current_value = iterator.mutableValue();
+      if (freeze) {
+         iterator.leaf->freeze(iterator.cur);
+      }
       if (config.enable_wal) {
          assert(update_descriptor.count > 0);  // if it is a secondary index, then we can not use updateSameSize
          // -------------------------------------------------------------------------------------
@@ -404,6 +412,7 @@ OP_RESULT BTreeLL::updateSameSizeInPlace(u8* o_key,
             wal_entry.type = WAL_LOG_TYPE::WALUpdate;
             wal_entry.magic_debugging_number = WAL_BTREE_MAGIC;
             wal_entry.key_length = key.length();
+            wal_entry.freeze = freeze;
             wal_entry.delta_length = delta_length;
             u8* wal_ptr = wal_entry.payload;
             std::memcpy(wal_ptr, key.data(), key.length());
@@ -642,6 +651,9 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
             auto update_descriptor = reinterpret_cast<const UpdateSameSizeInPlaceDescriptor*>(update_entry->payload + key_length);
             BTreeLL::applyXORDiff(*update_descriptor, node->getPayload(pos),
                                    update_entry->payload + update_entry->key_length + update_descriptor->size());
+            if (update_entry->freeze) {
+               node->freeze(pos);
+            }
             offset += (sizeof(WALUpdate) + update_entry->key_length + update_entry->delta_length);
             break;
          }
@@ -649,7 +661,10 @@ void BTreeLL::redo(void *btree_node_ptr, const u8* log_record_ptr, const u8 nb_l
             const WALInsert *insert_entry = reinterpret_cast<const WALInsert*>(wal_entry);
             const u8* key = insert_entry->payload;
             const u8* value = key + insert_entry->key_length;
-            node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
+            const s32 pos = node->insert(key, insert_entry->key_length, value, insert_entry->value_length);
+            if (insert_entry->freeze) {
+               node->freeze(pos);
+            }
             offset += (sizeof(WALInsert) + insert_entry->key_length + insert_entry->value_length);
             break;
          }

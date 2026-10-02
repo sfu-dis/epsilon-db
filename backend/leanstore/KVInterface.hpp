@@ -44,11 +44,15 @@ class KVInterface
 {
   public:
    virtual OP_RESULT lookup(u8* key, u16 key_length, std::function<void(const u8*, u16)> payload_callback) = 0;
-   virtual OP_RESULT insert(u8* key, u16 key_length, u8* value, u16 value_length) = 0;
+   // freeze: the caller promises that the record will not be updated anymore after this operation.
+   // How to handle the case where a frozen record is later updated is not handled.
+   // It is guarenteed not to happen in the current benchmark drivers.
+   virtual OP_RESULT insert(u8* key, u16 key_length, u8* value, u16 value_length, bool freeze = false) = 0;
    virtual OP_RESULT updateSameSizeInPlace(u8* key,
                                            u16 key_length,
                                            std::function<void(u8* value, u16 value_size)>,
-                                           UpdateSameSizeInPlaceDescriptor&) = 0;
+                                           UpdateSameSizeInPlaceDescriptor&,
+                                           bool freeze = false) = 0;
    virtual OP_RESULT remove(u8* key, u16 key_length) = 0;
    virtual OP_RESULT scanAsc(u8* start_key,
                              u16 key_length,

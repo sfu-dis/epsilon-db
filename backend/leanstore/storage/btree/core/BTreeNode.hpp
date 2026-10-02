@@ -92,7 +92,10 @@ struct BTreeNode : public BTreeNodeHeader {
       // Layout:  key wihtout prefix | Payload
       u16 offset;
       u16 key_len;
-      u16 payload_len;
+      u16 payload_len : 15;
+      // Set when the record will not be updated anymore (see the freeze argument of the KVInterface), used by the
+      // FrozenRecords placement policy. It moves along with the slot on splits, merges and compactions.
+      u16 frozen : 1;
       union {
          HeadType head;
          u8 head_bytes[4];
@@ -103,6 +106,7 @@ struct BTreeNode : public BTreeNodeHeader {
    static constexpr u64 left_space_to_waste = (EFFECTIVE_PAGE_SIZE - sizeof(BTreeNodeHeader)) % (sizeof(Slot));
    Slot slot[max_theorical_slots_capacity];
    u8 padding[left_space_to_waste];
+   static_assert(EFFECTIVE_PAGE_SIZE < (1 << 15), "Slot::payload_len has only 15 bits");
 
    BTreeNode(bool is_leaf) : BTreeNodeHeader(is_leaf) {}
 
@@ -131,6 +135,23 @@ struct BTreeNode : public BTreeNodeHeader {
    inline u8* getPayload(u16 slotId) { return ptr() + slot[slotId].offset + slot[slotId].key_len; }
    inline SwipType& getChild(u16 slotId) { return *reinterpret_cast<SwipType*>(getPayload(slotId)); }
    inline u16 getKVConsumedSpace(u16 slot_id) { return sizeof(Slot) + getKeyLen(slot_id) + getPayloadLength(slot_id); }
+   // -------------------------------------------------------------------------------------
+   inline bool isFrozen(u16 slot_id) { return slot[slot_id].frozen; }
+   inline void freeze(u16 slot_id) { slot[slot_id].frozen = 1; }
+   // A non empty leaf whose records are all frozen.
+   bool allFrozen() const
+   {
+      ensure(count <= max_theorical_slots_capacity);
+      if (!is_leaf || count == 0 || count > max_theorical_slots_capacity) {
+         return false;
+      }
+      for (u16 i = 0; i < count; i++) {
+         if (!slot[i].frozen) {
+            return false;
+         }
+      }
+      return true;
+   }
    // -------------------------------------------------------------------------------------
    // Attention: the caller has to hold a copy of the existing payload
    inline void shortenPayload(u16 slotId, u16 len)
