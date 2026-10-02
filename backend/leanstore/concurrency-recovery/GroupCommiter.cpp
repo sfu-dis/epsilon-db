@@ -58,8 +58,15 @@ void CRManager::groupCommiter()
       }
    }
    // -------------------------------------------------------------------------------------
-   // To properly drain the log buffers, we make sure the group commiter threads exits after all worker.
-   while (keep_running || running_threads > 1) {
+   // To properly drain the log buffers, the group committer runs one last round after all workers exited.
+   bool last_round = false;
+   while (!last_round) {
+      last_round = !gct_keep_running.load(std::memory_order_acquire);
+      if (last_round) {
+         ensure_equal(running_threads.load(), 1);
+         LOG_INFO(logger, "Group committer last round (round %lu): all workers stopped, persisting pending log records", round_i);
+         gctCollectAllFilledHoles();
+      }
       log_manager->io_slot = 0;
       CRCounters::myCounters().gct_rounds++;
       COUNTERS_BLOCK(gct_phases) { phase_1_begin = std::chrono::high_resolution_clock::now(); }
@@ -156,6 +163,9 @@ void CRManager::groupCommiter()
       if (min_all_active_logs_gsn == std::numeric_limits<LID>::max()) {
          ensure_equal(log_manager->io_slot, 0);
          // no new log records in any log
+         if (last_round) {
+            LOG_INFO(logger, "Group committer last round: no new log records to persist");
+         }
          continue;
       }
       // -------------------------------------------------------------------------------------
@@ -167,6 +177,9 @@ void CRManager::groupCommiter()
       }
       // -------------------------------------------------------------------------------------
       // Flush
+      if (last_round) {
+         LOG_INFO(logger, "Group committer last round: submitting %lu log writes", u64(log_manager->io_slot));
+      }
       log_manager->submitAndWait();
       // -------------------------------------------------------------------------------------
       COUNTERS_BLOCK(gct_phases)
@@ -255,12 +268,68 @@ void CRManager::groupCommiter()
       Logging::global_sync_to_this_gsn.store(max_all_logs_gsn, std::memory_order_release);
       log_manager->meta->min_all_workers_gsn = min_all_workers_gsn;
       log_manager->persistMetaBlock();
+      if (last_round) {
+         LOG_INFO(logger, "Group committer last round: committed %lu transactions, min durable gsn = %lu, max all logs gsn = %lu", committed_tx,
+                  min_durable_gsn, max_all_logs_gsn);
+      }
       // -------------------------------------------------------------------------------------
       prev_min_all_workers_gsn = min_all_workers_gsn;
       round_i++;
    }
+   gctVerifyLogBuffersAreEmpty();
+   LOG_INFO(logger, "Group committer exiting after %lu rounds", round_i);
    running_threads--;
    ensure_equal(running_threads.load(), 0);
+}
+// -------------------------------------------------------------------------------------
+// Workers publish the log buffer offset to the GCT lazily (opportunisticCollectHoles), so
+// the last records of a stopped worker may sit in already filled holes. Publish them.
+void CRManager::gctCollectAllFilledHoles()
+{
+   for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
+      Logging& logging = log_manager->all_logs[log_i];
+      std::lock_guard guard(logging.mutex);
+      const u64 pending_holes = logging.holes.size();
+      logging.collect_filled_holes(false /* don't block */);
+      if (!logging.holes.empty()) {
+         LOG_ERROR(logger, "Log %u still has %lu unfilled holes after all workers stopped", log_i, u64(logging.holes.size()));
+         ensure(false);
+      }
+      if (pending_holes > 0) {
+         LOG_INFO(logger, "Log %u: published %lu filled holes, last gsn = %lu, written offset = %lu", log_i, pending_holes,
+                  logging.wt_to_lw.getNoSync().last_gsn, logging.wt_to_lw.getNoSync().wal_written_offset);
+      }
+   }
+}
+// -------------------------------------------------------------------------------------
+void CRManager::gctVerifyLogBuffersAreEmpty()
+{
+   LOG_INFO(logger, "Verifying that all %u log buffers are empty", log_manager->log_count);
+   u32 failed_logs = 0;
+   for (u32 log_i = 0; log_i < log_manager->log_count; log_i++) {
+      Logging& logging = log_manager->all_logs[log_i];
+      std::lock_guard guard(logging.mutex);
+      const auto wt2gct = logging.wt_to_lw.getSync();
+      const u64 gct_cursor = logging.wal_gct_cursor.load(std::memory_order_acquire);
+      const LID hardened_gsn = logging.hardened_gsn.load(std::memory_order_acquire);
+      const bool empty = logging.holes.empty() && wt2gct.wal_written_offset == logging.wal_log_cursor && gct_cursor == logging.wal_log_cursor &&
+                         hardened_gsn == wt2gct.last_gsn;
+      if (!empty) {
+         LOG_ERROR(logger,
+                   "Log %u%s is not empty: holes = %lu, log cursor = %lu, published offset = %lu, gct cursor = %lu, last gsn = %lu, hardened gsn = %lu",
+                   log_i, logging.is_sink_log ? " (sink)" : "", u64(logging.holes.size()), logging.wal_log_cursor, wt2gct.wal_written_offset,
+                   gct_cursor, wt2gct.last_gsn, hardened_gsn);
+         ++failed_logs;
+      } else if (gct_cursor != 0 || hardened_gsn != 0) {
+         LOG_DEBUG(logger, "Log %u%s is empty: cursor = %lu, hardened gsn = %lu", log_i, logging.is_sink_log ? " (sink)" : "", gct_cursor,
+                   hardened_gsn);
+      }
+   }
+   if (failed_logs > 0) {
+      LOG_ERROR(logger, "%u log buffers still have unpersisted log records at shutdown", failed_logs);
+      ensure(false);
+   }
+   LOG_INFO(logger, "All %u log buffers are empty", log_manager->log_count);
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr

@@ -571,13 +571,19 @@ LeanStore::~LeanStore()
    }
    // -------------------------------------------------------------------------------------
    LOG_INFO(logger, "Shutting down...");
+   // No new log records after this point.
+   cr_manager->stopWorkerThreads();
+   // The RU background page fixers wait for the group committer to persist the log buffers,
+   // so the group committer is only stopped after the buffer manager writer threads.
    if (FLAGS_persist) {
       buffer_manager->stopWriterThreads();
+      cr_manager->stopGroupCommitter();
       buffer_manager->writeAllBufferFrames();
       // Last, the state file is only marked recoverable once everything is on the device.
       serializeState();
    } else {
       buffer_manager->stopBackgroundThreads();
+      cr_manager->stopGroupCommitter();
    }
    buffer_manager->waitForAllBackgroundThreads();
    close(ssd_fd);

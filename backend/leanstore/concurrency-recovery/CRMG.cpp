@@ -4,7 +4,9 @@
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
+#include <chrono>
 #include <mutex>
+#include <thread>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -19,6 +21,7 @@ CRManager::CRManager(HistoryTreeInterface& versions_space, s32 ssd_fd, s32 log_d
     : ssd_fd(ssd_fd), log_dev_fd(log_dev_fd), log_start_offset(log_start_offset),
       log_size(log_size), versions_space(versions_space)
 {
+   logger = std::make_unique<utils::Logger>("cr_manager_journal.txt");
    workers_count = FLAGS_worker_threads;
    ensure(workers_count < MAX_WORKER_THREADS);
    // -------------------------------------------------------------------------------------
@@ -160,17 +163,82 @@ void CRManager::deserialize(std::unordered_map<std::string, std::string> map)
    Worker::global_all_lwm = std::stol(map["global_logical_clock"]);
 }
 // -------------------------------------------------------------------------------------
+void CRManager::stopWorkerThreads()
+{
+   if (workers_stopped) {
+      LOG_DEBUG(logger, "Worker threads already stopped, nothing to do");
+      return;
+   }
+   LOG_INFO(logger, "Stopping %u worker threads (running threads incl. group committer: %lu)", workers_count, running_threads.load());
+   keep_running.store(false, std::memory_order_release);
+   // Grab each worker mutex before notifying so that a worker that is about to
+   // wait on its cv cannot miss the wakeup.
+   for (u64 t_i = 0; t_i < workers_count; t_i++) {
+      auto& meta = worker_threads_meta[t_i];
+      {
+         std::lock_guard guard(meta.mutex);
+      }
+      meta.cv.notify_all();
+   }
+   LOG_INFO(logger, "Notified all worker threads, waiting for them to exit");
+   // The group committer is still running and counted in running_threads.
+   const u64 gct_threads = (FLAGS_wal && !gct_stopped) ? 1 : 0;
+   auto last_report = std::chrono::steady_clock::now();
+   while (running_threads > gct_threads) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+      if (std::chrono::steady_clock::now() - last_report >= std::chrono::seconds(1)) {
+         last_report = std::chrono::steady_clock::now();
+         LOG_WARN(logger, "Still waiting for %lu worker threads to finish their current job", running_threads.load() - gct_threads);
+      }
+   }
+   workers_stopped = true;
+   LOG_INFO(logger, "All %u worker threads stopped", workers_count);
+}
+// -------------------------------------------------------------------------------------
+void CRManager::stopGroupCommitter()
+{
+   if (!FLAGS_wal) {
+      LOG_INFO(logger, "WAL is disabled, no group committer thread to stop");
+      gct_stopped = true;
+      return;
+   }
+   if (gct_stopped) {
+      LOG_DEBUG(logger, "Group committer thread already stopped, nothing to do");
+      return;
+   }
+   // The last group commit round must see all the log records, so no worker can be running.
+   ensure(workers_stopped);
+   ensure_equal(running_threads.load(), 1);
+   LOG_INFO(logger, "Stopping the group committer thread, it will run one last round to persist pending log records");
+   gct_keep_running.store(false, std::memory_order_release);
+   // The group committer logs its last round, do not interleave logs with it.
+   while (running_threads) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+   }
+   gct_stopped = true;
+   LOG_INFO(logger, "Group committer thread stopped, durable GSN = %lu", Logging::global_min_gsn_flushed.load());
+}
+// -------------------------------------------------------------------------------------
+void CRManager::stopAllThreads()
+{
+   LOG_INFO(logger, "Stopping all CRManager threads");
+   stopWorkerThreads();
+   stopGroupCommitter();
+   ensure_equal(running_threads.load(), 0);
+   LOG_INFO(logger, "All CRManager threads stopped");
+}
+// -------------------------------------------------------------------------------------
 CRManager::~CRManager()
 {
-   keep_running = false;
-   for (u64 t_i = 0; t_i < workers_count; t_i++) {
-      worker_threads_meta[t_i].cv.notify_one();
+   if (!workers_stopped || !gct_stopped) {
+      LOG_WARN(logger, "CRManager destroyed before its threads were stopped, stopping them now");
+      stopAllThreads();
    }
-   while (running_threads) {
-   }
+   // The group committer reads the workers, they can only be freed once it exited.
    for (u64 t_i = 0; t_i < workers_count; t_i++) {
       delete workers[t_i];
    }
+   LOG_INFO(logger, "Deleted %u workers, CRManager destroyed", workers_count);
 }
 // -------------------------------------------------------------------------------------
 }  // namespace cr

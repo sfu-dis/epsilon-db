@@ -6,6 +6,7 @@
 #include "LogManager.hpp"
 #include "Worker.hpp"
 #include "leanstore/Config.hpp"
+#include "leanstore/utils/Logger.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <atomic>
@@ -31,7 +32,8 @@ class CRManager
    Worker* workers[MAX_WORKER_THREADS];
    // -------------------------------------------------------------------------------------
    std::atomic<u64> running_threads = 0;
-   std::atomic<bool> keep_running = true;
+   std::atomic<bool> keep_running = true;      // Worker threads
+   std::atomic<bool> gct_keep_running = true;  // Group committer thread, stopped after all workers
    // -------------------------------------------------------------------------------------
    struct WorkerThread {
       std::mutex mutex;
@@ -52,6 +54,8 @@ class CRManager
    HistoryTreeInterface& versions_space;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<cr::LogManager> log_manager;
+   // -------------------------------------------------------------------------------------
+   std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------
    CRManager(HistoryTreeInterface&, s32 ssd_fd, s32 log_dev_fd, u64 log_start_offset, u64 log_size);
    ~CRManager();
@@ -91,6 +95,21 @@ class CRManager
     *
     */
    void joinAll();
+   /**
+    * @brief Stops all worker threads, the group committer keeps running.
+    * Idempotent.
+    */
+   void stopWorkerThreads();
+   /**
+    * @brief Stops the group committer thread. It runs one last round after all
+    * workers stopped to persist any pending log records, then checks that all
+    * log buffers are empty. Must be called after stopWorkerThreads(). Idempotent.
+    */
+   void stopGroupCommitter();
+   /**
+    * @brief Stops the worker threads then the group committer thread.
+    */
+   void stopAllThreads();
    // -------------------------------------------------------------------------------------
    // State Serialization
    std::unordered_map<std::string, std::string> serialize();
@@ -100,6 +119,11 @@ class CRManager
    static std::atomic<u64> fsync_counter;
    // -------------------------------------------------------------------------------------
    void groupCommiter();
+   void gctCollectAllFilledHoles();
+   void gctVerifyLogBuffersAreEmpty();
+   // -------------------------------------------------------------------------------------
+   bool workers_stopped = false;
+   bool gct_stopped = false;
    // -------------------------------------------------------------------------------------
    /**
     * @brief Set the Job to specific worker.

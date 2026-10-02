@@ -1122,6 +1122,8 @@ void BufferManager::stopWriterThreads()
    while (pp_threads_counter) {
    }
    LOG_INFO(logger, "All page provider threads shutted down successfully.");
+   // The page fixers may be sleeping, waiting for RU epochs to collect.
+   ru_bg_page_fixer->wakeUpAll();
    while (ru_bg_page_fixer->runningThreads()) {
    }
    LOG_INFO(logger, "All background page fixer threads shutted down successfully.");
