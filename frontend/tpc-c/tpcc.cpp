@@ -106,9 +106,9 @@ int main(int argc, char** argv)
       district = LeanStoreAdapter<district_t>(db, "district");
       customer = LeanStoreAdapter<customer_t>(db, "customer");
       customerwdl = LeanStoreAdapter<customer_wdl_t>(db, "customerwdl");
-      history = LeanStoreAdapter<history_t>(db, "history");
-      neworder = LeanStoreAdapter<neworder_t>(db, "neworder");
-      order = LeanStoreAdapter<order_t>(db, "order");
+      history = LeanStoreAdapter<history_t>(db, "history", false);
+      neworder = LeanStoreAdapter<neworder_t>(db, "neworder", false);
+      order = LeanStoreAdapter<order_t>(db, "order", false);
       order_wdc = LeanStoreAdapter<order_wdc_t>(db, "order_wdc");
       item = LeanStoreAdapter<item_t>(db, "item");
       stock = LeanStoreAdapter<stock_t>(db, "stock");

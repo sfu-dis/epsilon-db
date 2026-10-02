@@ -83,10 +83,12 @@ blktrace=0
 # whether the device has FDP support or not, this is for samling the WAF.
 fdp=0
 enable_fdp=0
+fdp_placement=Default
 fdp_reformat=0
 fdp_nruh=0
 
 original_args=("$@")
+
 
 # TODO(mfd) : Add a usage() method and --help
 while [[ $# -gt 0 ]]; do
@@ -229,6 +231,10 @@ while [[ $# -gt 0 ]]; do
         --fdp)
            fdp=1
            shift 1
+           ;;
+        --fdp_placement)
+           fdp_placement="$2"
+           shift 2
            ;;
         --enable_fdp)
            enable_fdp=1
@@ -612,6 +618,8 @@ cp "$FLAGS_FILE" "$run_flags"
       cat "$TPCC_FLAGS_FILE"
    fi
 
+   echo "--fdp_placement_policy=${fdp_placement}"
+
 } > "${common_flags}"
 
 cat "${common_flags}" >> "${load_flags}"
@@ -629,7 +637,7 @@ cat "${common_flags}" >> "${run_flags}"
    # to avoid generating and shuffling the key array
    echo "--zipf_factor=0"
 
-   echo "--fdp_placement_policy=FreezeTables"
+   # echo "--fdp_placement_policy=${fdp_placement}"
 
 } >> "$load_flags"
 
@@ -639,7 +647,7 @@ cat "${common_flags}" >> "${run_flags}"
    echo "--run_for_seconds=${run_for_seconds}"
    echo "--wal_pwrite"
    echo "--bulk_insert"
-   echo "--fdp_placement_policy=FreezeNewlyAllocated"
+   # echo "--fdp_placement_policy=FreezeNewlyAllocated"
 
    ### Temporary
    ## echo "--log_same_device_fdp"
