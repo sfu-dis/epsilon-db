@@ -185,8 +185,18 @@ void LeanStore::startProfilingThread()
    // The profiling thread owns stdout from here on.
    utils::Logger::duplicate_to_stdout = false;
    std::thread profiling_thread([this]() { this->profilingThread(); });
-   bg_threads_counter++;
+   profiling_threads_counter++;
    profiling_thread.detach();
+}
+// -------------------------------------------------------------------------------------
+void LeanStore::shutdownProfilingThread()
+{
+   profiling_thread_keep_running = false;
+   while (profiling_threads_counter) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+   }
+   // The profiling thread no longer owns stdout.
+   utils::Logger::duplicate_to_stdout = true;
 }
 // -------------------------------------------------------------------------------------
 storage::btree::BTreeLL& LeanStore::registerBTreeLL(string name, storage::btree::BTreeGeneric::Config config)
@@ -535,6 +545,8 @@ void LeanStore::verifyFlags()
 // -------------------------------------------------------------------------------------
 LeanStore::~LeanStore()
 {
+   shutdownProfilingThread();
+   // -------------------------------------------------------------------------------------
    if (FLAGS_btree_print_height || FLAGS_btree_print_tuples_count) {
       cr_manager->joinAll();
       for (auto& iter : btrees_ll) {

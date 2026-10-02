@@ -34,8 +34,8 @@ class LeanStore
    unique_ptr<storage::BufferManager> buffer_manager;
    unique_ptr<cr::CRManager> cr_manager;
    // -------------------------------------------------------------------------------------
-   atomic<u64> bg_threads_counter = 0;
-   atomic<bool> bg_threads_keep_running = true;
+   atomic<u64> profiling_threads_counter = 0;
+   atomic<bool> profiling_thread_keep_running = true;
    profiling::ConfigsTable configs_table;
    u64 config_hash = 0;
    GlobalStats global_stats;
@@ -56,6 +56,7 @@ class LeanStore
    void invalidateStateFile();
    void writeStateFile(const rapidjson::Document& d);
    void profilingThread();
+   void shutdownProfilingThread();
    void verifyFlags();
 
   public:

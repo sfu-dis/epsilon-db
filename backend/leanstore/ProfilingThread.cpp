@@ -93,7 +93,7 @@ void LeanStore::profilingThread()
    RowType header = load_header_from_yaml(columns);
    RowType stats_row;
    stats_row.reserve(columns.size() + 1);
-   while (bg_threads_keep_running) {
+   while (profiling_thread_keep_running) {
       for (u64 t_i = 0; t_i < tables.size(); t_i++) {
          tables[t_i]->next();
          if (tables[t_i]->size() == 0)
@@ -179,7 +179,7 @@ void LeanStore::profilingThread()
       seconds += 1;
       std::locale::global(std::locale::classic());
    }
-   bg_threads_counter--;
+   profiling_threads_counter--;
 }
 // -------------------------------------------------------------------------------------
 }  // namespace leanstore
