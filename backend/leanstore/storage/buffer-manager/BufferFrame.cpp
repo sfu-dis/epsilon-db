@@ -124,7 +124,7 @@ void BufferFrame::Header::dump()
    if (pending_lsn_count > 0) {
       cout << " pending_lsn: ";
       for (u8 i = 0; i < pending_lsn_count; i++) {
-         cout << pending_lsn[i] << " ";
+         cout << lsnToString(pending_lsn[i]) << " ";
       }
       cout << "\n";
    }
@@ -142,8 +142,7 @@ void BufferFrame::Page::dump()
         << "  magic_debugging_number: " << magic_debugging_number << "\n"
         << "  prev_ru_epoch: " << prev_ru_epoch << "\n"
         << "  ru_epoch: " << ru_epoch << "\n"
-        << "  last_written_lsn: " << last_written_lsn << "\n"
-        << "  belonging to log : " << cr::LogManager::global->LSN2LogID(last_written_lsn) << "\n"
+        << "  last_written_lsn: " << lsnToString(last_written_lsn) << "\n"
         << "  write back count: " << write_back_count << "\n"
         << "  bg page fixed count: " << bg_page_fixed_count << "\n";
 }

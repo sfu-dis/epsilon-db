@@ -40,7 +40,8 @@ struct PageState {
    static constexpr u64 log_id_shift = nb_log_records_shift - max_log_id_bits;
    static constexpr u64 log_id_mask = max_log_id << log_id_shift;
    // static constexpr u64 lsn_mask = (u64(1) << nb_log_records_shift) - 1;
-   static constexpr u64 lsn_mask = (u64(1) <<log_id_shift) - 1;
+   static constexpr u64 lsn_mask = (u64(1) << log_id_shift) - 1;
+   static constexpr u64 lsn_array_ptr_mask = lsn_mask;
    static_assert(latch_bit == 0x8000000000000000, "");
    static_assert(state_mask == 0x6000000000000000, "");
    static_assert(latch_mask == 0x7FFFFFFFFFFFFFFF, "");
@@ -49,8 +50,14 @@ struct PageState {
    static_assert(state_clean_mask == 0x4000000000000000, "");
    static_assert(state_hot_mask == 0x6000000000000000, "");
    static_assert(max_log_id == 0x3FF);
-   static_assert(log_id_mask == 0x003FF000000000000);
+   static_assert(log_id_mask == 0x03FF000000000000);
    static_assert(lsn_mask == 0x0000FFFFFFFFFFFF, "");
+   static_assert((lsn_mask & log_id_mask) == 0, "");
+   // A single LSN (log_id + offset) is stored as is in the log_id and lsn fields.
+   static constexpr u64 full_lsn_mask = log_id_mask | lsn_mask;
+   static_assert(log_id_shift == LSN_OFFSET_BITS, "");
+   static_assert(max_log_id_bits == LSN_LOG_ID_BITS, "");
+   static_assert(full_lsn_mask == LSN_MASK, "");
 
    atomic<u64> raw;
 
@@ -87,9 +94,14 @@ struct PageState {
       }
       ensure(isHot());
       ensure_lt(log_id, max_log_id);
+      // IMPORTANT(mfd) : Whether the page state holds one LSN or a pointer to the LSN array
+      // the log_id will be stored in the 10 bits immediately after the lowest 48 bits.
+      // If we will just store a single LSN we store just the offset in the lowest 48 bits.
+      // This way we can directly interpret the lowest 58-bits as an LSN directly.
       u64 new_value = state_discarded_mask | (pending_lsn_count << nb_log_records_shift) | (log_id << log_id_shift);
       if (pending_lsn_count == 1) {
-         new_value |= pending_lsn[0];
+         ensure_equal(lsnLogID(pending_lsn[0]), log_id);
+         new_value |= lsnOffset(pending_lsn[0]);
       } else {
          new_value |= reinterpret_cast<u64>(pending_lsn);
       }
@@ -107,10 +119,10 @@ struct PageState {
       return (raw.load(std::memory_order_acquire) & log_id_mask) >> log_id_shift;
    }
    void unlockClean(LID lsn, u64 log_id) {
-      ensure(lsn != INVALID_LSN);
-      ensure((lsn & ~lsn_mask) == 0);
+      ensure(isRegularLSN(lsn));
+      ensure_equal(lsnLogID(lsn), log_id);
       ensure_lt(log_id, max_log_id);
-      raw.store(lsn | state_clean_mask | (log_id << log_id_shift), std::memory_order_release);
+      raw.store(lsn | state_clean_mask, std::memory_order_release);
    }
    void unlockBF(BufferFrame* bf)
    {
@@ -123,7 +135,7 @@ struct PageState {
       raw.store(unlocked, std::memory_order_release);
    }
    void free() { raw.store(0, std::memory_order_release); }
-   LID asLSN() { return raw.load(std::memory_order_acquire) & lsn_mask; }
+   LID asLSN() { return raw.load(std::memory_order_acquire) & full_lsn_mask; }
    // BufferFrame& asBufferFrame() { return *reinterpret_cast<BufferFrame*>(raw); }
    // -------------------------------------------------------------------------------------
    static std::string to_string(PAGE_STATE s);

@@ -36,7 +36,8 @@ struct meta_block {
 struct LogManager {
    static constexpr u64 LOG_DEV_BLK_SIZE = 4096;
    static constexpr u32 SINK_LOG_ID = 0;
-   static constexpr LID NON_PERSISTED_LSN = 0x55555555;
+   static constexpr LID NON_PERSISTED_LSN = LID(-3);
+   static_assert(!isRegularLSN(NON_PERSISTED_LSN));
    static LogManager* global;
    Logging* all_logs;
    const u32 log_count;
@@ -75,6 +76,8 @@ struct LogManager {
    static u32 getLogID(ru_epoch_t ru_epoch);
    static Logging& getLog(ru_epoch_t ru_epoch);
    u32 LSN2LogID(LID lsn);
+   // Absolute offset of the log record on the log device.
+   u64 LSN2DevOffset(LID lsn);
    bool isSinkLog(u32 log_id) { return log_id < FLAGS_wal_sink_logs; }
 
    void resetLogSegment(s64 ru_epoch);

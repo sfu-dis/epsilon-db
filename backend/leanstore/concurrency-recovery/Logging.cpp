@@ -85,7 +85,7 @@ WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
    active_mt_entry->type = type;
-   active_mt_entry->lsn.store(this->log_segment_start + wal_lsn_counter, std::memory_order_release);
+   active_mt_entry->lsn.store(makeLSN(log_id, wal_lsn_counter), std::memory_order_release);
    wal_lsn_counter += sizeof(WALMetaEntry);
    active_mt_entry->size = sizeof(WALMetaEntry);
    return *active_mt_entry;

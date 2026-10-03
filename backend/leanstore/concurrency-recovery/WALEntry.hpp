@@ -35,8 +35,8 @@ struct WALEntry {
       if (type == TYPE::SKIP) return;
       std::cout << "  size = " << size << std::endl;
       std::cout << "  magic_debugging_number = " << magic_debugging_number << std::endl;
-      std::cout << "  lsn = " << lsn.load() << std::endl;
-      std::cout << "  prev lsn = " << prev_lsn << std::endl;
+      std::cout << "  lsn = " << lsnToString(lsn.load()) << std::endl;
+      std::cout << "  prev lsn = " << lsnToString(prev_lsn) << std::endl;
    }
 
 private:

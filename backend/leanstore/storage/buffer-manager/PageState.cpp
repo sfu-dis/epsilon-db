@@ -35,8 +35,9 @@ retry:
 std::pair<u64, u8> PageState::getLocked()
 {
    u64 v1 = lock();
-   LID lsn = v1 & lsn_mask;
    u8 nb_log_records = (v1 & nb_log_records_mask) >> nb_log_records_shift;
+   // With more than one log record, the lsn field holds a pointer to the LSN array.
+   LID lsn = (nb_log_records > 1) ? (v1 & lsn_array_ptr_mask) : (v1 & full_lsn_mask);
    return {lsn, nb_log_records};
 }
 // -------------------------------------------------------------------------------------
@@ -63,14 +64,18 @@ void PageState::dump()
 
    u64 v = raw.load(std::memory_order_acquire);
 
-   LID lsn = v & lsn_mask;
    u8 nb_log_records = (v & nb_log_records_mask) >> nb_log_records_shift;
+   LID lsn = (nb_log_records > 1) ? (v & lsn_array_ptr_mask) : (v & full_lsn_mask);
 
    std::cout << "PAGE state dump:\n";
    std::cout << "  state           = " << to_string(state) << "\n";
    std::cout << "  locked          = " << (locked ? "true" : "false") << "\n";
    std::cout << "  raw             = 0x" << std::hex << v << std::dec << "\n";
-   std::cout << "  lsn             = " << lsn << "\n";
+   if (nb_log_records > 1) {
+      std::cout << "  lsn_list        = " << reinterpret_cast<LID*>(lsn) << "\n";
+   } else {
+      std::cout << "  lsn             = " << lsnToString(lsn) << "\n";
+   }
    std::cout << "  nb_log_records  = " << +nb_log_records << "\n";
    std::cout << "  pid             = " << +(this - global_discard_state) << "\n";
 }
