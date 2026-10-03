@@ -95,8 +95,8 @@ bool HashTable::has(u64 key)
    return false;
 }
 // -------------------------------------------------------------------------------------
-Partition::Partition(u64 first_pid, u64 pid_distance, u64 free_bfs_limit)
-    : io_ht(utils::getBitsNeeded(free_bfs_limit)), free_bfs_limit(free_bfs_limit), pid_distance(pid_distance)
+Partition::Partition(u64 first_pid, u64 pid_distance, u64 max_pid, u64 free_bfs_limit)
+    : io_ht(utils::getBitsNeeded(free_bfs_limit)), free_bfs_limit(free_bfs_limit), pid_distance(pid_distance), max_pid(max_pid)
 {
    next_pid = first_pid;
 }

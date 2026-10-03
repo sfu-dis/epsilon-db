@@ -32,6 +32,8 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <set>
@@ -53,8 +55,11 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
   ssd_fd(ssd_fd),
   io_writer_threads_count(FLAGS_pp_threads + FLAGS_ru_gc_threads),
   max_open_ru_epochs(max_open_ru_epochs),
-  persistant_ru_state_offset(ssd_layout.persistant_ru_state_offset)
+  persistant_ru_state_offset(ssd_layout.persistant_ru_state_offset),
+  max_pid(ssd_layout.dbPages())
 {
+   // PIDs are used as raw page offsets on ssd_fd.
+   ensure(ssd_layout.db_start == 0);
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
    {
@@ -120,7 +125,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       partitions_mask = partitions_count - 1;
       const u64 free_bfs_limit = std::ceil((FLAGS_free_pct * 1.0 * dram_pool_size / 100.0) / static_cast<double>(partitions_count));
       for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-         partitions.push_back(std::make_unique<Partition>(p_i, partitions_count, free_bfs_limit));
+         partitions.push_back(std::make_unique<Partition>(p_i, partitions_count, max_pid, free_bfs_limit));
       }
       // -------------------------------------------------------------------------------------
       utils::Parallelize::parallelRange(dram_total_size, [&](u64 begin, u64 end) { memset(reinterpret_cast<u8*>(bfs) + begin, 0, end - begin); });
@@ -261,20 +266,25 @@ std::unordered_map<std::string, std::string> BufferManager::serialize()
 {
    // TODO: correctly serialize ranges of used pages
    std::unordered_map<std::string, std::string> map;
-   PID max_pid = 0;
+   // "max_pid" is the allocation high watermark, not BufferManager::max_pid. The key is kept for old state files.
+   PID next_pid = 0;
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-      max_pid = std::max<PID>(getPartition(p_i).next_pid, max_pid);
+      next_pid = std::max<PID>(getPartition(p_i).next_pid, next_pid);
    }
-   map["max_pid"] = std::to_string(max_pid);
+   map["max_pid"] = std::to_string(next_pid);
    return map;
 }
 // -------------------------------------------------------------------------------------
 void BufferManager::deserialize(std::unordered_map<std::string, std::string> map)
 {
-   PID max_pid = std::stol(map["max_pid"]);
-   max_pid = (max_pid + (partitions_count - 1)) & ~(partitions_count - 1);
+   PID next_pid = std::stol(map["max_pid"]);
+   next_pid = (next_pid + (partitions_count - 1)) & ~(partitions_count - 1);
+   if (next_pid > max_pid) {
+      SetupFailed("The recovered database allocated up to PID " + std::to_string(next_pid) + " but the SSD layout only has " +
+                  std::to_string(max_pid) + " database pages, was it created with a larger ssd_gib?");
+   }
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-      getPartition(p_i).next_pid = max_pid + p_i;
+      getPartition(p_i).next_pid = next_pid + p_i;
    }
 }
 // -------------------------------------------------------------------------------------
@@ -481,6 +491,9 @@ BufferFrame& BufferManager::allocatePage()
    auto& header = free_bf.header;
    auto& page = free_bf.page;
    auto [free_pid, ru_epoch, ruh] = partition.nextPID();
+   if (free_pid == INVALID_PID) {
+      outOfSpace();
+   }
    if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
    ensure_equal(header.state, BufferFrame::STATE::FREE);
    // -------------------------------------------------------------------------------------
@@ -508,6 +521,23 @@ BufferFrame& BufferManager::allocatePage()
    }
    // -------------------------------------------------------------------------------------
    return free_bf;
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::outOfSpace()
+{
+   // We are in the middle of a transaction with latches held, the worker cannot unwind and the
+   // shutdown sequence would wait for it forever, so the best we can do is to fail loudly.
+   // Other workers may run dry concurrently, only the first one reports and aborts, the rest block here.
+   static std::mutex out_of_space_mutex;
+   out_of_space_mutex.lock();
+   LOG_ERROR(logger,
+             "Out of SSD space: all %lu database pages [0, %lu) are allocated, the next page would overwrite "
+             "the persistant RU state at offset %lu. Increase ssd_gib or reduce the workload size. Aborting.",
+             max_pid, max_pid, persistant_ru_state_offset);
+   std::cerr << "[FATAL] Out of SSD space: all " << max_pid << " database pages are allocated and the next one would overwrite the "
+             << "persistant RU state at offset " << persistant_ru_state_offset << ". Increase ssd_gib or reduce the workload size. "
+             << "The database cannot be shutdown cleanly from inside a transaction, aborting." << std::endl;
+   std::abort();
 }
 // -------------------------------------------------------------------------------------
 void BufferManager::evictLastPage()

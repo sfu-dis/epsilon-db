@@ -32,6 +32,7 @@ using s64 = int64_t;
 // -------------------------------------------------------------------------------------
 using SIZE = size_t;
 using PID = u64;
+constexpr PID INVALID_PID = PID(-1);
 using LID = u64;   // Log ID
 using TTS = u64;   // Transaction Time Stamp
 using DTID = s64;  // Datastructure ID

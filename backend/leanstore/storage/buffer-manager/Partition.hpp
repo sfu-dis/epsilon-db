@@ -76,6 +76,8 @@ struct Partition {
    std::mutex pids_mutex;  // protect free pids vector
    std::vector<std::tuple<PID, ru_epoch_t, ruh_id_t>> freed_pids;
    u64 next_pid;
+   const u64 max_pid;  // exclusive, see BufferManager::max_pid
+   // Returns INVALID_PID when this partition has no PID left below max_pid
    inline std::tuple<PID, ru_epoch_t, ruh_id_t> nextPID()
    {
       std::unique_lock<std::mutex> g_guard(pids_mutex);
@@ -84,9 +86,11 @@ struct Partition {
          freed_pids.pop_back();
          return pid;
       } else {
+         if (next_pid >= max_pid) {
+            return {INVALID_PID, UNMAPPED_RU_EPOCH, UNMAPPED_RUH};
+         }
          const u64 pid = next_pid;
          next_pid += pid_distance;
-         ensure((pid * PAGE_SIZE / 1024 / 1024 / 1024) <= FLAGS_ssd_gib);
          return {pid, UNMAPPED_RU_EPOCH, UNMAPPED_RUH};
       }
    }
@@ -102,7 +106,7 @@ struct Partition {
       return freed_pids.size();
    }
    // -------------------------------------------------------------------------------------
-   Partition(u64 first_pid, u64 pid_distance, u64 free_bfs_limit);
+   Partition(u64 first_pid, u64 pid_distance, u64 max_pid, u64 free_bfs_limit);
 };
 // -------------------------------------------------------------------------------------
 }  // namespace storage

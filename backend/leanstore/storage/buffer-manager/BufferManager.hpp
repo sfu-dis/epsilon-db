@@ -152,6 +152,8 @@ public:
    u32 max_open_ru_epochs;
    u32 max_pending_lsn = 0;
    u64 persistant_ru_state_offset;
+   // Every allocated PID is < max_pid, page max_pid - 1 is the last one before persistant_ru_state_offset.
+   const PID max_pid;
    PersistantRUState *persistant_ru_state;
    std::vector<RUEpochsState> ru_discard_set; // one per RUH
    // -------------------------------------------------------------------------------------
@@ -183,6 +185,8 @@ public:
    BufferFrame& resolveMetaSwip(Swip<BufferFrame>& meta_swip);
    BufferFrame& resolveSwip(Guard& swip_guard, Swip<BufferFrame>& swip_value);
    void evictLastPage();
+   // Called when every PID below max_pid is allocated, does not return.
+   [[noreturn]] void outOfSpace();
    void reclaimPage(BufferFrame& bf);
    // -------------------------------------------------------------------------------------
    /*
