@@ -143,6 +143,12 @@ public:
    std::array<atomic<ru_epoch_t>, MAX_RUHS> ru_epoch;
    std::array<atomic<ru_epoch_t>, MAX_RUHS> oldest_uncollected_ru_epoch;
    std::array<atomic<ru_epoch_t>, MAX_RUHS> reclaimed_ru_epoch;
+   // Live database pages whose latest copy on the SSD was written through each RUH.
+   // Used on the proxy on the utilization of the SSD per RUH.
+   struct alignas(CACHE_LINE_SIZE) PaddedPageCounter {
+      atomic<s64> pages{0};
+   };
+   std::array<PaddedPageCounter, MAX_RUHS> ruh_pages;
    // DEFAULT_RUH only: advanced by the page-fixing GC threads.
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad1[7];

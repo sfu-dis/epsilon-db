@@ -272,6 +272,9 @@ std::unordered_map<std::string, std::string> BufferManager::serialize()
       next_pid = std::max<PID>(getPartition(p_i).next_pid, next_pid);
    }
    map["max_pid"] = std::to_string(next_pid);
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
+      map["ruh_" + std::to_string(ruh) + "_pages"] = std::to_string(ruh_pages[ruh].pages.load());
+   }
    return map;
 }
 // -------------------------------------------------------------------------------------
@@ -285,6 +288,13 @@ void BufferManager::deserialize(std::unordered_map<std::string, std::string> map
    }
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
       getPartition(p_i).next_pid = next_pid + p_i;
+   }
+   for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
+      const std::string key = "ruh_" + std::to_string(ruh) + "_pages";
+      if (map.count(key) == 0) {
+         SetupFailed("The recovered database is missing counters of the per ruh allocated pages.");
+      }
+      ruh_pages[ruh].pages.store(std::stol(map[key]));
    }
 }
 // -------------------------------------------------------------------------------------
@@ -1081,6 +1091,12 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
    page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
    if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
    // Update the stats here
+   if (prev_ruh != ruh) {
+      if (prev_ruh != UNMAPPED_RUH) {
+         ruh_pages[prev_ruh].pages.fetch_sub(1, std::memory_order_relaxed);
+      }
+      ruh_pages[ruh].pages.fetch_add(1, std::memory_order_relaxed);
+   }
    ru_discard_set[ruh][page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    if (auto* t = ru_discard_set[ruh][page.ru_epoch].tableStats(page.dt_id)) {

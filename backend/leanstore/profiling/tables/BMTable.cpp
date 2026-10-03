@@ -42,6 +42,14 @@ void BMTable::open()
       col << kib;
    });
    columns.emplace("consumed_pages", [&](Column& col) { col << bm.consumedPages(); });
+   // Live PIDs (allocated - freed) over the database region [0, max_pid).
+   columns.emplace("ssd_util_pct", [&](Column& col) { col << (bm.consumedPages() * 100.0 / bm.max_pid); });
+   // Roughly sums up to ssd_util_pct, freed and not yet written pages make the difference.
+   for (ruh_id_t ruh = 0; ruh < storage::fdp::num_ruhs; ++ruh) {
+      columns.emplace("ruh_" + to_string(ruh) + "_util_pct", [ruh, this](Column& col) {
+         col << (bm.ruh_pages[ruh].pages.load(std::memory_order_relaxed) * 100.0 / bm.max_pid);
+      });
+   }
    columns.emplace("p1_pct", [&](Column& col) { col << (local_phase_1_ms * 100.0 / total); });
    columns.emplace("p2_pct", [&](Column& col) { col << (local_phase_2_ms * 100.0 / total); });
    columns.emplace("p3_pct", [&](Column& col) { col << (local_phase_3_ms * 100.0 / total); });
