@@ -118,6 +118,7 @@ void BufferFrame::Header::dump()
         << " flush_sink_log        = " << flush_sink_log << "\n"
         << " fixed_at_plsn         = " << fixed_at_plsn << "\n"
         << " pending_lsn_count     = " << +pending_lsn_count << "\n"
+        << " discard_count         = " << +discard_count << "\n"
         << " discardable           = " << discardable.load() << "\n"
         << " will flush PPL        = " << will_flush_ppl << "\n";
 

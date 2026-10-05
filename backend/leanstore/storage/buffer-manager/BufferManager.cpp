@@ -321,6 +321,7 @@ void BufferManager::writeAllBufferFrames()
             bf.page.magic_debugging_number = bf.header.pid;
             fdp_placement_policy.onWriteBackDirtyPage(bf);
             pageWriteBackPrologue(bf);
+            bf.header.discard_count = 0;
             ++bf.page.write_back_count;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = nvme_pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE, bf.header.next_ruh);
@@ -814,6 +815,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       LID lsn = INVALID_LSN;
       u8 nb_log_records = 0;
       LID* lsn_list = nullptr;
+      u8 discard_count = 0;
       if (FLAGS_enable_discarding) {
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
@@ -824,6 +826,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure(FLAGS_per_page_logging || !was_locked);
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
+         discard_count = discard_state[pid].getDiscardCount();
          COUNTERS_BLOCK(ppl_not_yet_persisted) {
             if (was_locked) { WorkerCounters::myCounters().ppl_not_yet_persisted++; }
          }
@@ -937,6 +940,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       bf.header.last_written_plsn = bf.page.PLSN;
       bf.header.discardable.store(true, std::memory_order_release);
       bf.header.not_yet_persisted = false;
+      bf.header.discard_count = discard_count;
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }

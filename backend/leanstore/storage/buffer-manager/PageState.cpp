@@ -37,7 +37,7 @@ std::pair<u64, u8> PageState::getLocked()
    u64 v1 = lock();
    u8 nb_log_records = (v1 & nb_log_records_mask) >> nb_log_records_shift;
    // With more than one log record, the lsn field holds a pointer to the LSN array.
-   LID lsn = (nb_log_records > 1) ? (v1 & lsn_array_ptr_mask) : (v1 & full_lsn_mask);
+   LID lsn = (nb_log_records > 1) ? reinterpret_cast<u64>(decodeLSNArray(v1)) : (v1 & full_lsn_mask);
    return {lsn, nb_log_records};
 }
 // -------------------------------------------------------------------------------------
@@ -65,7 +65,7 @@ void PageState::dump()
    u64 v = raw.load(std::memory_order_acquire);
 
    u8 nb_log_records = (v & nb_log_records_mask) >> nb_log_records_shift;
-   LID lsn = (nb_log_records > 1) ? (v & lsn_array_ptr_mask) : (v & full_lsn_mask);
+   LID lsn = (nb_log_records > 1) ? reinterpret_cast<u64>(decodeLSNArray(v)) : (v & full_lsn_mask);
 
    std::cout << "PAGE state dump:\n";
    std::cout << "  state           = " << to_string(state) << "\n";
@@ -77,6 +77,9 @@ void PageState::dump()
       std::cout << "  lsn             = " << lsnToString(lsn) << "\n";
    }
    std::cout << "  nb_log_records  = " << +nb_log_records << "\n";
+   if (state != HOT) {
+      std::cout << "  discard_count   = " << +decodeDiscardCount(v) << "\n";
+   }
    std::cout << "  pid             = " << +(this - global_discard_state) << "\n";
 }
 // -------------------------------------------------------------------------------------

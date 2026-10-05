@@ -629,7 +629,8 @@ void RUBackgroundPageFixer::ackFixedPage(ThreadContext& ctx, struct io_uring_cqe
    auto& page = bf.page;
    ensure_equal(page.magic_debugging_number, pid);
 
-   bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch));
+   // The fixed page got written back, reset its discard count.
+   bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch), 0);
 
    releaseIOFrame(pid);
    COUNTERS_BLOCK(gc)
