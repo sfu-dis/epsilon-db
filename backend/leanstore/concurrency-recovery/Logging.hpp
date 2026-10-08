@@ -250,6 +250,12 @@ struct Logging {
       }
       return lsn;
    }
+   bool isInWALBuffer(LID lsn) const
+   {
+      const u64 head = __atomic_load_n(&wal_lsn_counter, __ATOMIC_RELAXED);
+      const u64 off = lsnOffset(lsn);
+      return (off >= head) || (head - off <= FLAGS_wal_buffer_size);
+   }
    // Should only be used when resetting the log segment.
    void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }
 #if 0

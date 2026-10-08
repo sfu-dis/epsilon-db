@@ -216,6 +216,21 @@ columns:
     enabled: false
     source: bm
 
+  log_reads:
+    field: "LogRd"
+    enabled: false
+    source: bm
+
+  log_reads_in_wal_buffer:
+    field: "LogRd Buf"
+    enabled: false
+    source: bm
+
+  log_reads_in_wal_buffer_pct:
+    field: "LogRd Buf %"
+    enabled: true
+    source: bm
+
   consecutive_same_key_in_page:
     field: "tmp"
     enabled: false

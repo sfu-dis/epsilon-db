@@ -863,6 +863,14 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             sqe->flags |= IOSQE_FIXED_FILE;
             io_uring_sqe_set_data64(sqe, lsn_list[i]);
             wait_for_io++;
+            COUNTERS_BLOCK(log_reads_in_wal_buffer)
+            {
+               WorkerCounters::myCounters().log_reads_from_device++;
+               const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
+               if (cr::LogManager::global->all_logs[log_id].isInWALBuffer(lsn_list[i])) {
+                  WorkerCounters::myCounters().log_reads_in_wal_buffer++;
+               }
+            }
          }
       }
       // readPageSync(pid, bf.page);

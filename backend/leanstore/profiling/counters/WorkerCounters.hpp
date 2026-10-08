@@ -154,6 +154,9 @@ struct WorkerCounters {
    atomic<u64> yielded_cpu_no_frame = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> ppl_not_yet_persisted = 0;
+   // Log records read from the log device by resolveSwip, and how many of those were still in the WAL buffer
+   atomic<u64> log_reads_from_device = 0;
+   atomic<u64> log_reads_in_wal_buffer = 0;
    // -------------------------------------------------------------------------------------
    // Debugging livelock : stuck in jump retry
    u64 reading_retry_debug_counter = 0;
