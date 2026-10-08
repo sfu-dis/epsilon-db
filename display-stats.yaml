@@ -30,6 +30,21 @@ columns:
     enabled: true
     source: bm
 
+  undiscardable_wb_dc0_pct:
+    field: "UWB DC0 %"
+    enabled: true
+    source: bm
+
+  undiscardable_wb_dc1_pct:
+    field: "UWB DC1 %"
+    enabled: true
+    source: bm
+
+  undiscardable_wb_dcN_pct:
+    field: "UWB DC>1 %"
+    enabled: true
+    source: bm
+
   hot_w_mib:
     field: "HOT W"
     enabled: false

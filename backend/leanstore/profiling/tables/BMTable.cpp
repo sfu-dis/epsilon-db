@@ -82,6 +82,12 @@ void BMTable::open()
    columns.emplace("split_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::write_just_splitted) * PAGE_SIZE/1048576.0); });
    columns.emplace("new_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::write_new_page) * PAGE_SIZE/1048576.0); });
    columns.emplace("pplf_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::ppl_buffer_full) * PAGE_SIZE/1048576.0); });
+   for (u8 i = 0; i < 3; ++i) {
+      const std::string name = (i < 2) ? "undiscardable_wb_dc" + std::to_string(i) + "_pct" : "undiscardable_wb_dcN_pct";
+      columns.emplace(name, [i, this](Column& col) {
+         col << (local_undiscardable_wb_total ? (local_undiscardable_wb_discard_count[i] * 100.0 / local_undiscardable_wb_total) : 0.0);
+      });
+   }
    columns.emplace("hot_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::hot) * PAGE_SIZE/1048576.0); });
    columns.emplace("dirty_pct", [&](Column& col) {
       col <<
@@ -311,6 +317,11 @@ void BMTable::next()
    local_read_operations_counter = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_counter);
    local_log_reads_from_device = sum(WorkerCounters::worker_counters, &WorkerCounters::log_reads_from_device);
    local_log_reads_in_wal_buffer = sum(WorkerCounters::worker_counters, &WorkerCounters::log_reads_in_wal_buffer);
+   local_undiscardable_wb_total = 0;
+   for (u8 i = 0; i < 3; ++i) {
+      local_undiscardable_wb_discard_count[i] = sum(PPCounters::pp_counters, &PPCounters::undiscardable_wb_discard_count, i);
+      local_undiscardable_wb_total += local_undiscardable_wb_discard_count[i];
+   }
    local_agg_io_phase_us = 0;
    for (u8 i = 0; i <= bm.max_pending_lsn; ++i) {
       local_io_phase_us[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::io_phase_us, i);

@@ -21,6 +21,8 @@ class BMTable : public ProfilingTable
    u64 local_read_operations_counter = 0;
    u64 local_log_reads_from_device = 0;
    u64 local_log_reads_in_wal_buffer = 0;
+   u64 local_undiscardable_wb_discard_count[3] = {0};
+   u64 local_undiscardable_wb_total = 0;
    u64 local_io_phase_us[1+MAX_PENDING_LSN_COUNT] = {0};
    u64 local_agg_io_phase_us = 0;
    Hist<int, uint64_t> ioReadHist;

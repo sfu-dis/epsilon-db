@@ -27,6 +27,8 @@ struct PPCounters {
    atomic<u64> write_new_page = 0;
    atomic<u64> ppl_buffer_full = 0;
    atomic<u64> hot = 0;
+   // Write backs caused by PPL_BUFFER_FULL or MAX_DISCARDING_DEPTH_EXCEEDED, bucketed by discard_count: [0] = 0, [1] = 1, [2] = >1
+   atomic<u64> undiscardable_wb_discard_count[3] = {0};
    // -------------------------------------------------------------------------------------
    atomic<u64> touched_bfs_counter = 0;
    atomic<u64> flushed_pages_counter = 0;

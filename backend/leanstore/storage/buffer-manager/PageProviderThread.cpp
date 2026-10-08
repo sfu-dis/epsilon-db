@@ -424,10 +424,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                            }
                            case (PPL_BUFFER_FULL) : {
                               PPCounters::myCounters().ppl_buffer_full++;
+                              PPCounters::myCounters().undiscardable_wb_discard_count[std::min<u8>(header.discard_count, 2)]++;
                               break;
                            }
                            case (MAX_DISCARDING_DEPTH_EXCEEDED) : {
                               PPCounters::myCounters().hot++;
+                              PPCounters::myCounters().undiscardable_wb_discard_count[std::min<u8>(header.discard_count, 2)]++;
                               break;
                            }
                         }
