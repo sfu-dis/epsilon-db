@@ -48,6 +48,7 @@ constexpr ruh_id_t UNMAPPED_RUH = ruh_id_t(-1);
 // -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);
 constexpr LID INEXISTANT_LSN = LID(-2);
+constexpr LID NON_PERSISTED_LSN = LID(-3);
 // LSN layout: [unused:6][log_id:10][offset within the log segment:48]
 // The layout matches the low 58 bits of the PageState, so a single LSN can be stored as is.
 constexpr u64 LSN_LOG_ID_BITS = 10;

@@ -1101,7 +1101,7 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
    ensure(bf.header.next_ruh != UNMAPPED_RUH);
    const ruh_id_t ruh = page.ruh = bf.header.next_ruh;
    page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
-   if (!FLAGS_wal) { page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN; }
+   if (!FLAGS_wal) { page.last_written_lsn = NON_PERSISTED_LSN; }
    // Update the stats here
    if (prev_ruh != ruh) {
       if (prev_ruh != UNMAPPED_RUH) {

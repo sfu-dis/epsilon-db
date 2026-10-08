@@ -36,7 +36,6 @@ struct meta_block {
 struct LogManager {
    static constexpr u64 LOG_DEV_BLK_SIZE = 4096;
    static constexpr u32 SINK_LOG_ID = 0;
-   static constexpr LID NON_PERSISTED_LSN = LID(-3);
    static_assert(!isRegularLSN(NON_PERSISTED_LSN));
    static LogManager* global;
    Logging* all_logs;

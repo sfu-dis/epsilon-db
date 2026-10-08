@@ -239,7 +239,7 @@ class HybridPageGuard
       } else {
          // Write a special marker for debugging if something went wrong
          // when recovering from the case where wal_pwrite was off.
-         bf->page.last_written_lsn = cr::LogManager::NON_PERSISTED_LSN;
+         bf->page.last_written_lsn = NON_PERSISTED_LSN;
       }
       LID *pending_lsn = bf->header.pending_lsn;
       if (FLAGS_enable_discarding && bf->isDiscardable()) {

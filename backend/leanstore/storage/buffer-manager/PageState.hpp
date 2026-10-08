@@ -1,5 +1,6 @@
 #pragma once
 // -------------------------------------------------------------------------------------
+#include "leanstore/Config.hpp"
 #include "Exceptions.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
@@ -155,9 +156,12 @@ struct PageState {
       return decodeDiscardCount(v);
    }
    void unlockClean(LID lsn, u64 log_id, u8 discard_count) {
+      if (lsn == NON_PERSISTED_LSN) {
+         ensure(FLAGS_skip_wal_recovery);
+         lsn = 0; // FIXME(mfd)
+      }
       ensure(isRegularLSN(lsn));
       ensure(fitsInPageState(lsn));
-      ensure_equal(lsnLogID(lsn), log_id);
       ensure_lt(log_id, max_log_id);
       ensure_lte(discard_count, max_discard_count);
       raw.store(lsn | encodeDiscardCount(discard_count) | state_clean_mask, std::memory_order_release);
