@@ -48,6 +48,23 @@ constexpr ruh_id_t UNMAPPED_RUH = ruh_id_t(-1);
 // -------------------------------------------------------------------------------------
 constexpr LID INVALID_LSN = LID(-1);
 constexpr LID INEXISTANT_LSN = LID(-2);
+// LSN layout: [unused:6][log_id:10][offset within the log segment:48]
+// The layout matches the low 58 bits of the PageState, so a single LSN can be stored as is.
+constexpr u64 LSN_LOG_ID_BITS = 10;
+constexpr u64 LSN_OFFSET_BITS = 48;
+constexpr u64 LSN_MAX_LOG_ID = (u64(1) << LSN_LOG_ID_BITS) - 1;
+constexpr u64 LSN_OFFSET_MASK = (u64(1) << LSN_OFFSET_BITS) - 1;
+constexpr u64 LSN_MASK = (u64(1) << (LSN_LOG_ID_BITS + LSN_OFFSET_BITS)) - 1;
+inline constexpr LID makeLSN(u64 log_id, u64 offset) { return (log_id << LSN_OFFSET_BITS) | offset; }
+inline constexpr u32 lsnLogID(LID lsn) { return lsn >> LSN_OFFSET_BITS; }
+inline constexpr u64 lsnOffset(LID lsn) { return lsn & LSN_OFFSET_MASK; }
+inline constexpr bool isRegularLSN(LID lsn) { return (lsn & ~LSN_MASK) == 0; }
+inline std::string lsnToString(LID lsn)
+{
+   if (lsn == INVALID_LSN) return "INVALID";
+   if (!isRegularLSN(lsn)) return "special(" + std::to_string(lsn) + ")";
+   return std::to_string(lsnLogID(lsn)) + ":" + std::to_string(lsnOffset(lsn));
+}
 // -------------------------------------------------------------------------------------
 using WORKERID = u16;
 using TXID = u64;

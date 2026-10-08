@@ -69,6 +69,9 @@ struct BufferFrame {
       LID fixed_at_plsn = 0;  // TODO(mfd) : jsut for debugging, remove later
       u8 pending_lsn_count = 0;
       LID pending_lsn[MAX_PENDING_LSN_COUNT];
+      // Saturating counter of how many times the page got discarded since its last write back.
+      // Loaded from the PageState when the page gets cached and stored back in it upon eviction.
+      u8 discard_count = 0;
       // Any page is by default discardable unless :
       // 1. It is an inner node. (Simplicity)
       // 2. It has been splitted. (Simplicity)
@@ -117,6 +120,7 @@ struct BufferFrame {
          flush_sink_log = false;
          keep_in_memory = false;
          pending_lsn_count = 0;
+         discard_count = 0;
          undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
          will_flush_ppl = false;
          // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);

@@ -258,6 +258,15 @@ void BMTable::open()
    columns.emplace("ppl_not_yet_persisted", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::ppl_not_yet_persisted);
    });
+   columns.emplace("log_reads", [this](Column& col) {
+      col << local_log_reads_from_device;
+   });
+   columns.emplace("log_reads_in_wal_buffer", [this](Column& col) {
+      col << local_log_reads_in_wal_buffer;
+   });
+   columns.emplace("log_reads_in_wal_buffer_pct", [this](Column& col) {
+      col << (local_log_reads_from_device ? (local_log_reads_in_wal_buffer * 100.0 / local_log_reads_from_device) : 0.0);
+   });
    columns.emplace("consecutive_same_key_in_page", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::consecutive_same_key_in_page);
    });
@@ -300,6 +309,8 @@ void BMTable::next()
    total = local_phase_1_ms + local_phase_2_ms + local_phase_3_ms;
    // -------------------------------------------------------------------------------------
    local_read_operations_counter = sum(WorkerCounters::worker_counters, &WorkerCounters::read_operations_counter);
+   local_log_reads_from_device = sum(WorkerCounters::worker_counters, &WorkerCounters::log_reads_from_device);
+   local_log_reads_in_wal_buffer = sum(WorkerCounters::worker_counters, &WorkerCounters::log_reads_in_wal_buffer);
    local_agg_io_phase_us = 0;
    for (u8 i = 0; i <= bm.max_pending_lsn; ++i) {
       local_io_phase_us[i] = sum(WorkerCounters::worker_counters, &WorkerCounters::io_phase_us, i);

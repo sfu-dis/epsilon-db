@@ -321,6 +321,7 @@ void BufferManager::writeAllBufferFrames()
             bf.page.magic_debugging_number = bf.header.pid;
             fdp_placement_policy.onWriteBackDirtyPage(bf);
             pageWriteBackPrologue(bf);
+            bf.header.discard_count = 0;
             ++bf.page.write_back_count;
             DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
             s64 ret = nvme_pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE, bf.header.next_ruh);
@@ -671,11 +672,11 @@ bool BufferManager::logRecordSanityCheck(cr::WALEntry *entry, BufferFrame::Page&
    ensure_equal(dte->pid, page.magic_debugging_number);
    ensure(dte->gsn >= page.GSN);
    // Make sure that log does not cross device block boundary
-   ensure_equal(utils::downAlign(lsn, 4096), utils::downAlign(lsn + entry->size, 4096));
+   ensure_equal(utils::downAlign(lsnOffset(lsn), 4096), utils::downAlign(lsnOffset(lsn) + entry->size, 4096));
    return true;
 
 fail:
-   cout << "LSN = " << lsn << endl;
+   cout << "LSN = " << lsnToString(lsn) << endl;
    entry->dump();
    auto& log = cr::LogManager::getLog(page.ru_epoch, page.magic_debugging_number);
    cout << "Page ID : " << page.magic_debugging_number << endl;
@@ -684,7 +685,7 @@ fail:
    cout << "RU epoch on Log record : " << dte->ru_epoch << endl;
    cout << "Hardened GSN : " <<  log.hardened_gsn << endl;
    cout << "Page GSN : " << page.GSN << endl;
-   cout << "Last written LSN to page : " << page.last_written_lsn << endl;
+   cout << "Last written LSN to page : " << lsnToString(page.last_written_lsn) << endl;
    cout << "wal lsn counter : " << log.wal_lsn_counter << endl;
    cout << "log_gsn_clock : " << log.log_gsn_clock << endl;
    cout << "log_segment_start : " << log.log_segment_start << endl;
@@ -750,7 +751,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       for (u8 i = 0; i < nb_log_records; ++i) {
          last_lsn = lsn_list[i];
          ensure(last_lsn != INVALID_LSN);
-         u64 off = (last_lsn % 4096) + 4096 * i;
+         u64 off = (lsnOffset(last_lsn) % 4096) + 4096 * i;
          entry = reinterpret_cast<cr::WALEntry*>(&cr::Worker::my().log_record_buf[off]);
 
          bool ok = logRecordSanityCheck(entry, bf.page, last_lsn);
@@ -814,6 +815,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       LID lsn = INVALID_LSN;
       u8 nb_log_records = 0;
       LID* lsn_list = nullptr;
+      u8 discard_count = 0;
       if (FLAGS_enable_discarding) {
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
@@ -824,6 +826,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure(FLAGS_per_page_logging || !was_locked);
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
+         discard_count = discard_state[pid].getDiscardCount();
          COUNTERS_BLOCK(ppl_not_yet_persisted) {
             if (was_locked) { WorkerCounters::myCounters().ppl_not_yet_persisted++; }
          }
@@ -853,13 +856,21 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          for (u8 i = 0; i < nb_log_records; ++i) {
             struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
             ensure(sqe != nullptr);
-            u64 off = utils::downAlign(lsn_list[i], 4096);
+            u64 off = utils::downAlign(cr::LogManager::global->LSN2DevOffset(lsn_list[i]), 4096);
             // io_uring_prep_read(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf, 4096, off);
             io_uring_prep_read_fixed(sqe, 1 /*log_fd*/, cr::Worker::my().log_record_buf + 4096 * i, 4096, off, 0 /*buf_idx*/);
             // io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
             sqe->flags |= IOSQE_FIXED_FILE;
             io_uring_sqe_set_data64(sqe, lsn_list[i]);
             wait_for_io++;
+            COUNTERS_BLOCK(log_reads_in_wal_buffer)
+            {
+               WorkerCounters::myCounters().log_reads_from_device++;
+               const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
+               if (cr::LogManager::global->all_logs[log_id].isInWALBuffer(lsn_list[i])) {
+                  WorkerCounters::myCounters().log_reads_in_wal_buffer++;
+               }
+            }
          }
       }
       // readPageSync(pid, bf.page);
@@ -937,6 +948,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       bf.header.last_written_plsn = bf.page.PLSN;
       bf.header.discardable.store(true, std::memory_order_release);
       bf.header.not_yet_persisted = false;
+      bf.header.discard_count = discard_count;
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }

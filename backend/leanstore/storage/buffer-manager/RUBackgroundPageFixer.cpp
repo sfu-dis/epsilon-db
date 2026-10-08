@@ -36,13 +36,13 @@ struct page_info {
    {
       std::cout << "page_info {\n";
       std::cout << "   pid            = " << pid << "\n";
-      std::cout << "   first_lsn      = " << first_lsn << "\n";
-      std::cout << "   last_lsn       = " << last_lsn << "\n";
+      std::cout << "   first_lsn      = " << lsnToString(first_lsn) << "\n";
+      std::cout << "   last_lsn       = " << lsnToString(last_lsn) << "\n";
       std::cout << "   nb_log_records = " << +nb_log_records << "\n";
 
       std::cout << "   lsn_list       = [";
       for (u8 i = 0; i < nb_log_records; i++) {
-         std::cout << lsn_list[i];
+         std::cout << lsnToString(lsn_list[i]);
          if (i + 1 < nb_log_records)
             std::cout << ", ";
       }
@@ -71,7 +71,6 @@ struct RUBackgroundPageFixer::ThreadContext {
    ru_epoch_t current_gc_epoch = -1;
    u32 currently_reclaiming_log_id = 0;
    u8* log_records = nullptr;
-   u64 cur_log_segment_start = -1;
    u64 cur_log_segment_size = 0;
    // -------------------------------------------------------------------------------------
    u64 actually_fixed = 0;  // in the current batch
@@ -170,7 +169,6 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, ru_epoch_t gc_ru_
 
    u64 offset = 0;  // local offset
    ctx.log_records = static_cast<u8*>(set.mmaped_log);
-   ctx.cur_log_segment_start = set.log_segment_start;
    ctx.cur_log_segment_size = set.log_segment_size;
 
    // The GC threads split the log in batches of 4 KiB.
@@ -516,8 +514,8 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
 #if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
    ensure(page_to_fix_info.nb_log_records > 0);
    while (lsn != INVALID_LSN) {
-      ensure_lte(ctx.cur_log_segment_start, lsn);
-      u64 off = lsn - ctx.cur_log_segment_start;
+      ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+      u64 off = lsnOffset(lsn);
       auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
 
       bool ok = bm.logRecordSanityCheck(entry, page, lsn);
@@ -527,7 +525,7 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
 
       if (to_apply_log_records.size() > FLAGS_max_log_records_to_discard) {
          printf("[ERR] Number of logs to apply in the global state : %u\n", page_to_fix_info.nb_log_records);
-         printf("[ERR] curr lsn = %lu, prev lsn = %lu, lseg start lsn %lu\n", lsn, entry->prev_lsn, ctx.cur_log_segment_start);
+         printf("[ERR] curr lsn = %s, prev lsn = %s\n", lsnToString(lsn).c_str(), lsnToString(entry->prev_lsn).c_str());
          for (const auto& e : to_apply_log_records) {
             reinterpret_cast<cr::WALDTEntry*>(e)->dump();
          }
@@ -550,7 +548,8 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
 #else
    for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
       LID lsn = page_to_fix_info.lsn_list[i];
-      u64 off = lsn - ctx.cur_log_segment_start;
+      ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+      u64 off = lsnOffset(lsn);
       auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
 
       bool ok = bm.logRecordSanityCheck(entry, page, lsn);
@@ -630,7 +629,8 @@ void RUBackgroundPageFixer::ackFixedPage(ThreadContext& ctx, struct io_uring_cqe
    auto& page = bf.page;
    ensure_equal(page.magic_debugging_number, pid);
 
-   bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch));
+   // The fixed page got written back, reset its discard count.
+   bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch), 0);
 
    releaseIOFrame(pid);
    COUNTERS_BLOCK(gc)

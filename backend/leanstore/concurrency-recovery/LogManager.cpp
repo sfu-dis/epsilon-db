@@ -118,14 +118,21 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
 
 u32 LogManager::LSN2LogID(LID lsn)
 {
-   if ((lsn == INVALID_LSN) || (lsn == NON_PERSISTED_LSN)) return -1;
-   LID aligned_lsn = utils::downAlign(lsn, LOG_DEV_BLK_SIZE);
-   u32 log_id = (aligned_lsn - log_start_offset) / log_segment_size;
+   if (!isRegularLSN(lsn)) return -1;
+   u32 log_id = lsnLogID(lsn);
    {
       ensure_lt(log_id, global->log_count);
       ensure_equal(global->all_logs[log_id].log_id, log_id);
    }
    return log_id;
+}
+
+u64 LogManager::LSN2DevOffset(LID lsn)
+{
+   ensure(isRegularLSN(lsn));
+   const u32 log_id = LSN2LogID(lsn);
+   ensure_lt(lsnOffset(lsn), log_segment_size);
+   return all_logs[log_id].log_segment_start + lsnOffset(lsn);
 }
 
 u32 LogManager::getLogID(ru_epoch_t ru_epoch)

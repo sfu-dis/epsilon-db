@@ -229,7 +229,8 @@ struct Logging {
    LID reserveLSN(u64 requested_size)
    {
       ensure(is_sink_log || (wal_lsn_counter < log_segment_size));
-      const auto lsn = this->log_segment_start + wal_lsn_counter;
+      ensure(wal_lsn_counter <= LSN_OFFSET_MASK);
+      const auto lsn = makeLSN(log_id, wal_lsn_counter);
       if (FLAGS_wal_pwrite) {
          wal_lsn_counter += requested_size;
       }
@@ -248,6 +249,12 @@ struct Logging {
 
       }
       return lsn;
+   }
+   bool isInWALBuffer(LID lsn) const
+   {
+      const u64 head = __atomic_load_n(&wal_lsn_counter, __ATOMIC_RELAXED);
+      const u64 off = lsnOffset(lsn);
+      return (off >= head) || (head - off <= FLAGS_wal_buffer_size);
    }
    // Should only be used when resetting the log segment.
    void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }

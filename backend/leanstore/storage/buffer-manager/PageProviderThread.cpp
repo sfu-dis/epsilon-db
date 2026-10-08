@@ -294,11 +294,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             bool success = false;
             const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
+            const u8 discard_count = std::min<u8>(bf.header.discard_count + 1, PageState::max_discard_count);
             if (submitted_ppl) {
                to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.ppl.header.gsn, bf.page.last_written_lsn);
-               success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count, log_id);
+               success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
             } else {
-               success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count, log_id);
+               success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
             }
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
@@ -324,7 +325,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
                discard_state[evicted_pid].getLocked();
                ensure(discard_state[evicted_pid].isHot());
-               discard_state[evicted_pid].unlockClean(last_write_lsn, log_id);
+               discard_state[evicted_pid].unlockClean(last_write_lsn, log_id, bf.header.discard_count);
             }
          }
          // -------------------------------------------------------------------------------------
@@ -443,6 +444,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      header.will_flush_ppl = false;
                      fdp_placement_policy.onWriteBackDirtyPage(*cooled_bf);
                      pageWriteBackPrologue(*cooled_bf);
+                     header.discard_count = 0;
                      if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
                      if (FLAGS_crc_check) {
                         header.crc = utils::CRC(page.dt, EFFECTIVE_PAGE_SIZE);
