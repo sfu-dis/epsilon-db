@@ -17,7 +17,7 @@ columns:
 
   split_w_mib:
     field: "Split W"
-    enabled: true
+    enabled: false
     source: bm
 
   new_w_mib:
@@ -32,7 +32,7 @@ columns:
 
   hot_w_mib:
     field: "HOT W"
-    enabled: true
+    enabled: false
     source: bm
 
   r_mib:
@@ -52,12 +52,12 @@ columns:
 
   gct_write_gib:
     field: "WAL GiB/s"
-    enabled: true
+    enabled: false
     source: cr
 
   log_buf:
     field: "WALmtx %"
-    enabled: true
+    enabled: false
     source: cr
 
   gct_phase_1_pct:
@@ -77,7 +77,7 @@ columns:
 
   failed_try_pop:
     field: "failed trypop"
-    enabled: true
+    enabled: false
     source: bm
 
   yielded_cpu_no_frame:
@@ -88,12 +88,12 @@ columns:
 
   pp_write_latency:
     field: "wlat"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_read_mib:
     field: "GC R MiB/s"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_fixed_mib:
@@ -133,7 +133,7 @@ columns:
 
   estimated_gc_writes:
     field: "Extra GC GiB"
-    enabled: true
+    enabled: false
     source: bm
 
   io_phase_ns:
@@ -153,7 +153,7 @@ columns:
 
   read_latency_0_us:
     field: "rlat0"
-    enabled: true
+    enabled: false
     source: bm
 
   read_latency_1_us:
@@ -238,5 +238,26 @@ columns:
 
   dirty_ol_mib:
     field: "DirtyO"
+    enabled: false
+    source: bm
+
+  ssd_util_pct:
+    field: "SSD %"
     enabled: true
     source: bm
+
+  ruh_0_util_pct:
+    field: "RUH0 %"
+    enabled: true
+    source: bm
+
+  ruh_1_util_pct:
+    field: "RUH1 %"
+    enabled: true
+    source: bm
+
+  ruh_2_util_pct:
+    field: "RUH2 %"
+    enabled: true
+    source: bm
+

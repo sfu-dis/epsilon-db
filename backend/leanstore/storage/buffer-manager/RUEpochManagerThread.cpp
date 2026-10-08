@@ -26,8 +26,8 @@ namespace storage
 // -------------------------------------------------------------------------------------
 namespace
 {
-constexpr mode_t TRACE_FILE_MODE = 0660;
-constexpr mode_t TRACE_DIR_MODE = 0770;
+constexpr mode_t TRACE_FILE_MODE = 0755;
+constexpr mode_t TRACE_DIR_MODE = 0755;
 void makeTraceDir(const std::string& path)
 {
    posix_check(mkdir(path.c_str(), TRACE_DIR_MODE) == 0 || errno == EEXIST);
@@ -66,13 +66,12 @@ void RUEpochManager::run()
       if (FLAGS_enable_discarding) {
          dispatchOldestRUEpochToGC();
          // The HOT RUH holds the self invalidating pages, its RU epochs are reclaimed inline.
-         // TODO(mfd) : Force reclaiming the HOT RUH as well when running out of free RU epochs.
          if (fdp::hot_ruh != UNMAPPED_RUH) {
-            tryReclaimNonDefaultRUEpoch(fdp::hot_ruh);
+            tryReclaimNonDefaultRUEpoch(fdp::hot_ruh, /* not forced */ false);
          }
       }
       // each minute
-      if (FLAGS_trace_ru_threshold && FLAGS_enable_discarding) {
+      if (FLAGS_trace_ru_threshold) {
          if (milliseconds == (1000 * 60)) {
             milliseconds = 0;
             traceThresholds(("minute " + std::to_string(sample_id + 1)).c_str());
@@ -143,15 +142,30 @@ void RUEpochManager::checkForNewRUEpoch(ruh_id_t ruh)
    if (tot_page_written[ruh] < BufferManager::RU_SIZE) {
       return;
    }
+   // -------------------------------------------------------------------------------------
+   // Opening a new RU epoch
+   // -------------------------------------------------------------------------------------
    tot_page_written[ruh] -= BufferManager::RU_SIZE;
    const ru_epoch_t new_ru_epoch = bm.ru_epoch[ruh].load(std::memory_order_relaxed) + 1;
    if (FLAGS_enable_discarding) {
+      s64 free_ru_epochs = freeRUEpochsAfterOpeningOne();
+      if (fdp::hot_ruh != UNMAPPED_RUH) {
+         // Reclaiming the hot records is merly a metadata change and does not affect WAF.
+         // I try inline to release as much of these RU epochs as necessary.
+         while (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
+            if (tryReclaimNonDefaultRUEpoch(fdp::hot_ruh, /* forced */ true)) {
+               free_ru_epochs++;
+            } else {
+               // Not success here means there is only one left RU Epoch
+               break;
+            }
+         }
+      }
       // Once we almost exhausted all free RUs, we enter the steady state where we reclaim RUs continously.
       // This will only happen if the workload access pattern never reaches the threshold of RU usage.
       // When this happens the first time, I reclaim agressively the oldest 20 ru epochs. This is very
       // similar to the device GC behaviour because, after all, there is no much time for the ru usage
       // to improve the threshold.
-      const s64 free_ru_epochs = freeRUEpochsAfterOpeningOne();
       // Probably too early ?
       if (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
          // cap the new rate at 80%
@@ -161,7 +175,7 @@ void RUEpochManager::checkForNewRUEpoch(ruh_id_t ruh)
          // TODO(mfd) : Pick the one with the highest RU Usage and free it.
          // For now I will start with the two RUH examples therefore I force only the default RUH for now.
          // Later I should also force the HOT RUH.
-         // forceGCOldestRUEpochs();
+         forceGCOldestRUEpochs();
       } else {
          if (bm.rate.load(std::memory_order_relaxed) < 100) {
             bm.rate.store(100, std::memory_order_release);
@@ -220,7 +234,7 @@ void RUEpochManager::traceThresholds(const char* label)
          fprintf(tfp, "   %10s %10s %10s %10s %10s\n", "RU epoch", "total", "invalid", "discarded", "usage");
       }
       for (ru_epoch_t r = oldest; r < newest; ++r) {
-         auto& set = bm.ru_discard_set[ruh][r];
+         auto& set = bm.ru_discard_set[ruh].at(r);
          // Same formula as ReclaimUnitUsage, but from a single load of each counter so that
          // invalid% + discarded% always adds up to usage%.
          const s32 total = set.total.load(std::memory_order_relaxed);
@@ -245,7 +259,7 @@ void RUEpochManager::traceThresholds(const char* label)
 void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest)
 {
    for (ru_epoch_t r = oldest; r <= newest; ++r) {
-      auto& set = bm.ru_discard_set[ruh][r];
+      auto& set = bm.ru_discard_set[ruh].at(r);
       const s32 ru_total = set.total.load(std::memory_order_relaxed);
       fprintf(tfp, "RUH %u, RU epoch %ld%s, total = %d\n", ruh, r, r == newest ? " (open)" : "", ru_total);
       if (ru_total == 0) {
@@ -275,7 +289,7 @@ s64 RUEpochManager::freeRUEpochsAfterOpeningOne()
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       used_ru_epochs += bm.ru_epoch[ruh].load(std::memory_order_relaxed) - bm.reclaimed_ru_epoch[ruh].load(std::memory_order_relaxed);
    }
-   ensure_lte(used_ru_epochs, bm.max_open_ru_epochs);
+   ensure_lte(used_ru_epochs - 1, bm.max_open_ru_epochs);
    return static_cast<s64>(bm.max_open_ru_epochs) - used_ru_epochs;
 }
 // -------------------------------------------------------------------------------------
@@ -305,16 +319,16 @@ void RUEpochManager::forceGCOldestRUEpochs()
 // -------------------------------------------------------------------------------------
 // Pages of a non default RUH are never fixed, the RU epoch is declared reclaimed as soon as
 // it is garbage heavy enough (or forced), leaving the relocation of its valid pages to the device.
-void RUEpochManager::tryReclaimNonDefaultRUEpoch(ruh_id_t ruh)
+bool RUEpochManager::tryReclaimNonDefaultRUEpoch(ruh_id_t ruh, bool force_reclaim)
 {
    ensure(ruh != DEFAULT_RUH);
    const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
    if (oldest >= bm.ru_epoch[ruh].load(std::memory_order_relaxed)) {
-      return;
+      return false;
    }
    auto& set = bm.ru_discard_set[ruh][oldest];
-   if (!set.shouldGC()) {
-      return;
+   if (!set.shouldGC() && !force_reclaim) {
+      return false;
    }
    {
       std::lock_guard _l(set.m);
@@ -322,7 +336,8 @@ void RUEpochManager::tryReclaimNonDefaultRUEpoch(ruh_id_t ruh)
       bm.reclaimed_ru_epoch[ruh].fetch_add(1);
    }
    bm.oldest_uncollected_ru_epoch[ruh].store(oldest + 1, std::memory_order_release);
-   LOG_INFO(bm.logger, "RUH %u : Reclaimed RU epoch %ld", ruh, oldest);
+   LOG_INFO(bm.logger, "RUH %u : Reclaimed RU epoch %ld%s", ruh, oldest, force_reclaim ? "(forced)" : "");
+   return true;
 }
 // -------------------------------------------------------------------------------------
 }  // namespace storage

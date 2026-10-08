@@ -48,7 +48,7 @@ class RUEpochManager
 #endif
    s64 freeRUEpochsAfterOpeningOne();
    void forceGCOldestRUEpochs();
-   void tryReclaimNonDefaultRUEpoch(ruh_id_t ruh);
+   bool tryReclaimNonDefaultRUEpoch(ruh_id_t ruh, bool force_reclaim);
 };
 // -------------------------------------------------------------------------------------
 }  // namespace storage

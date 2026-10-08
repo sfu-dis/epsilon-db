@@ -4,8 +4,6 @@
 if [ -z "${BUILD_DIR}" ]; then
    echo "Error: please set up BUILD_DIR environment variable."
    exit 1
-else
-   echo "${BUILD_DIR}"
 fi
 
 set -euo pipefail
@@ -37,7 +35,7 @@ PARSE_PY="$PWD/parse_block.py"
 
 device=
 # currently un-used
-log_device=/dev/nvme3n1
+log_device=
 vanilla=0
 benchmark=
 threshold=0.8
@@ -81,7 +79,7 @@ ppl=1
 blktrace=0
 
 # whether the device has FDP support or not, this is for samling the WAF.
-fdp=0
+fdp_waf=0
 enable_fdp=0
 fdp_placement=Default
 fdp_reformat=0
@@ -228,8 +226,8 @@ while [[ $# -gt 0 ]]; do
            blktrace=1
            shift 1
            ;;
-        --fdp)
-           fdp=1
+        --fdp_waf)
+           fdp_waf=1
            shift 1
            ;;
         --fdp_placement)
@@ -330,6 +328,29 @@ if (( missing )); then
     exit 1
 fi
 
+if ((fdp_reformat == 1 && trim == 0)); then
+   trim=1
+fi
+
+if (( fdp_waf == 1 && fdp_reformat == 0 )); then
+   echo "You are asking to use fdp stats command to calculate WAF"
+   echo "However, you are not reformatting the device"
+   echo "Your WAF numbers will be polluted by the previous run"
+   read -p "Continue? [Y/y], Use OCP WAF instead? [O], type anthing else to abort:" answer
+   case "$answer" in
+        [Yy]* )
+            echo "Continuing..."
+            ;;
+        [O]* )
+            fdp_waf=0
+            echo "Will use OCP to calculate WAF, Continuing..."
+            ;;
+        * )
+            echo "Aborting."
+            exit 1
+            ;;
+   esac
+fi
 
 if (( dry_run == 0 && trim == 0 && run_only == 0)); then
    echo "You are not doing a dry run but trim is disabled, have you forgotten the option --trim"
@@ -391,6 +412,9 @@ sanitize_nvme() {
        sleep 1m
     fi
     run blkdiscard -v "${device}"
+    if [ ! -z "$log_device" ]; then
+      run blkdiscard -v "${log_device}"
+    fi
     sleep 1m
 }
 
@@ -422,7 +446,7 @@ if (( trim == 1)); then
       sudo nvme create-ns ${controller} -b 4096 --nsze=${DEV_SIZE}  --ncap=${DEV_SIZE} ${PLID_ARG}
       sudo nvme attach-ns ${controller} --namespace-id=1 --controllers=0x7
       set +x
-      sleep 2
+      sleep 30
    fi
    sanitize_nvme
 fi
@@ -549,10 +573,9 @@ if (( stats_dir == 1)); then
 fi
 
 passwd=""
-# fdp=0
 waf() {
    # echo "Background WAF sampling process: starting"
-   if (( fdp_reformat == 1 )); then
+   if (( fdp_waf == 1 )); then
       while true; do
          wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
          echo "${wafstr}"
