@@ -854,6 +854,20 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // issue the asynchronus log record read.
          ensure(discard_state[pid].isDiscarded());
          for (u8 i = 0; i < nb_log_records; ++i) {
+            if (FLAGS_read_log_from_wal_buffer) {
+               // Try to get the log record from the WAL buffer first.
+               // fix_dirty_page expects the record at the same in-block offset as a device read.
+               const u64 lsn_offset_in_block = lsnOffset(lsn_list[i]) % 4096;
+               u8* dst = cr::Worker::my().log_record_buf + 4096 * i + lsn_offset_in_block;
+               const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
+               if (cr::LogManager::global->all_logs[log_id].tryCopyFromWALBuffer(lsn_list[i], dst, 4096 - lsn_offset_in_block)) {
+                  COUNTERS_BLOCK(log_reads_in_wal_buffer)
+                  {
+                     WorkerCounters::myCounters().log_reads_in_wal_buffer++;
+                  }
+                  continue;
+               }
+            }
             struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
             ensure(sqe != nullptr);
             u64 off = utils::downAlign(cr::LogManager::global->LSN2DevOffset(lsn_list[i]), 4096);
@@ -866,10 +880,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             COUNTERS_BLOCK(log_reads_in_wal_buffer)
             {
                WorkerCounters::myCounters().log_reads_from_device++;
-               const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
-               if (cr::LogManager::global->all_logs[log_id].isInWALBuffer(lsn_list[i])) {
-                  WorkerCounters::myCounters().log_reads_in_wal_buffer++;
-               }
             }
          }
       }

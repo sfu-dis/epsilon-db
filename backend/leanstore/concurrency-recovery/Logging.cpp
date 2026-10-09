@@ -48,11 +48,13 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
       while (walFreeSpace() < wait_untill_free_bytes) {
       }
       if (walContiguousFreeSpace() < requested_size + CR_ENTRY_SIZE) {  // always keep place for CR entry
+         // Bump the LSN counter before writing to the buffer (see tryCopyFromWALBuffer).
+         const u64 cr_size = FLAGS_wal_buffer_size - wal_log_cursor;
+         wal_lsn_counter.fetch_add(cr_size, std::memory_order_relaxed);
+         std::atomic_thread_fence(std::memory_order_release);
          WALMetaEntry& entry = *reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
-         entry.size = sizeof(WALMetaEntry);
          entry.type = WALEntry::TYPE::CARRIAGE_RETURN;
-         entry.size = FLAGS_wal_buffer_size - wal_log_cursor;
-         wal_lsn_counter += entry.size;
+         entry.size = cr_size;
          DEBUG_BLOCK()
          {
             entry.computeCRC();
@@ -65,10 +67,12 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          wal_buffer_round++;  // Carriage Return
       } else if (utils::downAlign(wal_log_cursor, 4096) != utils::downAlign(wal_log_cursor + requested_size, 4096)) {
          // This log record crosses the boundary of a 4KiB page
+         // Bump the LSN counter before writing to the buffer (see tryCopyFromWALBuffer).
+         wal_lsn_counter.store(utils::upAlign(wal_lsn_counter.load(std::memory_order_relaxed), 4096), std::memory_order_relaxed);
+         std::atomic_thread_fence(std::memory_order_release);
          WALEntry& skip_entry = *reinterpret_cast<WALEntry*>(wal_buffer + wal_log_cursor);
          skip_entry.type = WALEntry::TYPE::SKIP;
          wal_log_cursor = utils::upAlign(wal_log_cursor, 4096);
-         wal_lsn_counter = utils::upAlign(wal_lsn_counter, 4096);
          // No need to make it visible straight away to the GCT thread
          auto* hole = insertHole();
          hole->unlock();
@@ -85,8 +89,8 @@ WALMetaEntry& Logging::reserveWALMetaEntry(WALEntry::TYPE type)
    walEnsureEnoughSpace(sizeof(WALMetaEntry));
    active_mt_entry = reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
    active_mt_entry->type = type;
-   active_mt_entry->lsn.store(makeLSN(log_id, wal_lsn_counter), std::memory_order_release);
-   wal_lsn_counter += sizeof(WALMetaEntry);
+   active_mt_entry->lsn.store(makeLSN(log_id, wal_lsn_counter.load(std::memory_order_relaxed)), std::memory_order_release);
+   wal_lsn_counter.fetch_add(sizeof(WALMetaEntry), std::memory_order_release);
    active_mt_entry->size = sizeof(WALMetaEntry);
    return *active_mt_entry;
 }

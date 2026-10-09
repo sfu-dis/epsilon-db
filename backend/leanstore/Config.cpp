@@ -122,6 +122,7 @@ DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_discarding, true, "Discard dirty pages upon evictions");
 DEFINE_bool(fake_log_reapply, false, "Just for Testing, use only with update-only workloads");
+DEFINE_bool(read_log_from_wal_buffer, true, "On a buffer miss of a discarded page, read its log records from the WAL buffer when still there instead of the log device");
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");
 DEFINE_uint32(max_log_records_to_discard, 3, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");

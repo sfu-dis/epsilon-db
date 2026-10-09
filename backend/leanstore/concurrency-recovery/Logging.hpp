@@ -45,7 +45,8 @@ struct Logging {
    // -------------------------------------------------------------------------------------
    atomic<u64> wal_gct_cursor = 0;  // GCT->W
    u8* wal_buffer;    // W->GCT
-   LID wal_lsn_counter = 0;
+   // XXX(mfd) : Only incremented under the log buffer mutex.
+   atomic<LID> wal_lsn_counter = 0;
    LID log_gsn_clock;
    u64 log_segment_start = -1;
    u64 log_segment_size = -1;
@@ -79,7 +80,7 @@ struct Logging {
          raise(SIGTRAP);
       }
       redirect_to_sink_log.store(false);
-      wal_lsn_counter = 0;
+      wal_lsn_counter.store(0);
       wal_log_cursor = 0;
       publishOffset();
       wal_gct_cursor.store(0);
@@ -223,16 +224,19 @@ struct Logging {
    // -------------------------------------------------------------------------------------
    u64 logSegmentFreeSpace()
    {
-      return log_segment_size - wal_lsn_counter;
+      return log_segment_size - wal_lsn_counter.load(std::memory_order_relaxed);
    }
    // -------------------------------------------------------------------------------------
    LID reserveLSN(u64 requested_size)
    {
-      ensure(is_sink_log || (wal_lsn_counter < log_segment_size));
-      ensure(wal_lsn_counter <= LSN_OFFSET_MASK);
-      const auto lsn = makeLSN(log_id, wal_lsn_counter);
+      const LID lsn_counter = wal_lsn_counter.load(std::memory_order_relaxed);
+      ensure(is_sink_log || (lsn_counter < log_segment_size));
+      ensure(lsn_counter <= LSN_OFFSET_MASK);
+      const auto lsn = makeLSN(log_id, lsn_counter);
       if (FLAGS_wal_pwrite) {
-         wal_lsn_counter += requested_size;
+         wal_lsn_counter.store(lsn_counter + requested_size, std::memory_order_relaxed);
+         // The caller writes the entry into the buffer after this point (see tryCopyFromWALBuffer).
+         std::atomic_thread_fence(std::memory_order_release);
       }
       ensure(walContiguousFreeSpace() >= requested_size);
       // XXX(mfd): This is an "unwanted" byproduct of static partitioning the log device into
@@ -252,9 +256,31 @@ struct Logging {
    }
    bool isInWALBuffer(LID lsn) const
    {
-      const u64 head = __atomic_load_n(&wal_lsn_counter, __ATOMIC_RELAXED);
+      const u64 head = wal_lsn_counter.load(std::memory_order_acquire);
       const u64 off = lsnOffset(lsn);
       return (off >= head) || (head - off <= FLAGS_wal_buffer_size);
+   }
+   bool tryCopyFromWALBuffer(LID lsn, u8* dst, u64 max_size) const
+   {
+      const u64 off = lsnOffset(lsn);
+      if (wal_lsn_counter.load(std::memory_order_relaxed) - off > FLAGS_wal_buffer_size) {
+         return false;  // Also covers log segment reset
+      }
+      ensure(max_size >= sizeof(WALEntry));
+      const u8* src = wal_buffer + (off % FLAGS_wal_buffer_size);
+      std::memcpy(dst, src, sizeof(WALEntry));
+      std::atomic_thread_fence(std::memory_order_acquire);
+      if (wal_lsn_counter.load(std::memory_order_relaxed) - off > FLAGS_wal_buffer_size) {
+         return false;  // Header overwritten while copying.
+      }
+      const u16 size = reinterpret_cast<const WALEntry*>(dst)->size;
+      ensure(sizeof(WALEntry) <= size && size <= max_size);
+      std::memcpy(dst + sizeof(WALEntry), src + sizeof(WALEntry), size - sizeof(WALEntry));
+      std::atomic_thread_fence(std::memory_order_acquire);
+      if (wal_lsn_counter.load(std::memory_order_relaxed) - off > FLAGS_wal_buffer_size) {
+         return false;  // Overwritten (or log segment was reset) while copying.
+      }
+      return true;
    }
    // Should only be used when resetting the log segment.
    void publishOffset() { wt_to_lw.updateAttribute(&WorkerToLW::wal_written_offset, wal_log_cursor); }
