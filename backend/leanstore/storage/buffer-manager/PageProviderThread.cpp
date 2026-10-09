@@ -295,7 +295,11 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             bool success = false;
             const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
             const u8 discard_count = std::min<u8>(bf.header.discard_count + 1, PageState::max_discard_count);
-            if (submitted_ppl) {
+            // A not yet persisted PPL entry is still in the WAL buffer (the GCT only lets it get
+            // overwritten once written to the log device), so a buffer miss can copy it from there.
+            // Otherwise, keep the page state locked until the PPL entry is persisted.
+            const bool wait_ppl_persisted = submitted_ppl && !FLAGS_read_log_from_wal_buffer;
+            if (wait_ppl_persisted) {
                to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.ppl.header.gsn, bf.page.last_written_lsn);
                success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
             } else {
@@ -303,7 +307,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
-               to_discard_queue.pop_back();
+               if (wait_ppl_persisted) to_discard_queue.pop_back();
                c_guard.guard.unlock();
                jumpmu::jump();
             }

@@ -820,10 +820,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
          // Therefore, I expect the page state to be unlocked.
-         // This only holds when PPL is disabled, because ppl keeps the page state
-         // locked until PPL entry is persisted.
+         // This only holds when PPL is disabled or the log records are read from the WAL buffer,
+         // otherwise ppl keeps the page state locked until PPL entry is persisted.
          const bool was_locked = discard_state[pid].isLocked();
-         ensure(FLAGS_per_page_logging || !was_locked);
+         ensure((FLAGS_per_page_logging && !FLAGS_read_log_from_wal_buffer) || !was_locked);
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
          discard_count = discard_state[pid].getDiscardCount();
