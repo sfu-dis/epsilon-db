@@ -47,7 +47,7 @@ columns:
 
   hot_w_mib:
     field: "HOT W"
-    enabled: false
+    enabled: true
     source: bm
 
   r_mib:
@@ -67,7 +67,7 @@ columns:
 
   gct_write_gib:
     field: "WAL GiB/s"
-    enabled: false
+    enabled: true
     source: cr
 
   log_buf:
@@ -289,5 +289,25 @@ columns:
   ruh_2_util_pct:
     field: "RUH2 %"
     enabled: true
+    source: bm
+
+  stock_discard_mib:
+    field: "Sto Dis"
+    enabled: false
+    source: bm
+
+  stock_w_mib:
+    field: "Sto W"
+    enabled: true
+    source: bm
+
+  orderline_w_mib:
+    field: "OL W"
+    enabled: false
+    source: bm
+
+  orderline_discard_mib:
+    field: "OL Dis"
+    enabled: false
     source: bm
 

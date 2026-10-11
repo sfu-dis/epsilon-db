@@ -271,7 +271,8 @@ void BMTable::open()
       col << local_log_reads_in_wal_buffer;
    });
    columns.emplace("log_reads_in_wal_buffer_pct", [this](Column& col) {
-      col << (local_log_reads_from_device ? (local_log_reads_in_wal_buffer * 100.0 / local_log_reads_from_device) : 0.0);
+      const u64 total_log_reads = local_log_reads_from_device + local_log_reads_in_wal_buffer;
+      col << (total_log_reads ? (local_log_reads_in_wal_buffer * 100.0) / (total_log_reads) : 0.0);
    });
    columns.emplace("consecutive_same_key_in_page", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::consecutive_same_key_in_page);
@@ -281,6 +282,7 @@ void BMTable::open()
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::txns_experienced_buffer_miss);
    });
    // -------------------------------------------------------------------------------------
+   // TODO(mfd) : Add a macro for TPCC_DEBUG_COUNTERS
 #if 1
    columns.emplace("stock_discard_mib", [this](Column& col) {
       col << sum(PPCounters::pp_counters, &PPCounters::discarded_pages_per_dtid, 9) * PAGE_SIZE / 1048576.0;
@@ -294,10 +296,10 @@ void BMTable::open()
    columns.emplace("orderline_w_mib", [this](Column& col) {
       col << sum(PPCounters::pp_counters, &PPCounters::written_back_pages_per_dtid, 10) * PAGE_SIZE / 1048576.0;
    });
-#endif
    columns.emplace("dirty_ol_mib", [this](Column& col) {
       col << sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_orderlike_counter) * PAGE_SIZE / 1048576.0;
    });
+#endif
 }
 // -------------------------------------------------------------------------------------
 void BMTable::next()

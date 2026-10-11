@@ -993,8 +993,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          ensure_equal(bf.header.pending_lsn_count, 0);
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
-         // ensure(!FLAGS_per_page_logging || (nb_log_records == 1));
-         ensure(bf.ppl.absorbed_writes > 0);
+         ensure(!FLAGS_per_page_logging || (bf.ppl.absorbed_writes > 0));
          if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);

@@ -133,6 +133,7 @@ DEFINE_bool(per_page_logging, true, "Group log records per page");
 DEFINE_uint32(ppl_merge_threshold, 4, "Threshold after which we merge the log records of a page");
 DEFINE_bool(opportunistic_log_compaction, true, "Merge consecutive log records that target same record whenever possible");
 DEFINE_uint32(background_page_fixer_variant, 1, "Only 1 supported for now"); // Unused
+// TODO(mfd) : remove this flag
 DEFINE_bool(log_same_device_fdp, false, "Isolate the WAL traffic to a diffrent RUH.");
 DEFINE_bool(trace_ru_threshold, true, "Periodically trace the ru threshold of all open RUs");
 // -------------------------------------------------------------------------------------
@@ -140,8 +141,9 @@ DEFINE_uint64(tx_rate, 0, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(redo_log_file, "", ""); // Should provide a log file for now
 DEFINE_uint64(log_dev_size_gib, 0, "Size of the log device, 0 value will read actual device size");
-DEFINE_bool(log_same_namespace, true, "Place the WAL in a disjoint LBA range at the end of ssd_path instead of a separate device");
+DEFINE_bool(log_same_namespace, false, "Place the WAL in a disjoint LBA range at the end of ssd_path instead of a separate device");
 DEFINE_double(log_space_pct, 10.0, "Percentage of ssd_path reserved for the WAL when log_same_namespace is set");
+// TODO(mfd) : rename discard to trim to avoid confusiom
 DEFINE_bool(log_discard_on_reclaim, true, "Trim (BLKDISCARD) the log segment of an RU epoch once it is reclaimed");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");

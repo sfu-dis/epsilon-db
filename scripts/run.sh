@@ -85,6 +85,8 @@ fdp_placement=Default
 fdp_reformat=0
 fdp_nruh=0
 
+log_same_namespace=0
+
 original_args=("$@")
 
 
@@ -330,6 +332,12 @@ fi
 
 if ((fdp_reformat == 1 && trim == 0)); then
    trim=1
+fi
+
+if [[ "${log_device}" == "${device}" ]] ; then
+   log_same_namespace=1
+   # Make sure FDP is enabled
+   enable_fdp=1
 fi
 
 if (( fdp_waf == 1 && fdp_reformat == 0 )); then
@@ -642,6 +650,10 @@ cp "$FLAGS_FILE" "$run_flags"
    fi
 
    echo "--fdp_placement_policy=${fdp_placement}"
+
+   if (( log_same_namespace == 1 )); then
+      echo "--log_same_namespace"
+   fi
 
 } > "${common_flags}"
 
