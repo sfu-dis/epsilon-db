@@ -257,6 +257,17 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                c_guard.guard.unlock();
                jumpmu::jump();
             }
+            /// FIXME(mfd): This block will be unnecessary once background page fixing fixes hot pages.
+            /// Once it is implemented the first one who acquires the buffer frame mutex is responsible for fixing the page, so it is safe if it is discarded.
+            /// Same applies to the above check. However for the above check I would only need to check for equaltity. Currently reclaiming. I never expec < reclaiming because this means that the             /// bg page fixer has acquired this mutex which could not happen because we checked for
+            /// condition and then acquired the bf mutex and the condition is still holding.
+            /// FOr the condition to stop holding the bg page fixer must acquie bf mutex.
+            cr::Logging& ru_epoch_log = cr::LogManager::getLog(bf.page.ru_epoch);
+            if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
+               bf.markUnDiscardable(OTHER);
+               c_guard.guard.unlock();
+               jumpmu::jump();
+            }
             // tryDiscard will fail only in those two cases.
             //  1. The GC thread is currently fixing the page (entry locked).
             //  2. The GC thread has already fixed the page (marked gc_fixed).
@@ -299,12 +310,25 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // overwritten once written to the log device), so a buffer miss can copy it from there.
             // Otherwise, keep the page state locked until the PPL entry is persisted.
             const bool wait_ppl_persisted = submitted_ppl && !FLAGS_read_log_from_wal_buffer;
+            // The log may have got full since the check above. The log_only GC seals the log under
+            // its mutex before scanning, so either it sees the page discarded or we see the redirect.
+            std::unique_lock ru_epoch_log_guard(ru_epoch_log.mutex);
+            if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
+               ru_epoch_log_guard.unlock();
+               if (pending_lsn != bf.header.pending_lsn) {
+                  per_pp_allocator[pp_id].free(pending_lsn, bf.header.pending_lsn_count);
+               }
+               bf.markUnDiscardable(OTHER);
+               c_guard.guard.unlock();
+               jumpmu::jump();
+            }
             if (wait_ppl_persisted) {
                to_discard_queue.emplace_back(bf.header.logging->log_id, bf.header.pid, bf.ppl.header.gsn, bf.page.last_written_lsn);
                success = discard_state[evicted_pid].tryDiscard<true>(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
             } else {
                success = discard_state[evicted_pid].tryDiscard<false>(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
             }
+            ru_epoch_log_guard.unlock();
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             if (!success) {
                if (wait_ppl_persisted) to_discard_queue.pop_back();
