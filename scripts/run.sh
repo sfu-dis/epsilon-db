@@ -585,14 +585,15 @@ waf() {
    # echo "Background WAF sampling process: starting"
    if (( fdp_waf == 1 )); then
       while true; do
-         wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
+         # wafstr="$(echo ${passwd} | sudo -S nvme fdp stats ${device} -e 1)"
+         wafstr="$(run nvme fdp stats ${device} -e 1)"
          echo "${wafstr}"
          echo "${wafstr}" | awk '/(HBMW)/ {hbmw = $7} /(MBMW)/ {mbmw = $7} END {if (hbmw == 0) print 0; else print mbmw / hbmw}'
          echo "${wafstr}" | awk '/(HBMW)/ {hbmw= $7} /(MBMW)/ {mbmw = $7} END {print mbmw-hbmw}'
          sleep 600s
       done;
    else
-     sudo bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}"
+     run bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}"
    fi
 }
 
@@ -755,8 +756,8 @@ fi
 
 # lauch the WAF calculator in the background
 if (( stats_dir == 1 )); then
-   # run waf > "${dir_name}/waf" &
-   run bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}" > "${dir_name}/waf" &
+   waf > "${dir_name}/waf" &
+   # run bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}" > "${dir_name}/waf" &
 
    waf_pid=$!
 
