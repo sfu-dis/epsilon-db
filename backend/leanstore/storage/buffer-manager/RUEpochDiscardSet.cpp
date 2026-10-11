@@ -54,19 +54,34 @@ void RUEpochDiscardSet::resetWithoutGC()
    clear();
 }
 // -------------------------------------------------------------------------------------
+// Responsability of the caller to acquire the set lock
+void RUEpochDiscardSet::afterLogReclaim()
+{
+   ensure(log_reclaimed.load());
+   ensure_equal(done_gc, 0);
+   clearGCState();
+}
+// -------------------------------------------------------------------------------------
+void RUEpochDiscardSet::clearGCState()
+{
+   offset_batch = 0;
+   is_currently_being_garbage_collected = false;
+   log_segment_start = -1;
+   log_segment_size = -1;
+   // Last, the other GC threads spin on it.
+   done_gc = FLAGS_ru_gc_threads;
+}
+// -------------------------------------------------------------------------------------
 void RUEpochDiscardSet::clear()
 {
    ensure(force_gc == false);
-   offset_batch = 0;
    inserted = 0;
    deleted = 0;
-   is_currently_being_garbage_collected = false;
    total = 0;
    invalid = 0;
-   done_gc = FLAGS_ru_gc_threads;
    total_fixed = 0;
-   log_segment_start = -1;
-   log_segment_size = -1;
+   log_reclaimed = false;
+   clearGCState();
    cur_ru_epoch = -1;
    active.store(false);
    // std::memset(undiscardable_cause_distribution, 0, sizeof(undiscardable_cause_distribution));
@@ -93,6 +108,7 @@ void RUEpochDiscardSet::dump()
    cout << "log_segment_size: " << log_segment_size << endl;
 
    cout << "force_gc: " << (force_gc ? "true" : "false") << endl;
+   cout << "log_reclaimed: " << (log_reclaimed.load() ? "true" : "false") << endl;
 
    cout << "offset_batch: " << offset_batch.load() << endl;
 

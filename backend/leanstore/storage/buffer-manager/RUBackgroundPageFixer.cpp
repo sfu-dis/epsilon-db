@@ -63,12 +63,13 @@ struct RUBackgroundPageFixer::ThreadContext {
    // Pages of the current batch, indexed like buf_pages.
    std::vector<page_info> to_fix_pids;
    // -------------------------------------------------------------------------------------
-   // RU epochs [min_uncollected_ru_epoch, max_collected_ru_epoch) are the ones left to collect.
-   ru_epoch_t max_collected_ru_epoch = 0;
-   ru_epoch_t min_uncollected_ru_epoch = 0;
+   // Jobs of to_gc_epochs already picked up, and those left to collect.
+   u64 picked_up_jobs = 0;
+   std::vector<GCJob> jobs;
    // -------------------------------------------------------------------------------------
    // The RU epoch being collected and its mapped log segment.
    ru_epoch_t current_gc_epoch = -1;
+   bool log_only = false;  // see tryEnqueueRUEpoch()
    u32 currently_reclaiming_log_id = 0;
    u8* log_records = nullptr;
    u64 cur_log_segment_size = 0;
@@ -103,13 +104,13 @@ void RUBackgroundPageFixer::start()
    }
 }
 // -------------------------------------------------------------------------------------
-bool RUBackgroundPageFixer::tryEnqueueRUEpoch(ru_epoch_t ru_epoch)
+bool RUBackgroundPageFixer::tryEnqueueRUEpoch(ru_epoch_t ru_epoch, bool log_only)
 {
    // Give priority to the bg page fixer thread, No need to contend with them.
    if (!queue_m.try_lock()) {
       return false;
    }
-   to_gc_epochs.push_back(ru_epoch);
+   to_gc_epochs.push_back({ru_epoch, log_only});
    if (sleeping_threads > 0) {
       queue_m.unlock();
       queue_cv.notify_all();
@@ -137,11 +138,10 @@ void RUBackgroundPageFixer::run(u32 gc_id)
    ThreadContext ctx(gc_id);
    while (bm.bg_threads_keep_running) {
       waitForRUEpochsToCollect(ctx);
-      for (ru_epoch_t gc_ru_epoch = ctx.min_uncollected_ru_epoch; gc_ru_epoch < ctx.max_collected_ru_epoch; gc_ru_epoch++) {
+      for (const GCJob& job : ctx.jobs) {
          if (!bm.bg_threads_keep_running) break;
-         collectRUEpoch(ctx, gc_ru_epoch);
+         collectRUEpoch(ctx, job);
       }
-      ctx.min_uncollected_ru_epoch = ctx.max_collected_ru_epoch;
    }
    bm.bg_threads_counter--;
    running_threads--;
@@ -152,24 +152,30 @@ void RUBackgroundPageFixer::waitForRUEpochsToCollect(ThreadContext& ctx)
    std::unique_lock _l(queue_m);
    sleeping_threads++;
    queue_cv.wait(_l, [&ctx, this]() {
-      return to_gc_epochs.size() > static_cast<u64>(ctx.max_collected_ru_epoch) || !bm.bg_threads_keep_running;
+      return to_gc_epochs.size() > ctx.picked_up_jobs || !bm.bg_threads_keep_running;
    });
    sleeping_threads--;
-   ctx.max_collected_ru_epoch = to_gc_epochs.size();
+   ctx.jobs.assign(to_gc_epochs.begin() + ctx.picked_up_jobs, to_gc_epochs.end());
+   ctx.picked_up_jobs = to_gc_epochs.size();
 }
 // -------------------------------------------------------------------------------------
-void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, ru_epoch_t gc_ru_epoch)
+void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
 {
+   const ru_epoch_t gc_ru_epoch = job.ru_epoch;
    ctx.current_gc_epoch = gc_ru_epoch;
+   ctx.log_only = job.log_only;
    auto& set = bm.ru_discard_set[DEFAULT_RUH][gc_ru_epoch];
    auto& logging = cr::LogManager::getLog(gc_ru_epoch);
    ctx.currently_reclaiming_log_id = logging.log_id;
-   mapRUEpochLog(gc_ru_epoch, logging);
+   // The log of an RU epoch is reclaimed only once. When it was reclaimed early, by a log_only
+   // job (which always precedes in the queue), its pages are already fixed and its log is empty.
+   const bool scan_log = job.log_only || !set.log_reclaimed.load(std::memory_order_acquire);
+   mapRUEpochLog(ctx, logging, scan_log);
    auto start = std::chrono::system_clock::now();
 
    u64 offset = 0;  // local offset
    ctx.log_records = static_cast<u8*>(set.mmaped_log);
-   ctx.cur_log_segment_size = set.log_segment_size;
+   ctx.cur_log_segment_size = scan_log ? set.log_segment_size : 0;
 
    // The GC threads split the log in batches of 4 KiB.
    while (offset + sizeof(cr::WALEntry) < ctx.cur_log_segment_size) {
@@ -183,7 +189,11 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, ru_epoch_t gc_ru_
    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
    set.total_fixed.fetch_add(ctx.total_fixed);
    if (set.done_gc.fetch_sub(1) == 1) {
-      finishRUEpoch(ctx, duration.count());
+      if (ctx.log_only) {
+         finishRUEpochLogReclaim(ctx, duration.count());
+      } else {
+         finishRUEpoch(ctx, duration.count());
+      }
    }
    ctx.total_fixed = 0;
    while (set.done_gc.load() != FLAGS_ru_gc_threads) {
@@ -191,8 +201,9 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, ru_epoch_t gc_ru_
 }
 // -------------------------------------------------------------------------------------
 // The first GC thread to reach the RU epoch seals its log and maps it for all the others.
-void RUBackgroundPageFixer::mapRUEpochLog(ru_epoch_t gc_ru_epoch, cr::Logging& logging)
+void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& logging, bool scan_log)
 {
+   const ru_epoch_t gc_ru_epoch = ctx.current_gc_epoch;
    auto& set = bm.ru_discard_set[DEFAULT_RUH][gc_ru_epoch];
    ru_epoch_t prev_gc_ru_epoch = gc_ru_epoch - 1;
    set.m.lock();
@@ -201,9 +212,22 @@ void RUBackgroundPageFixer::mapRUEpochLog(ru_epoch_t gc_ru_epoch, cr::Logging& l
       return;
    }
    logging.mutex.lock();
-   // makes sure not log records or holes will appear in this log in the future.
-   bool ok = bm.reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, gc_ru_epoch);
-   ensure(ok);
+   if (ctx.log_only) {
+      // A full log is already redirected to the sink logs (see Logging::reserveLSN()), which
+      // keeps it sealed. The RU epoch is not reclaimed, so reclaiming_ru_epoch stays as is.
+      ensure(logging.redirect_to_sink_log.load(std::memory_order_acquire));
+   } else {
+      // makes sure not log records or holes will appear in this log in the future.
+      bool ok = bm.reclaiming_ru_epoch.compare_exchange_strong(prev_gc_ru_epoch, gc_ru_epoch);
+      ensure(ok);
+   }
+   if (!scan_log) {
+      // The log was reclaimed early and stayed redirected since, nothing to scan.
+      logging.mutex.unlock();
+      set.m.unlock();
+      LOG_INFO(bm.logger, "Garbage collecting RU epoch %lu whose log was already reclaimed", gc_ru_epoch);
+      return;
+   }
 
    // wait until all holes in the log buffer are filled.
    logging.drain_holes();
@@ -234,7 +258,8 @@ void RUBackgroundPageFixer::mapRUEpochLog(ru_epoch_t gc_ru_epoch, cr::Logging& l
    set.m.unlock();
    const double threshold = set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed);
    const s32 discarded_pages = set.inserted.load(std::memory_order_relaxed) - set.deleted.load(std::memory_order_relaxed);
-   LOG_INFO(bm.logger, "Garbage collecting RU epoch %lu with threshold %.2f: upper bound on pages to fix %d, log size to scan %lu", gc_ru_epoch, threshold, discarded_pages, set.log_segment_size);
+   LOG_INFO(bm.logger, "Garbage collecting %sRU epoch %lu with threshold %.2f: upper bound on pages to fix %d, log size to scan %lu",
+            ctx.log_only ? "the full log of " : "", gc_ru_epoch, threshold, discarded_pages, set.log_segment_size);
 }
 // -------------------------------------------------------------------------------------
 // Called by the last GC thread done with the RU epoch.
@@ -248,18 +273,42 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
    const u32 ru_usage = set.ReclaimUnitUsage();
    bm.bm_stats.estimated_gc_writes.fetch_add(set.total.load() - ru_usage);
    const u64 fixed_pages_in_ru = set.total_fixed.load();
+   const bool log_already_reclaimed = set.log_reclaimed.load();
+   set.m.lock();
+   if (!log_already_reclaimed) {
+      const int rc = munmap(set.mmaped_log, ctx.cur_log_segment_size);
+      ensure_equal(rc, 0);
+      set.mmaped_log = nullptr;
+   }
+   set.reset();
+   bm.reclaimed_ru_epoch[DEFAULT_RUH].fetch_add(1);
+   // Also stops redirecting an early reclaimed log, so that the next RU epoch mapped to it can use it.
+   logging.reset();
+   set.m.unlock();
+   if (!log_already_reclaimed && FLAGS_wal && FLAGS_wal_pwrite) {
+      cr::LogManager::global->resetLogSegment(ctx.current_gc_epoch);
+   }
+   LOG_INFO(bm.logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", ctx.current_gc_epoch, seconds_taken, fixed_pages_in_ru, ru_usage);
+}
+// -------------------------------------------------------------------------------------
+// Called by the last GC thread done with a log_only job: the discarded pages are fixed, so the log
+// space is reclaimed. The RU epoch itself is not, it stays undiscardable until its in-order pass.
+void RUBackgroundPageFixer::finishRUEpochLogReclaim(ThreadContext& ctx, u64 seconds_taken)
+{
+   auto& set = bm.ru_discard_set[DEFAULT_RUH][ctx.current_gc_epoch];
+   auto& logging = cr::LogManager::getLog(ctx.current_gc_epoch);
+   const u64 fixed_pages_in_ru = set.total_fixed.load();
    set.m.lock();
    const int rc = munmap(set.mmaped_log, ctx.cur_log_segment_size);
    ensure_equal(rc, 0);
    set.mmaped_log = nullptr;
-   set.reset();
-   bm.reclaimed_ru_epoch[DEFAULT_RUH].fetch_add(1);
-   logging.reset();
+   set.afterLogReclaim();
+   logging.reset(/* keep_redirecting */ true);
    set.m.unlock();
    if (FLAGS_wal && FLAGS_wal_pwrite) {
       cr::LogManager::global->resetLogSegment(ctx.current_gc_epoch);
    }
-   LOG_INFO(bm.logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", ctx.current_gc_epoch, seconds_taken, fixed_pages_in_ru, ru_usage);
+   LOG_INFO(bm.logger, "GC full log of epoch %lu, time taken %lu seconds : Pages fixed = %lu", ctx.current_gc_epoch, seconds_taken, fixed_pages_in_ru);
 }
 // -------------------------------------------------------------------------------------
 u64 RUBackgroundPageFixer::scanLogBatch(ThreadContext& ctx, u64& offset)

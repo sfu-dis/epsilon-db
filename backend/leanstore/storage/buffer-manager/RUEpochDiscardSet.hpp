@@ -22,6 +22,9 @@ struct RUEpochDiscardSet {
    u64 log_segment_start = -1;
    u64 log_segment_size = -1;
    bool force_gc = false;
+   // Set by the ru_epoch_mgr once it dispatched the RU epoch because its log got full. Its log
+   // is then reclaimed without freeing the RU epoch, which stays undiscardable until it is reclaimed.
+   atomic<bool> log_reclaimed{false};
    alignas(CACHE_LINE_SIZE) atomic<u64> offset_batch{0};
    // -------------------------------------------------------------------------------------
    alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
@@ -53,12 +56,16 @@ struct RUEpochDiscardSet {
    // Both resets leave advancing the RUH's reclaimed_ru_epoch to the caller.
    void reset();
    void resetWithoutGC();
+   // Prepares the set for the in-order pass after its log got reclaimed, keeps the accounting.
+   void afterLogReclaim();
    u32 ReclaimUnitUsage();
    bool shouldGC();
    void dump();
 
   private:
    void clear();
+   // Resets the state of the GC pass only, shared by clear() and afterLogReclaim().
+   void clearGCState();
 };
 // -------------------------------------------------------------------------------------
 // Ring of RUEpochDiscardSet indexed by RU epoch, one per RUH.

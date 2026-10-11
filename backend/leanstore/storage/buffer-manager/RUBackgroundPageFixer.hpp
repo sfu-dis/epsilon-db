@@ -34,13 +34,19 @@ class RUBackgroundPageFixer
    void start();
    // Hands an RU epoch over to the ru_gc threads. Returns false, without enqueuing,
    // when the queue lock is contended.
-   bool tryEnqueueRUEpoch(ru_epoch_t ru_epoch);
+   // log_only : the RU epoch's log is full, fix its discarded pages and reclaim its log
+   // but do not free the RU epoch, it is freed later by its in-order pass.
+   bool tryEnqueueRUEpoch(ru_epoch_t ru_epoch, bool log_only = false);
    // Wakes up all the sleeping ru_gc threads, used on shutdown so that they could exit.
    void wakeUpAll();
    u64 runningThreads() const { return running_threads.load(); }
 
   private:
    struct ThreadContext;  // Per ru_gc thread state, defined in the .cpp
+   struct GCJob {
+      ru_epoch_t ru_epoch;
+      bool log_only;
+   };
    // -------------------------------------------------------------------------------------
    BufferManager& bm;
    // -------------------------------------------------------------------------------------
@@ -48,18 +54,18 @@ class RUBackgroundPageFixer
    // RU epochs to collect, in order. Only grows, each thread tracks how far it got.
    // FIXME(mfd) : The fact that it only grows is just because I was lazy to think
    // about properi concurrent reclaiming.
-   // Also, need to fix the hack that uses the size of the queue to know the ru_epoch.
    std::mutex queue_m;
    std::condition_variable queue_cv;
-   std::vector<ru_epoch_t> to_gc_epochs;
+   std::vector<GCJob> to_gc_epochs;
    int sleeping_threads{0};  // protected by queue_m
    std::atomic<u64> running_threads{0};
    // -------------------------------------------------------------------------------------
    void run(u32 gc_id);
    void waitForRUEpochsToCollect(ThreadContext& ctx);
-   void collectRUEpoch(ThreadContext& ctx, ru_epoch_t gc_ru_epoch);
-   void mapRUEpochLog(ru_epoch_t gc_ru_epoch, cr::Logging& logging);
+   void collectRUEpoch(ThreadContext& ctx, GCJob job);
+   void mapRUEpochLog(ThreadContext& ctx, cr::Logging& logging, bool scan_log);
    void finishRUEpoch(ThreadContext& ctx, u64 seconds_taken);
+   void finishRUEpochLogReclaim(ThreadContext& ctx, u64 seconds_taken);
    // Scans the next 4 KiB of the log and issues the reads of the discarded pages to fix.
    u64 scanLogBatch(ThreadContext& ctx, u64& offset);
    bool registerPageToFix(ThreadContext& ctx, const cr::WALEntry& entry, PID pid, u64 idx);

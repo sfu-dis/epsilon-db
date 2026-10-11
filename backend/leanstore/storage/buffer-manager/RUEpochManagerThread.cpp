@@ -5,6 +5,8 @@
 #include "Exceptions.hpp"
 #include "RUBackgroundPageFixer.hpp"
 #include "leanstore/Config.hpp"
+#include "leanstore/concurrency-recovery/LogManager.hpp"
+#include "leanstore/concurrency-recovery/Logging.hpp"
 // -------------------------------------------------------------------------------------
 #include <gflags/gflags.h>
 // -------------------------------------------------------------------------------------
@@ -64,6 +66,7 @@ void RUEpochManager::run()
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       checkForNewRUEpochs();
       if (FLAGS_enable_discarding) {
+         dispatchFullLogRUEpochsToGC();
          dispatchOldestRUEpochToGC();
          // The HOT RUH holds the self invalidating pages, its RU epochs are reclaimed inline.
          if (fdp::hot_ruh != UNMAPPED_RUH) {
@@ -197,10 +200,45 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
 {
    const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
    const ru_epoch_t newest = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
-   if (oldest < newest && bm.ru_discard_set[DEFAULT_RUH][oldest].shouldGC()) {
+   if (oldest >= newest) {
+      return;
+   }
+   auto& set = bm.ru_discard_set[DEFAULT_RUH][oldest];
+   // Its log is already reclaimed and it is undiscardable since, nothing to wait for.
+   const bool log_reclaimed = set.log_reclaimed.load(std::memory_order_relaxed);
+   if (log_reclaimed) {
+      set.force_gc = false;
+   }
+   if (log_reclaimed || set.shouldGC()) {
       if (bm.ru_bg_page_fixer->tryEnqueueRUEpoch(oldest)) {
          bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
       }
+   }
+}
+// -------------------------------------------------------------------------------------
+// A full log is redirected to the sink logs by the workers (see Logging::reserveLSN()), which
+// disables discarding for its RU epoch. Its discarded pages are fixed right away so that the log
+// space gets reclaimed, the RU epoch itself is only freed when it becomes the oldest one.
+void RUEpochManager::dispatchFullLogRUEpochsToGC()
+{
+   if (!cr::LogManager::global->isPartitionedByRUepoch()) {
+      return;
+   }
+   const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+   const ru_epoch_t newest = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+   for (ru_epoch_t r = oldest; r <= newest; ++r) {
+      auto& set = bm.ru_discard_set[DEFAULT_RUH][r];
+      if (set.log_reclaimed.load(std::memory_order_relaxed)
+          || !cr::LogManager::getLog(r).redirect_to_sink_log.load(std::memory_order_acquire)) {
+         continue;
+      }
+      // Before enqueuing, the GC threads expect it set.
+      set.log_reclaimed.store(true, std::memory_order_release);
+      if (!bm.ru_bg_page_fixer->tryEnqueueRUEpoch(r, /* log_only */ true)) {
+         set.log_reclaimed.store(false, std::memory_order_release);
+         return;
+      }
+      LOG_INFO(bm.logger, "RU epoch %ld : log %u is full, dispatched to reclaim its log", r, cr::LogManager::getLogID(r));
    }
 }
 // -------------------------------------------------------------------------------------

@@ -72,14 +72,15 @@ struct Logging {
    utils::CircularQueue<hole_t, MAX_PENDING_HOLES> holes;
    // -------------------------------------------------------------------------------------
    // Should be called only by the group committer thread.
-   void reset()
+   // keep_redirecting : the log stays closed, used when the log is reclaimed before its RU epoch.
+   void reset(bool keep_redirecting = false)
    {
       std::lock_guard _l(mutex);
       if (wal_log_cursor != wal_gct_cursor.load()) {
          cerr << "Trying to reset a log while there are some log entries in the buffer" << endl;
          raise(SIGTRAP);
       }
-      redirect_to_sink_log.store(false);
+      redirect_to_sink_log.store(keep_redirecting);
       wal_lsn_counter.store(0);
       wal_log_cursor = 0;
       publishOffset();
@@ -248,7 +249,7 @@ struct Logging {
          // need to drain all holes here.
          drain_holes();
          // After draining all holes, no more log records will appear in this log until it is reclaimed.
-         // TODO(mfd) : Optinally just garbage collect the corresponding RU epoch.
+         // The ru_epoch_mgr then dispatches the corresponding RU epoch to reclaim this log.
          LOG_WARN(LogManager::global->logger, "Log %u is full, disable discarding for it and redirect the log entries to sink logs", log_id);
 
       }

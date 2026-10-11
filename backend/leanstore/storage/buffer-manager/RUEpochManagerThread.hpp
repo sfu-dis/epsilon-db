@@ -41,6 +41,8 @@ class RUEpochManager
    void checkForNewRUEpochs();
    void checkForNewRUEpoch(ruh_id_t ruh);
    void dispatchOldestRUEpochToGC();
+   // Dispatches the RU epochs whose log got full so that their log space gets reclaimed.
+   void dispatchFullLogRUEpochsToGC();
    void initThresholdsTrace();
    void traceThresholds(const char* label);
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
