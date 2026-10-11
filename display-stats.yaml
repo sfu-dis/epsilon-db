@@ -226,11 +226,6 @@ columns:
     enabled: false
     source: bm
 
-  ppl_not_yet_persisted:
-    field: "NP PPL"
-    enabled: false
-    source: bm
-
   log_reads:
     field: "LogRd"
     enabled: false

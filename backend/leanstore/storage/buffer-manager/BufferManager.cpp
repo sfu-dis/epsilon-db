@@ -820,16 +820,10 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
          // Therefore, I expect the page state to be unlocked.
-         // This only holds when PPL is disabled or the log records are read from the WAL buffer,
-         // otherwise ppl keeps the page state locked until PPL entry is persisted.
-         const bool was_locked = discard_state[pid].isLocked();
-         ensure((FLAGS_per_page_logging && !FLAGS_read_log_from_wal_buffer) || !was_locked);
+         ensure(!discard_state[pid].isLocked());
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
          discard_count = discard_state[pid].getDiscardCount();
-         COUNTERS_BLOCK(ppl_not_yet_persisted) {
-            if (was_locked) { WorkerCounters::myCounters().ppl_not_yet_persisted++; }
-         }
       }
       if (page_need_fixing) {
          gc_fixed = discard_state[pid].isClean();
@@ -854,19 +848,17 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          // issue the asynchronus log record read.
          ensure(discard_state[pid].isDiscarded());
          for (u8 i = 0; i < nb_log_records; ++i) {
-            if (FLAGS_read_log_from_wal_buffer) {
-               // Try to get the log record from the WAL buffer first.
-               // fix_dirty_page expects the record at the same in-block offset as a device read.
-               const u64 lsn_offset_in_block = lsnOffset(lsn_list[i]) % 4096;
-               u8* dst = cr::Worker::my().log_record_buf + 4096 * i + lsn_offset_in_block;
-               const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
-               if (cr::LogManager::global->all_logs[log_id].tryCopyFromWALBuffer(lsn_list[i], dst, 4096 - lsn_offset_in_block)) {
-                  COUNTERS_BLOCK(log_reads_in_wal_buffer)
-                  {
-                     WorkerCounters::myCounters().log_reads_in_wal_buffer++;
-                  }
-                  continue;
+            // Try to get the log record from the WAL buffer first.
+            // fix_dirty_page expects the record at the same in-block offset as a device read.
+            const u64 lsn_offset_in_block = lsnOffset(lsn_list[i]) % 4096;
+            u8* dst = cr::Worker::my().log_record_buf + 4096 * i + lsn_offset_in_block;
+            const u32 log_id = cr::LogManager::global->LSN2LogID(lsn_list[i]);
+            if (cr::LogManager::global->all_logs[log_id].tryCopyFromWALBuffer(lsn_list[i], dst, 4096 - lsn_offset_in_block)) {
+               COUNTERS_BLOCK(log_reads_in_wal_buffer)
+               {
+                  WorkerCounters::myCounters().log_reads_in_wal_buffer++;
                }
+               continue;
             }
             struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
             ensure(sqe != nullptr);

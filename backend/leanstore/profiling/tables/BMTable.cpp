@@ -261,9 +261,6 @@ void BMTable::open()
       col << (local_agg_io_phase_us * 1.0) / local_read_operations_counter;
    });
    // -------------------------------------------------------------------------------------
-   columns.emplace("ppl_not_yet_persisted", [this](Column& col) {
-      col << sum(WorkerCounters::worker_counters, &WorkerCounters::ppl_not_yet_persisted);
-   });
    columns.emplace("log_reads", [this](Column& col) {
       col << local_log_reads_from_device;
    });

@@ -109,7 +109,6 @@ struct PageState {
    u64 lock();
    std::pair<u64, u8> getLocked();
    // -------------------------------------------------------------------------------------
-   template <bool keep_locked>
    bool tryDiscard(LID* pending_lsn, u64 pending_lsn_count, u64 log_id, u8 discard_count)
    {
       u64 v1 = raw.load(std::memory_order_acquire);
@@ -135,11 +134,7 @@ struct PageState {
       } else {
          new_value |= encodeLSNArray(pending_lsn);
       }
-      if constexpr (keep_locked) {
-         raw.store(new_value | latch_bit, std::memory_order_release);
-      } else {
-         raw.store(new_value, std::memory_order_release);
-      }
+      raw.store(new_value, std::memory_order_release);
       return true;
    }
    u32 getLogID()
