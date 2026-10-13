@@ -48,6 +48,7 @@ struct LogManager {
    // This is the offset of log itself, so it is log_file_offset + meta block size
    u64 log_start_offset;
    u64 log_segment_size;
+   u64 fake_wrap_around_offset = 0;
    struct meta_block* meta = nullptr;
    u64 meta_size;
    // -------------------------------------------------------------------------------------

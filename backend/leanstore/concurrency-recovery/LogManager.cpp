@@ -46,6 +46,14 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
    // log file size to be an integer multiple of the log buffer size.
    log_segment_size = log_segment_size - (log_segment_size % FLAGS_wal_buffer_size);
    LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size/1073741824.0);
+   if (FLAGS_log_fake_wrap_around) {
+      // There is no checkpointer, pretend one truncates the log whenever half of a segment is used.
+      // Keep the wrap around offset a multiple of the log buffer size so that the device offset and the LSN
+      // stay congruent to the log buffer offset.
+      fake_wrap_around_offset = (log_segment_size / 2) - ((log_segment_size / 2) % FLAGS_wal_buffer_size);
+      ensure(fake_wrap_around_offset >= FLAGS_wal_buffer_size);
+      LOG_INFO(logger, "Fake log wrap around at : %.3f GiB", fake_wrap_around_offset/1073741824.0);
+   }
    trim_enabled.store(FLAGS_log_discard_on_reclaim && FLAGS_wal_pwrite);
    // -------------------------------------------------------------------------------------
    const bool recover_wal = !FLAGS_initialize_leanstore && !FLAGS_skip_wal_recovery;
@@ -87,6 +95,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
       logging.log_id = log_i;
       logging.log_segment_start = seg->start_off;
       logging.log_segment_size = log_segment_size;
+      logging.fake_wrap_around_offset = fake_wrap_around_offset;
       logging.wal_lsn_counter = recover_wal ? seg->offset : 0;
       logging.log_gsn_clock = recover_wal ? (seg->hardened_gsn) : 0;
       logging.wt_to_lw.current_value.last_gsn = logging.hardened_gsn = logging.log_gsn_clock;
@@ -268,6 +277,18 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    }
    if (!block_full) {
       lseg.offset -= LOG_DEV_BLK_SIZE;
+   }
+   if (fake_wrap_around_offset && lseg.offset >= fake_wrap_around_offset) {
+      // Writes never cross the end of the log buffer, hence never cross the wrap around offset.
+      ensure_equal(lseg.offset, fake_wrap_around_offset);
+      lseg.offset = 0;
+      LOG_INFO(logger, "Fake wrap around of log %u at %.4f GiB", log_i, fake_wrap_around_offset / 1073741824.0);
+      COUNTERS_BLOCK(log_space_usage)
+      {
+         if (!isSinkLog(log_i)) {
+            log_stats.bytes_used.fetch_sub(fake_wrap_around_offset, std::memory_order_release);
+         }
+      }
    }
    COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
 }

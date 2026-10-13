@@ -50,6 +50,7 @@ struct Logging {
    LID log_gsn_clock;
    u64 log_segment_start = -1;
    u64 log_segment_size = -1;
+   u64 fake_wrap_around_offset = 0;
    bool is_sink_log = false;
    std::atomic<bool> redirect_to_sink_log = false;
    // -------------------------------------------------------------------------------------

@@ -146,6 +146,7 @@ DEFINE_bool(log_same_namespace, false, "Place the WAL in a disjoint LBA range at
 DEFINE_double(log_space_pct, 10.0, "Percentage of ssd_path reserved for the WAL when log_same_namespace is set");
 // TODO(mfd) : rename discard to trim to avoid confusiom
 DEFINE_bool(log_discard_on_reclaim, true, "Trim (BLKDISCARD) the log segment of an RU epoch once it is reclaimed");
+DEFINE_bool(log_fake_wrap_around, false, "Artificially wrap each log segment around at half its size (stands in for the missing checkpointer, vanilla only)");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");
 DEFINE_string(fdp_placement_policy, "Default", "FDP placement policy: Default, FreezeNewlyAllocated, FreezeTables, HardcodedTPCC or FrozenRecords");

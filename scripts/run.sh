@@ -693,6 +693,7 @@ cat "${common_flags}" >> "${run_flags}"
    if (( vanilla == 1 )); then
       echo "--noenable_discarding"
       echo "--wal_partition_by=ru_epoch"
+      echo "--log_fake_wrap_around"
    else
       echo "--enable_discarding"
       echo "--ru_gc_threads=${bg_page_fixer_threads}"

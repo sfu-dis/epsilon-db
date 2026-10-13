@@ -51,6 +51,11 @@ void Logging::walEnsureEnoughSpace(u32 requested_size)
          // Bump the LSN counter before writing to the buffer (see tryCopyFromWALBuffer).
          const u64 cr_size = FLAGS_wal_buffer_size - wal_log_cursor;
          wal_lsn_counter.fetch_add(cr_size, std::memory_order_relaxed);
+         if (fake_wrap_around_offset && wal_lsn_counter.load(std::memory_order_relaxed) >= fake_wrap_around_offset) {
+            // Mirrors the device offset wrap around in LogManager::add_pwrite.
+            ensure_equal(wal_lsn_counter.load(std::memory_order_relaxed), fake_wrap_around_offset);
+            wal_lsn_counter.store(0, std::memory_order_relaxed);
+         }
          std::atomic_thread_fence(std::memory_order_release);
          WALMetaEntry& entry = *reinterpret_cast<WALMetaEntry*>(wal_buffer + wal_log_cursor);
          entry.type = WALEntry::TYPE::CARRIAGE_RETURN;

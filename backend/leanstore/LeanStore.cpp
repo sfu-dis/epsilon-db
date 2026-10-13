@@ -506,6 +506,9 @@ void LeanStore::verifyFlags()
          FLAGS_discard_lsns_in_parent = false;
       }
    }
+   if (FLAGS_log_fake_wrap_around && FLAGS_enable_discarding) {
+      SetupFailed("log_fake_wrap_around is only supported when discarding is disabled");
+   }
    if (FLAGS_ru_size == 0) {
       SetupFailed("Please specify an RU size in units of number of 4KiB pages");
    }
