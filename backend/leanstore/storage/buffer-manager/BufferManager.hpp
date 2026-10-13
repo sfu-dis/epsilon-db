@@ -212,6 +212,10 @@ public:
    // 2. During shutdown to write all dirty frames.
    // 3. Background Page Fixer Thread.
    void pageWriteBackPrologue(BufferFrame& bf);
+   // Header updates of a dirty buffer frame that is about to be written back, followed by the prologue.
+   // Pre: bf is exclusively latched and is_being_written_back is set. Used by the PageProvider and
+   // by the Background Page Fixer for the hot pages.
+   void prepareDirtyWriteBack(BufferFrame& bf);
    // -------------------------------------------------------------------------------------
    void startBackgroundThreads();
    void stopWriterThreads();

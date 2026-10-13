@@ -234,6 +234,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                c_guard.guard.unlock();
                jumpmu::jump();
             }
+            // After this check succeded there is a window where the condition above may become violated.
             /// FIXME(mfd): This block will be unnecessary once background page fixing fixes hot pages.
             /// Once it is implemented the first one who acquires the buffer frame mutex is responsible for fixing the page, so it is safe if it is discarded.
             /// Same applies to the above check. However for the above check I would only need to check for equaltity. Currently reclaiming. I never expec < reclaiming because this means that the             /// bg page fixer has acquired this mutex which could not happen because we checked for
@@ -285,6 +286,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // overwritten once written to the log device), so a buffer miss can copy it from there.
             // The log may have got full since the check above. The log_only GC seals the log under
             // its mutex before scanning, so either it sees the page discarded or we see the redirect.
+            // I am a bit worried about acquiring the mutex each time we want to discard a page.
+            // I even think It is not strictly necessary.
             std::unique_lock ru_epoch_log_guard(ru_epoch_log.mutex);
             if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
                ru_epoch_log_guard.unlock();
@@ -430,22 +433,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                         }
                      }
                      ++PPCounters::myCounters().written_back_pages_per_dtid[page.dt_id];
-                     /// We directly update the header information because we need this information
-                     /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
-                     cooled_bf->ppl.absorbed_writes = 0;
-                     header.not_yet_persisted = false;
-                     header.logging = nullptr;
-                     header.pending_lsn_count = 0;
-                     header.last_written_plsn = page.PLSN;
-                     header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
-                     header.will_flush_ppl = false;
-                     fdp_placement_policy.onWriteBackDirtyPage(*cooled_bf);
-                     pageWriteBackPrologue(*cooled_bf);
-                     header.discard_count = 0;
-                     if (FLAGS_per_page_logging) { cooled_bf->ppl.reset(); }
-                     if (FLAGS_crc_check) {
-                        header.crc = utils::CRC(page.dt, EFFECTIVE_PAGE_SIZE);
-                     }
+                     prepareDirtyWriteBack(*cooled_bf);
                      // TODO: preEviction callback according to DTID
                      async_write_buffer.add(*cooled_bf, cooled_bf_pid);
                   }

@@ -72,8 +72,14 @@ class RUBackgroundPageFixer
    void fixPages(ThreadContext& ctx, u64 pages_to_fix);
    // Completion handlers of the read, resp. write, ring.
    void fixPage(ThreadContext& ctx, io_uring_cqe* cqe);
-   void fixHotPages(ThreadContext& ctx);
    void ackFixedPage(ThreadContext& ctx, io_uring_cqe* cqe);
+   // Write back of the pages of the reclaimed log that are cached (hot).
+   enum class HotPage { DONE, WRITING, RETRY };
+   void fixHotPages(ThreadContext& ctx);
+   HotPage tryWriteBackHotPage(ThreadContext& ctx, PID pid);
+   void writeBackHotPages(ThreadContext& ctx);
+   void ackHotPage(ThreadContext& ctx, io_uring_cqe* cqe);
+   void drainDeferredHotPages(ThreadContext& ctx);
    // Removes the IO frame inserted by registerPageToFix() and lets the waiting workers retry.
    // This method could probably be part of the BufferManager itself not this class.
    void releaseIOFrame(PID pid);

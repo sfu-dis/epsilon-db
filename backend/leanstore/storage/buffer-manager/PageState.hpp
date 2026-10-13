@@ -172,6 +172,16 @@ struct PageState {
       u64 unlocked = raw.load(std::memory_order_relaxed) & latch_mask;
       raw.store(unlocked, std::memory_order_release);
    }
+   // nullptr when the page is not cached. The frame may get evicted and reused right after, the
+   // caller validates bf.header.pid under the frame latch.
+   BufferFrame* getBufferFrame()
+   {
+      u64 v = raw.load(std::memory_order_acquire);
+      if ((v & state_mask) != state_hot_mask) {
+         return nullptr;
+      }
+      return reinterpret_cast<BufferFrame*>(v & bf_ptr_mask);
+   }
    void free() { raw.store(0, std::memory_order_release); }
    LID asLSN() { return raw.load(std::memory_order_acquire) & full_lsn_mask; }
    // BufferFrame& asBufferFrame() { return *reinterpret_cast<BufferFrame*>(raw); }

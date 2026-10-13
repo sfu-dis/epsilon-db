@@ -1092,6 +1092,28 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    ensure(false);
 }  // namespace storage
 // -------------------------------------------------------------------------------------
+void BufferManager::prepareDirtyWriteBack(BufferFrame& bf)
+{
+   auto& header = bf.header;
+   ensure(header.is_being_written_back);
+   /// We directly update the header information because we need this information
+   /// to determnine which log we will map to. Therefore, we need to wait until the write succeeds.
+   bf.ppl.absorbed_writes = 0;
+   header.not_yet_persisted = false;
+   header.logging = nullptr;
+   header.pending_lsn_count = 0;
+   header.last_written_plsn = bf.page.PLSN;
+   header.undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
+   header.will_flush_ppl = false;
+   fdp_placement_policy.onWriteBackDirtyPage(bf);
+   pageWriteBackPrologue(bf);
+   header.discard_count = 0;
+   if (FLAGS_per_page_logging) { bf.ppl.reset(); }
+   if (FLAGS_crc_check) {
+      header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
+   }
+}
+// -------------------------------------------------------------------------------------
 void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
 {
    auto& page = bf.page;

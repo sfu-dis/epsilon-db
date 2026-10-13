@@ -5,6 +5,7 @@
 // -------------------------------------------------------------------------------------
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/concurrency-recovery/Logging.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/profiling/counters/GCCounters.hpp"
 // -------------------------------------------------------------------------------------
@@ -64,6 +65,10 @@ struct RUBackgroundPageFixer::ThreadContext {
    std::vector<page_info> to_fix_pids;
    // Hot pages to fix of the current batch
    std::vector<PID> hot_pids;
+   // Hot pages that could not be handled yet, retried before the RU epoch is finished.
+   std::vector<PID> deferred_hot_pids;
+   // Frames whose copy is in buf_pages, indexed like buf_pages.
+   std::vector<BufferFrame*> hot_bfs;
    // -------------------------------------------------------------------------------------
    // Jobs of to_gc_epochs already picked up, and those left to collect.
    u64 picked_up_jobs = 0;
@@ -94,6 +99,7 @@ struct RUBackgroundPageFixer::ThreadContext {
 
       cqes = std::make_unique<struct io_uring_cqe*[]>(2 * batch_size);
       to_fix_pids.reserve(batch_size);
+      hot_bfs.reserve(batch_size);
    }
 };
 // -------------------------------------------------------------------------------------
@@ -185,13 +191,10 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
       offset = set.offset_batch.fetch_add(4096);
       const u64 pages_to_fix = scanLogBatch(ctx, offset);
       fixPages(ctx, pages_to_fix);
-      // I am guarentted that at this point the bg page fixer thread no longer holds any
-      // IOFrame, nor any PageState locks.
-      // TODO(mfd) : I can now go ahead and try to write back the hot pages, if they are
-      // not yet written back.
-      // Account for hot page fixed in the total_fixed.
+      // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
       fixHotPages(ctx);
    }
+   drainDeferredHotPages(ctx);
    // -------------------------------------------------------------------------------------
    auto end = std::chrono::system_clock::now();
    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
@@ -677,38 +680,176 @@ success:
    ensure(s == 1);
 }
 // -------------------------------------------------------------------------------------
+// Pages of the reclaimed log that were cached when scanned. Their latest version depends on the log
+// records of the RU epoch, so they must be written back before the log gets reset.
+// Pre: fixPages() drained both rings and reset buf_pages, so they are free to hold the page copies.
+// We hold neither an IO frame nor a PageState latch, so waiting on a frame latch cannot deadlock.
 void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
 {
-   ensure(ctx.hot_pids.empty());
-   u32 hot_pages_to_fix = 0;
-   // The rings are empty and drained.
-   // The buffers holds already written pages.
-   for (const auto& pid : ctx.hot_pids) {
-      // In all paths we acquire the buffer frame mutex first and then the PageState.
-      // Check that the page is still hot.
-      PageState& page_state = bm.discard_state[pid];
-      if (!page_state.isHot()) {
-         continue;
+   ensure(ctx.to_fix_pids.empty());
+   ensure(ctx.hot_bfs.empty());
+   for (const PID pid : ctx.hot_pids) {
+      switch (tryWriteBackHotPage(ctx, pid)) {
+         case HotPage::DONE:
+            break;
+         case HotPage::RETRY:
+            ctx.deferred_hot_pids.push_back(pid);
+            break;
+         case HotPage::WRITING:
+            if (ctx.hot_bfs.size() == ThreadContext::batch_size) {
+               writeBackHotPages(ctx);
+            }
+            break;
       }
-      // acquire the frame mutex
-      // What should I do If I cannot acquire the bf mutex?
-      // I can optimistically check for the ru_epoch of the page.
-      // A pid that is freed and then reused may be hot but in a diffrent ru_epoch?
-      // It could be still in the same ru_epoch also!!!!!! WHat shall I do ????
-      ///// NOW I HAVE THE MUTEX.
-      // 1. if the page is_being_written_back, I abort. Normally I should also wait for
-      //  the write to succeed.
-      // Now I set the page to being is written back and I update necessary header information.
-      // copy the page to the buffer.
-      // get the io_uring_sqe and issue the write.
-      hot_pages_to_fix++;
    }
-   if (hot_pages_to_fix > 0) {
-      // Submit the writes to the ring
-      // use the below ackFixedPage.
-      // Increment the actually fixed
-   }
+   writeBackHotPages(ctx);
    ctx.hot_pids.clear();
+}
+// -------------------------------------------------------------------------------------
+// Never blocks: the guards jump when the frame is latched, and the page is retried later.
+RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(ThreadContext& ctx, PID pid)
+{
+   PageState& page_state = bm.discard_state[pid];
+   BufferFrame* bf = page_state.getBufferFrame();
+   if (bf == nullptr) {
+      // bf == nullptr means the page is no longer hot.
+      // 2 possible cases:
+      // 1. Page is already written back in a clean state  (Most likely).
+      // 2. The page is discarded: This happens when the page provider threads reads
+      //    the reclaiming_ru_epoch just before it got incremented by the bg_fixer_thread.
+      //    The pp threads then discarded the page successfully.
+      //    In this case we just need to try again. We're guarentted that this case will never
+      //    happen again for this page.
+      // Read the state once, it may change concurrently.
+      const u64 v = page_state.raw.load(std::memory_order_acquire);
+      const bool discarded = (v & PageState::state_mask) == PageState::state_discarded_mask;
+      const u64 log_id = (v & PageState::log_id_mask) >> PageState::log_id_shift;
+      if (discarded && log_id == ctx.currently_reclaiming_log_id) {
+         // A worker is reading the page (registerPageToFix() saw its IO frame), it becomes hot soon.
+         // TODO(mfd) : Or the PPT discarded it after we saw it hot (see the reclaiming_ru_epoch
+         // recheck under the log mutex). In that case, it should be fixed like a discarded page.
+         return HotPage::RETRY;
+      }
+      // CLEAN: written back or evicted clean. Free: deleted. DISCARDED in another log: written back
+      // in a newer RU epoch and discarded since.
+      return HotPage::DONE;
+   }
+   jumpmuTry()
+   {
+      BMOptimisticGuard o_guard(bf->header.latch);
+      if (bf->header.pid != pid || bf->isFree()) {
+         // The frame got evicted and reused meanwhile, look at the page state again.
+         // Why I need to retry here ?
+         o_guard.recheck();
+         jumpmu_return HotPage::RETRY;
+      }
+      // Writing back a page that did not need it is only an extra write, never incorrect. This covers
+      // a pid freed and reused within the same RU epoch.
+      // An UNMAPPED page was never written back, its log records are in the sink logs.
+      const ru_epoch_t ru_epoch = bf->page.ru_epoch;
+      if (ru_epoch == UNMAPPED_RU_EPOCH || ru_epoch > ctx.current_gc_epoch || !bf->isDirty()) {
+         o_guard.recheck();
+         jumpmu_return HotPage::DONE;
+      }
+      if (bf->header.is_being_written_back.load(std::memory_order_acquire)) {
+         // The prologue already mapped the copy being written to a newer RU epoch. Retry until the
+         // write returns, the page must be persisted before the log is reset.
+         o_guard.recheck();
+         jumpmu_return HotPage::RETRY;
+      }
+      BMExclusiveGuard x_guard(o_guard);
+      // Not just store. It may have changed meawhile after the first check returned false
+      // and before I acquire the latch.
+      if (bf->header.is_being_written_back.load(std::memory_order_acquire)) {
+         jumpmu_return HotPage::RETRY;
+      }
+      bf->header.is_being_written_back.store(true, std::memory_order_release);
+      // Maps the page to a newer RU epoch, so the log records of the updates following the copy
+      // go to the log of that RU epoch.
+      bm.prepareDirtyWriteBack(*bf);
+      ensure_equal(bf->page.magic_debugging_number, pid);
+      ++bf->page.write_back_count;
+      // Unswizzles the children of inner pages in the copy.
+      DTRegistry::global_dt_registry.checkpoint(bf->page.dt_id, *bf, ctx.buf_pages[ctx.hot_bfs.size()].page);
+      ctx.hot_bfs.push_back(bf);
+      jumpmu_return HotPage::WRITING;
+   }
+   jumpmuCatch()
+   { 
+      // Acquiring Exclusive lock failed
+      return HotPage::RETRY;
+   }
+}
+// -------------------------------------------------------------------------------------
+// Writes the copies made by tryWriteBackHotPage() and waits for them.
+void RUBackgroundPageFixer::writeBackHotPages(ThreadContext& ctx)
+{
+   const u32 n = ctx.hot_bfs.size();
+   if (n == 0) {
+      return;
+   }
+   for (u32 i = 0; i < n; ++i) {
+      auto& page = ctx.buf_pages[i].page;
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
+      ensure(sqe != nullptr);
+      // TODO(mfd) : RUH ?
+      nvme_io_uring_prep_write(sqe, bm.ssd_fd, page, PAGE_SIZE, page.magic_debugging_number * PAGE_SIZE, DEFAULT_RUH);
+      io_uring_sqe_set_data64(sqe, i);
+   }
+   // TODO(mfd) : submit and wait, single syscall.
+   int s = io_uring_submit(&ctx.w_ring);
+   ensure_equal(s, static_cast<int>(n));
+   int rc = io_uring_wait_cqe_nr(&ctx.w_ring, ctx.cqes.get(), n);
+   posix_check(rc == 0);
+   struct io_uring_cqe* cqe;
+   u32 head;
+   u32 i = 0;
+   io_uring_for_each_cqe(&ctx.w_ring, head, cqe)
+   {
+      ackHotPage(ctx, cqe);
+      ++i;
+   }
+   ensure_equal(i, n);
+   io_uring_cq_advance(&ctx.w_ring, n);
+   ctx.total_fixed += n;
+   ctx.hot_bfs.clear();
+}
+// -------------------------------------------------------------------------------------
+// Same as the PPT when its write back returns. Not ackFixedPage(): a hot page has neither an IO frame
+// nor a latched PageState.
+void RUBackgroundPageFixer::ackHotPage(ThreadContext& ctx, struct io_uring_cqe* cqe)
+{
+   ensure_equal(cqe->res, PAGE_SIZE);
+   const u64 idx = io_uring_cqe_get_data64(cqe);
+   BufferFrame& bf = *ctx.hot_bfs[idx];
+   while (true) {
+      jumpmuTry()
+      {
+         BMOptimisticGuard o_guard(bf.header.latch);
+         BMExclusiveGuard x_guard(o_guard);
+         ensure(bf.header.is_being_written_back);
+         bf.header.is_being_written_back.store(false, std::memory_order_release);
+         jumpmu_break;
+      }
+      jumpmuCatch() {}
+   }
+}
+// -------------------------------------------------------------------------------------
+// The log of the RU epoch must not be reset while one of its hot pages is not yet written back.
+void RUBackgroundPageFixer::drainDeferredHotPages(ThreadContext& ctx)
+{
+   u64 rounds = 0;
+   while (!ctx.deferred_hot_pids.empty()) {
+      ensure(ctx.hot_pids.empty());
+      ctx.hot_pids.swap(ctx.deferred_hot_pids);
+      fixHotPages(ctx);
+      if (!ctx.deferred_hot_pids.empty()) {
+         if (++rounds % 65536 == 0) {
+            LOG_INFO(bm.logger, "ru_gc_%u still waiting for %lu hot pages of RU epoch %lu", ctx.gc_id, ctx.deferred_hot_pids.size(), ctx.current_gc_epoch);
+         }
+         std::this_thread::yield();
+      }
+   }
 }
 // -------------------------------------------------------------------------------------
 // A fixed page got written back: mark it clean and let the waiting workers read it.
