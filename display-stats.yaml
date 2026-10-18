@@ -133,7 +133,7 @@ columns:
 
   discard_state_peak_mem_usage:
     field: "GSPeak GiB"
-    enabled: false
+    enabled: true
     source: bm
 
   log_space_usage:

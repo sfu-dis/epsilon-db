@@ -273,6 +273,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   }
                   ensure_equal(bf.header.pending_lsn_count, 1);
                   pending_lsn = bf.header.pending_lsn;
+               } else if (FLAGS_discard_lsns_in_parent) {
+                  pending_lsn = bf.header.pending_lsn;
                } else {
                   pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
                   ensure(pending_lsn != nullptr);
@@ -288,9 +290,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             // its mutex before scanning, so either it sees the page discarded or we see the redirect.
             // I am a bit worried about acquiring the mutex each time we want to discard a page.
             // I even think It is not strictly necessary.
-            std::unique_lock ru_epoch_log_guard(ru_epoch_log.mutex);
+            // std::unique_lock ru_epoch_log_guard(ru_epoch_log.mutex);
             if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
-               ru_epoch_log_guard.unlock();
+               //  ru_epoch_log_guard.unlock();
                if (pending_lsn != bf.header.pending_lsn) {
                   per_pp_allocator[pp_id].free(pending_lsn, bf.header.pending_lsn_count);
                }
@@ -298,13 +300,20 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                c_guard.guard.unlock();
                jumpmu::jump();
             }
-            success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
-            ru_epoch_log_guard.unlock();
-            ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
-            if (!success) {
-               c_guard.guard.unlock();
-               jumpmu::jump();
+            if (FLAGS_discard_lsns_in_parent) {
+               // The parent is exclusively latched, the LSNs are stored next to the swip and the swip is evicted.
+               auto& parent_node = *reinterpret_cast<btree::BTreeNode*>(parent_handler.parent_bf->page.dt);
+               if (!parent_node.evictAndStorePendingLSNs(parent_handler.swip.cast<btree::BTreeNode>(), parent_handler.pos, evicted_pid, bf.page.ru_epoch, pending_lsn, bf.header.pending_lsn_count)) {
+                  // No space left in the parent for the pending LSNs, write the page back instead.
+                  // TODO(mfd) : split the parent instead.
+                  bf.markUnDiscardable(PARENT_FULL);
+                  c_guard.guard.unlock();
+                  jumpmu::jump();
+               }
             }
+            success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
+            // ru_epoch_log_guard.unlock();
+            ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             // The RU discard set identity may change meanwhile.
             // I simply allow this, this is a very rare event, and these are
             // stats just to approximate thresolhold of GC in RU epoch.
@@ -314,7 +323,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                t->inserted.fetch_add(1, std::memory_order_relaxed);
             }
 #endif
-            parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
+            if (!FLAGS_discard_lsns_in_parent) {
+               parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
+            }
             COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
             COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
          } else {
@@ -428,6 +439,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                            case (MAX_DISCARDING_DEPTH_EXCEEDED) : {
                               PPCounters::myCounters().hot++;
                               PPCounters::myCounters().undiscardable_wb_discard_count[std::min<u8>(header.discard_count, 2)]++;
+                              break;
+                           }
+                           case (PARENT_FULL) : {
+                              // PPCounters::myCounters().parent_full++;
                               break;
                            }
                         }

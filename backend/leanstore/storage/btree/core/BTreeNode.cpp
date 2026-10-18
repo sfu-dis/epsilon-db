@@ -120,7 +120,7 @@ void BTreeNode::compactify()
    BTreeNode tmp(is_leaf);
    tmp.setFences(getLowerFenceKey(), lower_fence.length, getUpperFenceKey(), upper_fence.length);
    copyKeyValueRange(&tmp, 0, 0, count);
-   tmp.upper = upper;
+   tmp.setUpper(upper);
    memcpy(reinterpret_cast<char*>(this), &tmp, sizeof(BTreeNode));
    makeHint();
    assert(freeSpace() == should);
@@ -175,17 +175,17 @@ bool BTreeNode::merge(u16 slotId, ExclusivePageGuard<BTreeNode>& parent, Exclusi
       u16 rightGrow = (right->prefix_length - tmp.prefix_length) * right->count;
       u16 extraKeyLength = parent->getFullKeyLen(slotId);
       u16 spaceUpperBound = space_used + right->space_used + (reinterpret_cast<u8*>(slot + count + right->count) - ptr()) + leftGrow + rightGrow +
-                            spaceNeeded(extraKeyLength, sizeof(SwipType), tmp.prefix_length);
+                            spaceNeeded(extraKeyLength, swipPayloadLength(upper), tmp.prefix_length);
       if (spaceUpperBound > EFFECTIVE_PAGE_SIZE)
          return false;
       copyKeyValueRange(&tmp, 0, 0, count);
       u8 extraKey[extraKeyLength];
       parent->copyFullKey(slotId, extraKey);
-      tmp.storeKeyValue(count, extraKey, extraKeyLength, reinterpret_cast<u8*>(&upper), sizeof(SwipType));
+      tmp.storeKeyValue(count, extraKey, extraKeyLength, reinterpret_cast<u8*>(&upper), swipPayloadLength(upper));
       tmp.count++;
       right->copyKeyValueRange(&tmp, tmp.count, 0, right->count);
       parent->removeSlot(slotId);
-      tmp.upper = right->upper;
+      tmp.setUpper(right->upper);
       tmp.makeHint();
       memcpy(reinterpret_cast<u8*>(right.ptr()), &tmp, sizeof(BTreeNode));
       return true;
@@ -411,8 +411,8 @@ void BTreeNode::splitImpl(ExclusivePageGuard<BTreeNode>& parent,
       // The separator moves up to the parent, its child becomes the upper swip of the left half
       copyKeyValueRange(nodeLeft, 0, 0, sepSlot);
       copyKeyValueRange(nodeRight, 0, nodeLeft->count + 1, count - nodeLeft->count - 1);
-      nodeLeft->upper = getChild(nodeLeft->count);
-      nodeRight->upper = upper;
+      nodeLeft->setUpper(getChild(nodeLeft->count));
+      nodeRight->setUpper(upper);
    }
    nodeLeft->makeHint();
    nodeRight->makeHint();
@@ -430,6 +430,32 @@ void BTreeNode::split(ExclusivePageGuard<BTreeNode>& parent, ExclusivePageGuard<
       splitImpl(parent, new_node.ptr(), &tmp, new_node.swip(), false, sepSlot, sepKey, sepLength);
    }
    memcpy(reinterpret_cast<char*>(this), &tmp, sizeof(BTreeNode));
+}
+// -------------------------------------------------------------------------------------
+bool BTreeNode::evictAndStorePendingLSNs(SwipType& swip, s64 pos, PID pid, u64 ru_epoch, const LID* pending_lsn, u8 pending_lsn_count)
+{
+   ensure(isInner());
+   // ensure level is before last
+   ensure(pending_lsn_count > 0 && pending_lsn_count <= max_pending_lsn);
+   const u16 lsns_size = pending_lsn_count * sizeof(LID);
+   if (&swip == &upper) {
+      std::memcpy(upper_pending_lsn, pending_lsn, lsns_size);
+      upper.evictAndMarkDirty(pid, ru_epoch, pending_lsn_count);
+      return true;
+   }
+   ensure(pos >= 0 && pos < count);
+   ensure(&getChild(pos) == &swip);
+   const u16 payload_len = sizeof(SwipType) + lsns_size;
+   if (getPayloadLength(pos) < payload_len) {
+      if (!canExtendPayload(pos, payload_len)) {
+         // TODO(mfd) : split this parent node instead.
+         return false;
+      }
+      extendPayload(pos, payload_len);
+   }
+   std::memcpy(getPayload(pos) + sizeof(SwipType), pending_lsn, lsns_size);
+   getChild(pos).evictAndMarkDirty(pid, ru_epoch, pending_lsn_count);
+   return true;
 }
 // -------------------------------------------------------------------------------------
 bool BTreeNode::removeSlot(u16 slotId)

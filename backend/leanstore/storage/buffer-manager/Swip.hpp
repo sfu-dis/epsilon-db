@@ -34,8 +34,15 @@ class Swip
    struct PageID
    {
       u32 page_id; // 32 bits enough for 16 TiB databases with 4K pages.
-      u32 meta;    // 3 status bits + RU epoch
+      u32 meta;    // 3 status bits + 3 bits for pending lsn count + RU epoch
    };
+   // With FLAGS_discard_lsns_in_parent, a dirty evicted swip is directly followed in memory by the
+   // pending LSNs of the discarded page, their count is stored in the swip.
+   static const u32 pending_lsn_count_shift = 26;
+   static const u32 pending_lsn_count_mask = u32(7) << pending_lsn_count_shift;
+   static const u32 ru_epoch_mask = (u32(1) << pending_lsn_count_shift) - 1;
+   static_assert(pending_lsn_count_mask == 0x1C000000, "");
+   static_assert(ru_epoch_mask == 0x03FFFFFF, "");
 
    static_assert(sizeof(PageID) == sizeof(u64), "");
 
@@ -60,7 +67,7 @@ class Swip
    bool isEVICTED() { return pid & evicted_bit; }
    bool isDIRTY() { return pid & dirty_bit; }
    // -------------------------------------------------------------------------------------
-   u64 asPageID() { 
+   u64 asPageID() {
       return pid2.page_id;
    }
    BufferFrame& asBufferFrame() { return *bf; }
@@ -68,8 +75,16 @@ class Swip
    u64 raw() const { return pid; }
    u32 ru_epoch()
    {
-      return pid2.meta & 0x1FFFFFFF;
+      return pid2.meta & ru_epoch_mask;
    }
+   u8 pendingLSNCount()
+   {
+      if (!isEVICTED()) {
+         return 0;
+      }
+      return (pid2.meta & pending_lsn_count_mask) >> pending_lsn_count_shift;
+   }
+   u8* pendingLSNs() { return reinterpret_cast<u8*>(this + 1); }
    // -------------------------------------------------------------------------------------
    template <typename T2>
    void warm(T2* bf)
@@ -86,19 +101,20 @@ class Swip
    void cool() { this->pid = pid | cool_bit; }
    // -------------------------------------------------------------------------------------
    void evict(PID pid)
-   { 
+   {
       // this->pid = pid | evicted_bit;
       ensure_equal((pid & ~(0xFFFFFFFF)), 0);
       this->pid2.page_id = pid;
       this->pid2.meta = 0x80000000;
    }
-   void evictAndMarkDirty(PID pid, u64 ru_epoch)
-   { 
+   void evictAndMarkDirty(PID pid, u64 ru_epoch, u8 pending_lsn_count = 0)
+   {
       ensure_equal((pid & ~(0xFFFFFFFF)), 0);
+      ensure_equal((ru_epoch & ~u64(ru_epoch_mask)), 0);
+      ensure_lte(pending_lsn_count, 7);
       ensure_equal((ru_epoch & ~(0x1FFFFFFF)), 0);
       this->pid2.page_id = pid;
-      this->pid2.meta = (ru_epoch | 0xA0000000);
-      // this->pid = (pid | evicted_bit | dirty_bit);
+      this->pid2.meta = (ru_epoch | (u32(pending_lsn_count) << pending_lsn_count_shift) | 0xA0000000);
    }
    // -------------------------------------------------------------------------------------
    template <typename T2>

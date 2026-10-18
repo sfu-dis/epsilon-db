@@ -121,9 +121,11 @@ DEFINE_bool(io_trace, false, "");
 DEFINE_string(io_trace_file, "./iotrace.csv", "io trace file");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_discarding, true, "Discard dirty pages upon evictions");
+DEFINE_bool(discard_lsns_in_parent, true, "Store the pending LSNs of a discarded page next to its swip in the parent instead of the page state");
+// TODO(mfd) : remove this flag
 DEFINE_bool(fake_log_reapply, false, "Just for Testing, use only with update-only workloads");
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");
-DEFINE_uint32(max_log_records_to_discard, 3, "Limit discarding if log records to re-apply to a page exceed this threshold");
+DEFINE_uint32(max_log_records_to_discard, 7, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 0, "Force GC if the number of active RU epochs is less than max open by this value");
 DEFINE_double(overprovisioning_ratio, 0.05, "");

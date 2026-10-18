@@ -109,7 +109,10 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             SetupFailed("");
          }
          LOG_INFO(logger, "Max Pending LSN : %u", max_pending_lsn);
-         if (max_pending_lsn > 1) {
+         if (FLAGS_discard_lsns_in_parent) {
+            ensure_lte(max_pending_lsn, btree::BTreeNode::max_pending_lsn);
+            ensure(!FLAGS_optimistic_parent_pointer);
+         } else if (max_pending_lsn > 1) {
             per_pp_allocator = std::make_unique<CustomSlabAllocator<LID>[]>(FLAGS_pp_threads);
          }
          if (!FLAGS_initialize_leanstore) {
@@ -719,6 +722,11 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    const PID pid = swip_value.asPageID();
    const s64 ru_epoch = swip_value.ru_epoch();
    const bool page_need_fixing = swip_value.isDIRTY();
+   const u8 parent_lsn_count = swip_value.pendingLSNCount();
+   LID parent_lsn[btree::BTreeNode::max_pending_lsn];
+   if (FLAGS_discard_lsns_in_parent) {
+      std::memcpy(parent_lsn, swip_value.pendingLSNs(), parent_lsn_count * sizeof(LID));
+   }
    bool gc_fixed = false;
    Partition& partition = getPartition(pid);
    JMUW<std::unique_lock<instrumented_mutex>> g_guard(partition.ht_mutex);
@@ -824,6 +832,12 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          std::tie(lsn, nb_log_records) = discard_state[pid].getLocked();
          lsn_list = (nb_log_records == 1) ? &lsn : reinterpret_cast<LID*>(lsn);
          discard_count = discard_state[pid].getDiscardCount();
+         if (FLAGS_discard_lsns_in_parent && page_need_fixing && discard_state[pid].isDiscarded()) {
+            // The page state only holds the last LSN
+            ensure_equal(nb_log_records, parent_lsn_count);
+            ensure_equal(lsn, parent_lsn[parent_lsn_count - 1]);
+            lsn_list = parent_lsn;
+         }
       }
       if (page_need_fixing) {
          gc_fixed = discard_state[pid].isClean();
@@ -986,7 +1000,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          std::memcpy(bf.header.pending_lsn, lsn_list ,nb_log_records * sizeof(LID));
          bf.header.pending_lsn_count = nb_log_records;
          ensure(!FLAGS_per_page_logging || (bf.ppl.absorbed_writes > 0));
-         if (nb_log_records > 1) randomAllocator().free(lsn_list, nb_log_records);
+         if (PageState::holdsLSNArray(nb_log_records)) randomAllocator().free(lsn_list, nb_log_records);
       } else {
          ensure(bf.header.logging == nullptr);
       }

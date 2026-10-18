@@ -114,6 +114,7 @@ DECLARE_bool(io_trace);
 DECLARE_string(io_trace_file);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_discarding);
+DECLARE_bool(discard_lsns_in_parent);
 DECLARE_bool(fake_log_reapply);
 DECLARE_int32(ru_gc_threads);
 DECLARE_uint32(max_log_records_to_discard);

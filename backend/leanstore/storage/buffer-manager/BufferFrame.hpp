@@ -39,7 +39,8 @@ enum UNDISCARDABLE_CAUSE : u8 {
    INNER_NODE = 6,
    NOT_DEFAULT_RUH = 7,
    OTHER = 8,
-   SIZE = 9
+   PARENT_FULL = 9,
+   SIZE = 10
 };
 // -------------------------------------------------------------------------------------
 struct BufferFrame {

@@ -60,7 +60,9 @@ struct BTreeNodeHeader {
       u16 length;
    };
 
+   static constexpr u8 max_pending_lsn = 7;
    Swip<BTreeNode> upper = nullptr;
+   LID upper_pending_lsn[max_pending_lsn]; // ATTENTION : Must be directly after the swip.
    FenceKey lower_fence = {0, 0};
    FenceKey upper_fence = {0, 0};
 
@@ -86,6 +88,7 @@ struct BTreeNodeHeader {
    inline bool isUpperFenceInfinity() { return !upper_fence.offset; };
    inline bool isLowerFenceInfinity() { return !lower_fence.offset; };
 };
+static_assert(offsetof(BTreeNodeHeader, upper_pending_lsn) == offsetof(BTreeNodeHeader, upper) + sizeof(Swip<BTreeNode>), "");
 // -------------------------------------------------------------------------------------
 struct BTreeNode : public BTreeNodeHeader {
    struct __attribute__((packed)) Slot {
@@ -109,7 +112,12 @@ struct BTreeNode : public BTreeNodeHeader {
    static_assert(EFFECTIVE_PAGE_SIZE < (1 << 15), "Slot::payload_len has only 15 bits");
 
    BTreeNode(bool is_leaf) : BTreeNodeHeader(is_leaf) {}
-
+   // -------------------------------------------------------------------------------------
+   // The swip of a child together with the pending LSNs that follow it.
+   static u16 swipPayloadLength(SwipType& swip) { return sizeof(SwipType) + swip.pendingLSNCount() * sizeof(LID); }
+   void setUpper(SwipType& swip) { std::memcpy(reinterpret_cast<u8*>(&upper), reinterpret_cast<u8*>(&swip), swipPayloadLength(swip)); }
+   bool evictAndStorePendingLSNs(SwipType& swip, s64 pos, PID pid, u64 ru_epoch, const LID* pending_lsn, u8 pending_lsn_count);
+   // -------------------------------------------------------------------------------------
    u16 freeSpace() { return data_offset - (reinterpret_cast<u8*>(slot + count) - ptr()); }
    u16 freeSpaceAfterCompaction() { return EFFECTIVE_PAGE_SIZE - (reinterpret_cast<u8*>(slot + count) - ptr()) - space_used; }
    // -------------------------------------------------------------------------------------

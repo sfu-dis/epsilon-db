@@ -119,6 +119,7 @@ LeanStore::LeanStore()
    ssd_layout = plan.layout;
    FLAGS_overprovisioning_ru_epochs = plan.overprovisioning_ru_epochs;
    FLAGS_ssd_gib = plan.ssd_gib;
+   BufferManager::RU_SIZE = FLAGS_ru_size;
    const u64 max_open_ru_epochs = plan.max_open_ru_epochs;
    LOG_INFO(logger, "Number of Over Provisioning Reclaim Units : %lu", FLAGS_overprovisioning_ru_epochs);
    LOG_INFO(logger, "Number of Physical Reclaim Units : %lu", max_open_ru_epochs);
@@ -499,6 +500,10 @@ void LeanStore::verifyFlags()
       }
       if (FLAGS_wal_partition_by != "ru_epoch") {
          SetupFailed("You have to partition the log by ru_epoch to enable discarding");
+      }
+   } else {
+      if (FLAGS_discard_lsns_in_parent) {
+         FLAGS_discard_lsns_in_parent = false;
       }
    }
    if (FLAGS_ru_size == 0) {

@@ -467,11 +467,13 @@ bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, const cr::WALE
    auto p = bm.discard_state[pid].getLocked();
    ensure(bm.discard_state[pid].isDiscarded());
    nb_log_records = p.second;
-   lsn_list = reinterpret_cast<LID*>(p.first);
-   if (nb_log_records == 1) {
-      last_lsn = p.first;
-   } else {
+   if (PageState::holdsLSNArray(nb_log_records)) {
+      lsn_list = reinterpret_cast<LID*>(p.first);
       last_lsn = lsn_list[nb_log_records - 1];
+   } else {
+      // With FLAGS_discard_lsns_in_parent and more than one log record lsn_list stays null,
+      // fixPage() walks the log chain backwards from last_lsn.
+      last_lsn = p.first;
    }
    ensure_equal(ctx.to_fix_pids.size(), idx);
    ctx.to_fix_pids.emplace_back(pid, lsn_list, entry.lsn, last_lsn, nb_log_records);
@@ -608,16 +610,33 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
    }
 
 #else
-   for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
-      LID lsn = page_to_fix_info.lsn_list[i];
-      ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
-      u64 off = lsnOffset(lsn);
-      auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
+   if (page_to_fix_info.lsn_list == nullptr) {
+      // Only the last LSN is known, the others are in the parent.
+      for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
+         ensure(lsn != INVALID_LSN);
+         ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+         u64 off = lsnOffset(lsn);
+         auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
 
-      bool ok = bm.logRecordSanityCheck(entry, page, lsn);
-      ensure(ok);
+         bool ok = bm.logRecordSanityCheck(entry, page, lsn);
+         ensure(ok);
 
-      to_apply_log_records.push_back(entry);
+         to_apply_log_records.push_back(entry);
+         lsn = entry->prev_lsn;
+      }
+      std::reverse(to_apply_log_records.begin(), to_apply_log_records.end());
+   } else {
+      for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
+         LID lsn = page_to_fix_info.lsn_list[i];
+         ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+         u64 off = lsnOffset(lsn);
+         auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
+
+         bool ok = bm.logRecordSanityCheck(entry, page, lsn);
+         ensure(ok);
+
+         to_apply_log_records.push_back(entry);
+      }
    }
 #endif
 
@@ -651,7 +670,7 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
    ++ctx.total_fixed;
    ++ctx.actually_fixed;
 
-   if (to_apply_log_records.size() > 1)
+   if (PageState::holdsLSNArray(to_apply_log_records.size()))
       bm.randomAllocator().free(ctx.to_fix_pids[idx].lsn_list, to_apply_log_records.size());
 
 #if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
@@ -775,7 +794,7 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(Thread
       jumpmu_return HotPage::WRITING;
    }
    jumpmuCatch()
-   { 
+   {
       // Acquiring Exclusive lock failed
       return HotPage::RETRY;
    }

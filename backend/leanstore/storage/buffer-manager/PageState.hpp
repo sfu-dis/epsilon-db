@@ -85,6 +85,7 @@ struct PageState {
       return ptr >> lsn_array_ptr_shift;
    }
    static LID* decodeLSNArray(u64 v) { return reinterpret_cast<LID*>((v & lsn_array_ptr_mask) << lsn_array_ptr_shift); }
+   static bool holdsLSNArray(u64 pending_lsn_count) { return pending_lsn_count > 1 && !FLAGS_discard_lsns_in_parent; }
 
    atomic<u64> raw;
 
@@ -127,10 +128,13 @@ struct PageState {
       // This way, masking out the discard count, we can interpret the lowest 58-bits as an LSN.
       u64 new_value = state_discarded_mask | (pending_lsn_count << nb_log_records_shift) | (log_id << log_id_shift) |
                       encodeDiscardCount(discard_count);
-      if (pending_lsn_count == 1) {
-         ensure_equal(lsnLogID(pending_lsn[0]), log_id);
-         ensure(fitsInPageState(pending_lsn[0]));
-         new_value |= lsnOffset(pending_lsn[0]);
+      if (FLAGS_discard_lsns_in_parent || pending_lsn_count == 1) {
+         // We just need the last LSN, The background page fixer needs to traverse
+         // the lsn list backward to determine all pending lsns.
+         const LID last_lsn = pending_lsn[pending_lsn_count - 1];
+         ensure_equal(lsnLogID(last_lsn), log_id);
+         ensure(fitsInPageState(last_lsn));
+         new_value |= lsnOffset(last_lsn);
       } else {
          new_value |= encodeLSNArray(pending_lsn);
       }
