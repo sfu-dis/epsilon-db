@@ -78,11 +78,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   // TODO(mfd) : Monitor failures because of this.
                   repickIf(r_buffer->page.GSN > r_buffer->header.logging->hardened_gsn.load(std::memory_order_acquire));
                }
-               // FIXME(mfd) : Temporarly avoiding evicting inner nodes.
-               if (FLAGS_enable_discarding) {
-                  auto node = reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt);
-                  repickIf(!node->is_leaf);
-               }
                r_guard.recheck();
                // -------------------------------------------------------------------------------------
                if (r_buffer->header.state == BufferFrame::STATE::COOL) {
@@ -233,24 +228,12 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                c_guard.guard.unlock();
                jumpmu::jump();
             }
-            // After this check succeded there is a window where the condition above may become violated.
-            /// FIXME(mfd): This block will be unnecessary once background page fixing fixes hot pages.
-            /// Once it is implemented the first one who acquires the buffer frame mutex is responsible for fixing the page, so it is safe if it is discarded.
-            /// Same applies to the above check. However for the above check I would only need to check for equaltity. Currently reclaiming. I never expec < reclaiming because this means that the             /// bg page fixer has acquired this mutex which could not happen because we checked for
-            /// condition and then acquired the bf mutex and the condition is still holding.
-            /// FOr the condition to stop holding the bg page fixer must acquie bf mutex.
             cr::Logging& ru_epoch_log = cr::LogManager::getLog(bf.page.ru_epoch);
             if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
                bf.markUnDiscardable(OTHER);
                c_guard.guard.unlock();
                jumpmu::jump();
             }
-            // tryDiscard will fail only in those two cases.
-            //  1. The GC thread is currently fixing the page (entry locked).
-            //  2. The GC thread has already fixed the page (marked gc_fixed).
-            // I think in both cases it is fine to just evict the page. Especially
-            // In the second case since the page should be mapped now to a new RU epoch.
-            // Be aware of deadlock between page latch and page state latch
             ensure(bf.header.pending_lsn_count > 0);
             if (!bf.header.will_flush_ppl) {
                ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
@@ -285,13 +268,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             const u8 discard_count = std::min<u8>(bf.header.discard_count + 1, PageState::max_discard_count);
             // A not yet persisted PPL entry is still in the WAL buffer (the GCT only lets it get
             // overwritten once written to the log device), so a buffer miss can copy it from there.
-            // The log may have got full since the check above. The log_only GC seals the log under
-            // its mutex before scanning, so either it sees the page discarded or we see the redirect.
-            // I am a bit worried about acquiring the mutex each time we want to discard a page.
-            // I even think It is not strictly necessary.
-            // std::unique_lock ru_epoch_log_guard(ru_epoch_log.mutex);
+            // The log may have got full since the check above.
             if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
-               //  ru_epoch_log_guard.unlock();
                if (pending_lsn != bf.header.pending_lsn) {
                   per_pp_allocator[pp_id].free(pending_lsn, bf.header.pending_lsn_count);
                }
@@ -311,7 +289,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                }
             }
             success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
-            // ru_epoch_log_guard.unlock();
             ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
             // The RU discard set identity may change meanwhile.
             // I simply allow this, this is a very rare event, and these are
@@ -336,6 +313,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                discard_state[evicted_pid].unlockClean(last_write_lsn, log_id, bf.header.discard_count);
             }
          }
+         parent_handler.parent_bf->markUnDiscardable(INNER_NODE);
+         parent_handler.parent_bf->page.PLSN++;
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
          bf.reset();
