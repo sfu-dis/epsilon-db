@@ -14,12 +14,9 @@ DEFINE_bool(csv_truncate, false, "");
 DEFINE_string(ssd_path, "./leanstore", "Position of SSD, gets persisted");
 DEFINE_uint32(write_buffer_size, 1024, "");
 DEFINE_bool(trunc, false, "Truncate file");
-DEFINE_uint32(falloc, 0, "Preallocate GiB");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(print_debug, true, "");
 DEFINE_bool(print_tx_console, true, "");
-DEFINE_uint32(print_debug_interval_s, 1, "");
-DEFINE_bool(profiling, false, "");
 DEFINE_bool(profile_latency, false, "");
 DEFINE_bool(crc_check, false, "");
 // -------------------------------------------------------------------------------------
@@ -31,22 +28,16 @@ DEFINE_bool(smt, true, "Simultaneous multithreading");
 DEFINE_bool(root, false, "does this process have root rights ?");
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
-DEFINE_string(zipf_path, "/bulk/zipf", "");
 DEFINE_double(zipf_factor, 0.0, "");
 DEFINE_double(target_gib, 0.0, "size of dataset in gib (exact interpretation depends on the driver)");
 DEFINE_uint64(run_for_seconds, 10, "Keep the experiment running for x seconds");
-DEFINE_uint64(warmup_for_seconds, 10, "Warmup for x seconds");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(optimistic_scan, true, "Jump to next leaf directly if the pointer in the parent has not changed");
 DEFINE_bool(measure_time, false, "");
 // -------------------------------------------------------------------------------------
-DEFINE_double(tmp1, 0.0, "for ad-hoc experiments");
-DEFINE_double(tmp2, 0.0, "");
-DEFINE_double(tmp3, 0.0, "");
 DEFINE_double(tmp4, 0.0, "");
 DEFINE_double(tmp5, 0.0, "");
 DEFINE_double(tmp6, 0.0, "");
-DEFINE_double(tmp7, 0.0, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(btree_print_height, false, "Print BTree height in destructor");
 DEFINE_bool(btree_print_tuples_count, false, "Print # tuples in each BTree in destructor");
@@ -79,22 +70,14 @@ DEFINE_uint32(wal_sink_logs, 1, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(isolation_level, "si", "options: ru (READ_UNCOMMITTED), rc (READ_COMMITTED), si (SNAPSHOT_ISOLATION), ser (SERIALIZABLE)");
 DEFINE_bool(mv, true, "Multi-version");
-DEFINE_uint64(si_refresh_rate, 0, "");
 DEFINE_bool(todo, true, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(vi, true, "BTree with SI using in-place version");
 DEFINE_bool(vi_delta, true, "");
-DEFINE_bool(vi_utodo, true, "");
-DEFINE_bool(vi_rtodo, true, "");
-DEFINE_bool(vi_flookup, false, "");
 DEFINE_bool(vi_fremove, false, "");
-DEFINE_bool(vi_update_version_elision, false, "");
 DEFINE_bool(vi_fupdate_chained, false, "");
 DEFINE_bool(vi_fupdate_fat_tuple, false, "");
-DEFINE_uint64(vi_pgc_batch_size, 2, "");
 DEFINE_bool(vi_fat_tuple, false, "");
-DEFINE_string(vi_fat_tuple_dts, "", "");
-DEFINE_bool(vi_fat_tuple_decompose, true, "");
 DEFINE_uint64(vi_fat_tuple_trigger, 0, "1: oldest_oltp, 1: probability");
 DEFINE_bool(vi_fat_tuple_alternative, false, "hit the previous version at every update");
 DEFINE_bool(vi_dangling_pointer, true, "");
@@ -103,10 +86,7 @@ DEFINE_bool(olap_mode, true, "Use OLAP mode for long running transactions");
 DEFINE_bool(graveyard, true, "Use Graveyard Index");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(pgc, true, "Precise garbage collection/recycling");
-DEFINE_uint64(pgc_variant, 0, "0 naive, 1 bit faster, 2 ...");
-DEFINE_double(garbage_in_page_pct, 15, "Threshold to trigger page-wise garbage collection (%)");
 DEFINE_uint64(vi_max_chain_length, 1000, "");
-DEFINE_uint64(todo_batch_size, 1024, "");
 DEFINE_bool(history_tree_inserts, true, "");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(persist, false, "This run is persistent: on shutdown flush everything and write a recoverable state file for a later run");
@@ -133,7 +113,6 @@ DEFINE_uint32(ru_size, 0, "Unit of garbage collection in database pages (4 KiB)"
 DEFINE_bool(per_page_logging, true, "Group log records per page");
 DEFINE_uint32(ppl_merge_threshold, 4, "Threshold after which we merge the log records of a page");
 DEFINE_bool(opportunistic_log_compaction, true, "Merge consecutive log records that target same record whenever possible");
-DEFINE_uint32(background_page_fixer_variant, 1, "Only 1 supported for now"); // Unused
 // TODO(mfd) : remove this flag
 DEFINE_bool(log_same_device_fdp, false, "Isolate the WAL traffic to a diffrent RUH.");
 DEFINE_bool(trace_ru_threshold, true, "Periodically trace the ru threshold of all open RUs");

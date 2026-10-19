@@ -18,8 +18,6 @@
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(ycsb_read_ratio, 100, "");
 DEFINE_uint64(ycsb_tuple_count, 0, "");
-DEFINE_uint32(ycsb_payload_size, 100, "tuple size in bytes");
-DEFINE_uint32(ycsb_warmup_rounds, 0, "");
 DEFINE_uint32(ycsb_insert_threads, 0, "");
 DEFINE_uint32(ycsb_threads, 0, "");
 DEFINE_bool(ycsb_deterministic, false, "");

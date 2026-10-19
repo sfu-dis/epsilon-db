@@ -20,19 +20,14 @@
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(ycsb_read_ratio, 100, "");
 DEFINE_uint64(ycsb_tuple_count, 0, "");
-DEFINE_uint32(ycsb_payload_size, 100, "tuple size in bytes");
-DEFINE_uint32(ycsb_warmup_rounds, 0, "");
 DEFINE_uint32(ycsb_insert_threads, 0, "");
 DEFINE_uint32(ycsb_threads, 0, "");
-DEFINE_bool(ycsb_count_unique_lookup_keys, true, "");
 DEFINE_bool(ycsb_warmup, true, "");
 DEFINE_uint32(ycsb_sleepy_thread, 0, "");
 DEFINE_uint32(ycsb_ops_per_tx, 1, "");
-// DEFINE_uint32(ycsb_nb_tables, 1, "Use multiple tables");
 DEFINE_bool(ycsb_worker_per_table, false, "Each worker is assigned a table to work on, This will turn off CC");
 DEFINE_bool(ycsb_profiler_thread, true, "");
 DEFINE_uint32(ycsb_dead_tuple_ratio, 0, "fraction of the database that is never accessed, value in range [0,100]");
-DEFINE_bool(ycsb_tpcc_skew_function, false, "use the skew function from TPC-C spec, models stock table access");
 // -------------------------------------------------------------------------------------
 using namespace leanstore;
 // -------------------------------------------------------------------------------------
