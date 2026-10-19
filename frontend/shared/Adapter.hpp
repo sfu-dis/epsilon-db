@@ -2,7 +2,6 @@
 #include "Exceptions.hpp"
 #include "Types.hpp"
 #include "leanstore/KVInterface.hpp"
-#include "leanstore/storage/btree/core/WALMacros.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <cassert>

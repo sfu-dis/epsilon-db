@@ -15,7 +15,6 @@
 #include "leanstore/profiling/counters/CPUCounters.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
-#include "leanstore/utils/FVector.hpp"
 #include "leanstore/utils/Misc.hpp"
 #include "leanstore/utils/Parallelize.hpp"
 #include "leanstore/utils/RandomGenerator.hpp"

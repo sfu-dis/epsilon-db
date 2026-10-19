@@ -7,7 +7,6 @@
 #include "leanstore/KVInterface.hpp"
 #include "leanstore/concurrency-recovery/Worker.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
-#include "leanstore/storage/btree/core/WALMacros.hpp"
 #include "leanstore/utils/RandomGenerator.hpp"
 // -------------------------------------------------------------------------------------
 #include <array>
