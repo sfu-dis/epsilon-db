@@ -745,11 +745,6 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       if (bf.page.dt_id == 10 || bf.page.dt_id == 6) {
          WorkerCounters::myCounters().dirty_orderlike_counter++;
       }
-      if (FLAGS_fake_log_reapply) {
-         bf.page.PLSN += nb_log_records;
-         bf.page.last_written_lsn = lsn_list[nb_log_records -1];
-         return;
-      }
       cr::WALEntry* entry = nullptr;
       cr::WALDTEntry* dte = nullptr;
       LID last_lsn = INVALID_LSN;
@@ -857,7 +852,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       using Time = decltype(std::chrono::high_resolution_clock::now());
       [[maybe_unused]] Time start_io, end_io;
       COUNTERS_BLOCK(buffer_miss_io_latency) { start_io = std::chrono::high_resolution_clock::now(); }
-      if (page_need_fixing && !gc_fixed && !FLAGS_fake_log_reapply) {
+      if (page_need_fixing && !gc_fixed) {
          // issue the asynchronus log record read.
          ensure(discard_state[pid].isDiscarded());
          for (u8 i = 0; i < nb_log_records; ++i) {

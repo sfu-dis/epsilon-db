@@ -94,7 +94,6 @@ DECLARE_string(io_trace_file);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_discarding);
 DECLARE_bool(discard_lsns_in_parent);
-DECLARE_bool(fake_log_reapply);
 DECLARE_int32(ru_gc_threads);
 DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
@@ -104,7 +103,6 @@ DECLARE_uint32(ru_size);
 DECLARE_bool(per_page_logging);
 DECLARE_uint32(ppl_merge_threshold);
 DECLARE_bool(opportunistic_log_compaction);
-DECLARE_bool(log_same_device_fdp);
 DECLARE_bool(trace_ru_threshold);
 // -------------------------------------------------------------------------------------
 DECLARE_uint64(tx_rate);
@@ -113,7 +111,7 @@ DECLARE_string(redo_log_file);
 DECLARE_uint64(log_dev_size_gib);
 DECLARE_bool(log_same_namespace);
 DECLARE_double(log_space_pct);
-DECLARE_bool(log_discard_on_reclaim);
+DECLARE_bool(log_trim_on_reclaim);
 DECLARE_bool(log_fake_wrap_around);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_fdp);

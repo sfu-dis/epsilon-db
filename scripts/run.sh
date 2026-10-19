@@ -677,9 +677,6 @@ cat "${common_flags}" >> "${run_flags}"
    echo "--bulk_insert"
    # echo "--fdp_placement_policy=FreezeNewlyAllocated"
 
-   ### Temporary
-   ## echo "--log_same_device_fdp"
-
    echo "--redo_log_file=${log_device}"
 
    if (( vanilla == 1 )); then

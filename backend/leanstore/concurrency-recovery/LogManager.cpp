@@ -54,7 +54,7 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
       ensure(fake_wrap_around_offset >= FLAGS_wal_buffer_size);
       LOG_INFO(logger, "Fake log wrap around at : %.3f GiB", fake_wrap_around_offset/1073741824.0);
    }
-   trim_enabled.store(FLAGS_log_discard_on_reclaim && FLAGS_wal_pwrite);
+   trim_enabled.store(FLAGS_log_trim_on_reclaim && FLAGS_wal_pwrite);
    // -------------------------------------------------------------------------------------
    const bool recover_wal = !FLAGS_initialize_leanstore && !FLAGS_skip_wal_recovery;
    if (recover_wal) {

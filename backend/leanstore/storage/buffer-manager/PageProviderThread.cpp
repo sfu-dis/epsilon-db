@@ -212,7 +212,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                jumpmu::jump();
             }
             // TODO(mfd) : PARANOID_BLOCK()
-            if (FLAGS_wal && FLAGS_wal_pwrite && !FLAGS_fake_log_reapply) {
+            if (FLAGS_wal && FLAGS_wal_pwrite) {
                // ensure(last_write_lsn != INVALID_LSN);
                if (last_write_lsn == INVALID_LSN) {
                   bf.dump();

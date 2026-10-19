@@ -98,13 +98,6 @@ LeanStore::LeanStore()
       } else {
          log_device_size = FLAGS_log_dev_size_gib * 1073741824ul;
       }
-      if (FLAGS_log_same_device_fdp) {
-         // ATTENTION : Not Portable, requires kernel patch with FDP support.
-         u64 hint = 1;
-         int ret = fcntl(log_dev_fd, F_SET_RW_HINT, &hint);
-         ensure_equal(ret, 0);
-         LOG_INFO(logger, "set the placement-id (%ld) to log file", hint);
-      }
    }
    const storage::SSDLayoutPlan plan = storage::computeSSDLayout({
        .ssd_bytes = ssd_size_in_bytes,
@@ -491,7 +484,7 @@ void LeanStore::verifyFlags()
       SetupFailed("You have to enable wal or turn of wal_pwrite");
    }
    FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
-   if (FLAGS_enable_discarding && !(FLAGS_wal_pwrite || FLAGS_fake_log_reapply)) {
+   if (FLAGS_enable_discarding && !FLAGS_wal_pwrite) {
       SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
    }
    if (FLAGS_enable_discarding) {
@@ -533,9 +526,6 @@ void LeanStore::verifyFlags()
    if (FLAGS_log_same_namespace) {
       if (FLAGS_log_dev_size_gib != 0) {
          SetupFailed("log_dev_size_gib is only for a separate log device, use log_space_pct with log_same_namespace");
-      }
-      if (FLAGS_log_same_device_fdp) {
-         SetupFailed("log_same_device_fdp sets a write hint on the whole ssd_path inode, it cannot be combined with log_same_namespace");
       }
       if (!FLAGS_redo_log_file.empty() && FLAGS_redo_log_file != FLAGS_ssd_path) {
          SetupFailed("redo_log_file must be empty (or equal to ssd_path) with log_same_namespace");
