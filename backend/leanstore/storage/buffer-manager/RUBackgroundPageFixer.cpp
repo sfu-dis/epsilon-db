@@ -692,7 +692,7 @@ success:
 #endif
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
    ensure(sqe != nullptr);
-   io_uring_prep_write(sqe, bm.ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE);
+   nvme_io_uring_prep_write(sqe, bm.ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE, page.ruh);
    io_uring_sqe_set_data64(sqe, data);
    // TODO(mfd) : Amortize
    int s = io_uring_submit(&ctx.w_ring);
@@ -811,8 +811,7 @@ void RUBackgroundPageFixer::writeBackHotPages(ThreadContext& ctx)
       auto& page = ctx.buf_pages[i].page;
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
       ensure(sqe != nullptr);
-      // TODO(mfd) : RUH ?
-      nvme_io_uring_prep_write(sqe, bm.ssd_fd, page, PAGE_SIZE, page.magic_debugging_number * PAGE_SIZE, DEFAULT_RUH);
+      nvme_io_uring_prep_write(sqe, bm.ssd_fd, page, PAGE_SIZE, page.magic_debugging_number * PAGE_SIZE, page.ruh);
       io_uring_sqe_set_data64(sqe, i);
    }
    // TODO(mfd) : submit and wait, single syscall.
@@ -838,7 +837,11 @@ void RUBackgroundPageFixer::writeBackHotPages(ThreadContext& ctx)
 // nor a latched PageState.
 void RUBackgroundPageFixer::ackHotPage(ThreadContext& ctx, struct io_uring_cqe* cqe)
 {
-   ensure_equal(cqe->res, PAGE_SIZE);
+   if (FLAGS_enable_fdp) {
+      ensure_equal(cqe->res, 0);
+   } else {
+      ensure_equal(cqe->res, PAGE_SIZE);
+   }
    const u64 idx = io_uring_cqe_get_data64(cqe);
    BufferFrame& bf = *ctx.hot_bfs[idx];
    while (true) {
@@ -874,7 +877,11 @@ void RUBackgroundPageFixer::drainDeferredHotPages(ThreadContext& ctx)
 // A fixed page got written back: mark it clean and let the waiting workers read it.
 void RUBackgroundPageFixer::ackFixedPage(ThreadContext& ctx, struct io_uring_cqe* cqe)
 {
-   ensure_equal(cqe->res, PAGE_SIZE);
+   if (FLAGS_enable_fdp) {
+      ensure_equal(cqe->res, 0);
+   } else {
+      ensure_equal(cqe->res, PAGE_SIZE);
+   }
    u64 data = io_uring_cqe_get_data64(cqe);
    PID pid = data & 0x0000FFFFFFFFFFFF;
    u64 idx = data >> 48;
