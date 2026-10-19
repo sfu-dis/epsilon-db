@@ -4,7 +4,6 @@
 #include "leanstore/profiling/tables/CPUTable.hpp"
 #include "leanstore/profiling/tables/CRTable.hpp"
 #include "leanstore/profiling/tables/DTTable.hpp"
-#include "leanstore/profiling/tables/LatencyTable.hpp"
 // -------------------------------------------------------------------------------------
 #include <yaml-cpp/yaml.h>
 #include "tabulate/table.hpp"
@@ -58,12 +57,8 @@ void LeanStore::profilingThread()
    profiling::DTTable dt_table(*buffer_manager.get());
    profiling::CPUTable cpu_table;
    profiling::CRTable cr_table;
-   profiling::LatencyTable latency_table;
    std::vector<profiling::ProfilingTable*> tables = {&configs_table, &bm_table, &dt_table, &cpu_table, &cr_table};
    // std::vector<profiling::ProfilingTable*> tables = {&bm_table, &cr_table};
-   if (FLAGS_profile_latency) {
-      tables.push_back(&latency_table);
-   }
    // -------------------------------------------------------------------------------------
    std::vector<std::ofstream> csvs;
    std::ofstream::openmode open_flags = FLAGS_csv_truncate ? ios::trunc : ios::app;

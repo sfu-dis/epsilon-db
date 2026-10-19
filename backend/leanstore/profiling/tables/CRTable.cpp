@@ -23,8 +23,6 @@ std::string CRTable::getName()
 void CRTable::open()
 {
    columns.emplace("key", [&](Column& out) { out << 0; });
-   columns.emplace("wal_reserve_blocked", [&](Column& col) { col << (sum(CRCounters::cr_counters, &CRCounters::wal_reserve_blocked)); });
-   columns.emplace("wal_reserve_immediate", [&](Column& col) { col << (sum(CRCounters::cr_counters, &CRCounters::wal_reserve_immediate)); });
    columns.emplace("gct_phase_1_pct", [&](Column& col) { col << 100.0 * p1 / total; });
    columns.emplace("gct_phase_2_pct", [&](Column& col) { col << 100.0 * p2 / total; });
    columns.emplace("gct_write_pct", [&](Column& col) { col << 100.0 * write / total; });
@@ -37,14 +35,10 @@ void CRTable::open()
    columns.emplace("olap_tx_abort", [](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::olap_tx_abort); });
    columns.emplace("rfa_committed_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::rfa_committed_tx); });
    // -------------------------------------------------------------------------------------
-   columns.emplace("cc_snapshot_restart", [](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_snapshot_restart); });
    // -------------------------------------------------------------------------------------
    columns.emplace("gct_write_gib",
                    [&](Column& col) { col << (sum(CRCounters::cr_counters, &CRCounters::gct_write_bytes) * 1.0) / 1024.0 / 1024.0 / 1024.0; });
    // -------------------------------------------------------------------------------------
-   columns.emplace("cc_prepare_igc", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_prepare_igc); });
-   columns.emplace("cc_cross_workers_visibility_check",
-                   [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_cross_workers_visibility_check); });
    columns.emplace("cc_versions_space_removed", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_versions_space_removed); });
    // -------------------------------------------------------------------------------------
    columns.emplace("cc_ms_oltp_tx", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_ms_oltp_tx); });

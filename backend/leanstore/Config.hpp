@@ -22,7 +22,6 @@ DECLARE_bool(trunc);
 DECLARE_bool(root);
 DECLARE_bool(print_debug);
 DECLARE_bool(print_tx_console);
-DECLARE_bool(profile_latency);
 DECLARE_bool(crc_check);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(optimistic_scan);

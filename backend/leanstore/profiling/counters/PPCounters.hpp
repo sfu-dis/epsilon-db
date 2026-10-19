@@ -14,10 +14,8 @@ struct PPCounters {
    atomic<u64> io_phase_us = 0;
    // Phase 1 detailed
    atomic<u64> find_parent_ms = 0, iterate_children_ms = 0;
-   // Phase 3 detailed
-   atomic<u64> async_wb_ms = 0, submit_ms = 0;
    // -------------------------------------------------------------------------------------
-   atomic<u64> phase_1_counter = 0, phase_2_counter = 0, phase_3_counter = 0;
+   atomic<u64> phase_1_counter = 0;
    // -------------------------------------------------------------------------------------
    // -------------------------------------------------------------------------------------
    atomic<u64> evicted_pages = 0, pp_thread_rounds = 0;
@@ -35,7 +33,6 @@ struct PPCounters {
    atomic<u64> unswizzled_pages_counter = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
-   atomic<s64> eviction_count_histogram[1000][64] = {0};
    // -------------------------------------------------------------------------------------
    atomic<u64> discarded_pages_per_dtid[MAX_DT_ID] = {0};
    atomic<u64> written_back_pages_per_dtid[MAX_DT_ID] = {0};

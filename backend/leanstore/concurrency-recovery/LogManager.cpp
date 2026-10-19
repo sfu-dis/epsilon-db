@@ -230,7 +230,6 @@ void LogManager::trimRange(u64 offset, u64 size)
       trim_enabled.store(false, std::memory_order_relaxed);
       return;
    }
-   log_stats.bytes_trimed.fetch_add(size, std::memory_order_relaxed);
    LOG_INFO(logger, "Discarded log range [%lu, %lu) : %.4f GiB", offset, offset + size, size / 1073741824.0);
 }
 

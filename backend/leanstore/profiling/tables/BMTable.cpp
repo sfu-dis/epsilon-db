@@ -58,8 +58,6 @@ void BMTable::open()
    columns.emplace("iterate_children_pct",
                    [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::iterate_children_ms) * 100.0 / total); });
    columns.emplace("pc1", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::phase_1_counter)); });
-   columns.emplace("pc2", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::phase_2_counter)); });
-   columns.emplace("pc3", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::phase_3_counter)); });
    columns.emplace("free_pct", [&](Column& col) { col << (local_total_free * 100.0 / bm.getPoolSize()); });
    columns.emplace("evicted_mib",
                    [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::evicted_pages) * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0); });
@@ -69,8 +67,6 @@ void BMTable::open()
       col << (sum(PPCounters::pp_counters, &PPCounters::io_phase_us) * 1.0 / (sum(PPCounters::pp_counters, &PPCounters::pp_thread_rounds))); });
    columns.emplace("touches", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::touched_bfs_counter)); });
    columns.emplace("unswizzled", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::unswizzled_pages_counter)); });
-   columns.emplace("submit_ms", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::submit_ms) * 100.0 / total); });
-   columns.emplace("async_mb_ws", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::async_wb_ms)); });
    columns.emplace("w_mib", [&](Column& col) {
       col << (sum(PPCounters::pp_counters, &PPCounters::flushed_pages_counter) * EFFECTIVE_PAGE_SIZE / 1024.0 / 1024.0);
    });
@@ -94,7 +90,6 @@ void BMTable::open()
       (sum(WorkerCounters::worker_counters, &WorkerCounters::dirty_read_operations_counter) * 100.0 / local_read_operations_counter);   });
    columns.emplace("order_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::order_deletions)); });
    columns.emplace("history_deletions", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::history_deletions)); });
-   columns.emplace("tpcc_time_in_truncate", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::tpcc_time_in_truncate)/1000); });
    columns.emplace("delivery_fail", [&](Column& col) { col << (sum(WorkerCounters::worker_counters, &WorkerCounters::delivery_fail)); });
    columns.emplace("tpcc_debug1", [&](Column& col) { col << (std::accumulate(WorkerCounters::worker_counters.begin(), WorkerCounters::worker_counters.end(), 0, [](uint64_t sum, const WorkerCounters& wc){ return sum + wc.tpcc_order_insert;})); });
    columns.emplace("tpcc_debug2", [&](Column& col) { col << (std::accumulate(WorkerCounters::worker_counters.begin(), WorkerCounters::worker_counters.end(), 0, [](uint64_t sum, const WorkerCounters& wc){ return sum + wc.tpcc_order_erase;})); });

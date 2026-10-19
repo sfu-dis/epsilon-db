@@ -23,7 +23,6 @@ struct WorkerCounters {
    atomic<u64> worker_id = -1;
    atomic<u64> order_deletions = 0;
    atomic<u64> history_deletions = 0;
-   atomic<u64> tpcc_time_in_truncate = 0;
    atomic<u64> delivery_fail = 0;
    atomic<u64> tpcc_neworder_insert = 0;
    atomic<u64> tpcc_neworder_erase = 0;
@@ -35,21 +34,15 @@ struct WorkerCounters {
    // -------------------------------------------------------------------------------------
    atomic<u64> seconds = 0;
    // -------------------------------------------------------------------------------------
-   atomic<u64> free_pids = 0;
-   atomic<u64> free_pids_reused = 0;
    // -------------------------------------------------------------------------------------
-   atomic<u64> hot_hit_counter = 0;  // TODO: give it a try ?
-   atomic<u64> cold_hit_counter = 0;
    atomic<u64> read_operations_counter = 0;
    atomic<u64> dirty_read_operations_counter = 0;
    atomic<u64> allocate_operations_counter = 0;
-   atomic<u64> restarts_counter = 0;
    atomic<u64> tx = 0;
    atomic<u64> olap_tx = 0;
    atomic<u64> olap_scanned_tuples = 0;
    atomic<u64> tx_abort = 0;
    atomic<u64> olap_tx_abort = 0;
-   atomic<u64> tmp = 0;
    // -------------------------------------------------------------------------------------
    atomic<u64> io_phase_us[1+MAX_PENDING_LSN_COUNT] = {0};
    atomic<u64> read_operations_histogram[1+MAX_PENDING_LSN_COUNT] = {0};
@@ -63,8 +56,6 @@ struct WorkerCounters {
    // -------------------------------------------------------------------------------------
    atomic<u64> dt_page_reads[max_dt_id] = {0};
    atomic<u64> dt_page_writes[max_dt_id] = {0};
-   atomic<u64> dt_restarts_update_same_size[max_dt_id] = {0};   // without structural change
-   atomic<u64> dt_restarts_structural_change[max_dt_id] = {0};  // includes insert, remove, update with different size
    atomic<u64> dt_restarts_read[max_dt_id] = {0};
    atomic<u64> dt_researchy[max_dt_id][max_researchy_counter] = {};  // temporary counter used to track some value for an idea in my mind
    // -------------------------------------------------------------------------------------
@@ -94,22 +85,8 @@ struct WorkerCounters {
    atomic<u64> cc_read_chains_not_found[max_dt_id] = {0};
    atomic<u64> cc_read_chains[max_dt_id] = {0};
    // -------------------------------------------------------------------------------------
-   atomic<u64> cc_update_versions_visited[max_dt_id] = {0};
-   atomic<u64> cc_update_versions_removed[max_dt_id] = {0};
-   atomic<u64> cc_update_versions_kept[max_dt_id] = {0};
-   atomic<u64> cc_update_versions_kept_max[max_dt_id] = {0};
-   atomic<u64> cc_update_versions_skipped[max_dt_id] = {0};
-   atomic<u64> cc_update_versions_recycled[max_dt_id] = {0};
    atomic<u64> cc_update_versions_created[max_dt_id] = {0};
    atomic<u64> cc_update_chains[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_hwm[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_skipped[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_workers_visited[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_heavy[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_heavy_removed[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_light[max_dt_id] = {0};
-   atomic<u64> cc_update_chains_pgc_light_removed[max_dt_id] = {0};
    // -------------------------------------------------------------------------------------
    atomic<u64> cc_versions_space_inserted[max_dt_id] = {0};
    atomic<u64> cc_versions_space_inserted_opt[max_dt_id] = {0};
@@ -160,9 +137,6 @@ struct WorkerCounters {
    // Debugging livelock : stuck in jump retry
    u64 reading_retry_debug_counter = 0;
    u64 to_delete_retry_debug_counter = 0;
-   u64 success_resolve_swip = 0;
-   u64 ready_success = 0;
-   u64 cool_success = 0;
    u64 swizzled = 0;
    // -------------------------------------------------------------------------------------
    bool experienced_buffer_miss = false;

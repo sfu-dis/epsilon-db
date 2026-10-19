@@ -17,7 +17,6 @@ DEFINE_bool(trunc, false, "Truncate file");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(print_debug, true, "");
 DEFINE_bool(print_tx_console, true, "");
-DEFINE_bool(profile_latency, false, "");
 DEFINE_bool(crc_check, false, "");
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(worker_threads, 4, "");

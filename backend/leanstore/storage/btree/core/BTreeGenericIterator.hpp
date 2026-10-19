@@ -47,9 +47,6 @@ class BTreePessimisticIterator : public BTreePessimisticIteratorInterface
       {
          WorkerCounters::myCounters().reading_retry_debug_counter = 0;
          WorkerCounters::myCounters().to_delete_retry_debug_counter = 0;
-         WorkerCounters::myCounters().success_resolve_swip = 0;
-         WorkerCounters::myCounters().ready_success = 0;
-         WorkerCounters::myCounters().cool_success = 0;
          WorkerCounters::myCounters().swizzled = 0;
       }
       while (true) {

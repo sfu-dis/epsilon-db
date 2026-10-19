@@ -25,10 +25,6 @@ void DTTable::open()
    columns.emplace("dt_name", [&](Column& col) { col << dt_name; });
    columns.emplace("dt_page_reads", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_page_reads, dt_id); });
    columns.emplace("dt_page_writes", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_page_writes, dt_id); });
-   columns.emplace("dt_restarts_update_same_size",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_restarts_update_same_size, dt_id); });
-   columns.emplace("dt_restarts_structural_change",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_restarts_structural_change, dt_id); });
    columns.emplace("dt_restarts_read", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_restarts_read, dt_id); });
    // -------------------------------------------------------------------------------------
    columns.emplace("dt_empty_leaf", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::dt_empty_leaf, dt_id); });
@@ -78,38 +74,9 @@ void DTTable::open()
    columns.emplace("cc_read_chains_not_found",
                    [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_read_chains_not_found, dt_id); });
    // -------------------------------------------------------------------------------------
-   columns.emplace("cc_update_versions_visited",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_visited, dt_id); });
-   columns.emplace("cc_update_versions_removed",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_removed, dt_id); });
-   columns.emplace("cc_update_versions_skipped",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_skipped, dt_id); });
-   columns.emplace("cc_update_versions_kept",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_kept, dt_id); });
-   columns.emplace("cc_update_versions_kept_max", [&](Column& col) {
-      col << utils::threadlocal::max(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_kept_max, dt_id);
-   });
-   columns.emplace("cc_update_versions_recycled",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_recycled, dt_id); });
    columns.emplace("cc_update_versions_created",
                    [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_versions_created, dt_id); });
    columns.emplace("cc_update_chains", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains, dt_id); });
-   columns.emplace("cc_update_chains_hwm",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_hwm, dt_id); });
-   columns.emplace("cc_update_chains_pgc",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc, dt_id); });
-   columns.emplace("cc_update_chains_pgc_skipped",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_skipped, dt_id); });
-   columns.emplace("cc_update_chains_pgc_workers_visited",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_workers_visited, dt_id); });
-   columns.emplace("cc_update_chains_pgc_heavy_removed",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_heavy_removed, dt_id); });
-   columns.emplace("cc_update_chains_pgc_heavy",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_heavy, dt_id); });
-   columns.emplace("cc_update_chains_pgc_light_removed",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_light_removed, dt_id); });
-   columns.emplace("cc_update_chains_pgc_light",
-                   [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_update_chains_pgc_light, dt_id); });
    // -------------------------------------------------------------------------------------
    columns.emplace("cc_todo_removed", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_todo_removed, dt_id); });
    columns.emplace("cc_todo_moved_gy", [&](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::cc_todo_moved_gy, dt_id); });
