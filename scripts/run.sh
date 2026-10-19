@@ -420,7 +420,7 @@ sanitize_nvme() {
        sleep 1m
     fi
     run blkdiscard -v "${device}"
-    if [ ! -z "$log_device" ]; then
+    if [ ! -z "$log_device" ]  && [ "${log_device}" != "${device}" ]; then
       run blkdiscard -v "${log_device}"
     fi
     sleep 1m
@@ -436,7 +436,6 @@ if (( trim == 1)); then
           sudo nvme delete-ns ${controller} -n ${i}
       done
       sleep 2
-      set -x
       sudo nvme set-feature ${controller} -f 0x1D -c 0 -s
       sudo nvme set-feature ${controller} -f 0x1D -c 1 -s
       sudo nvme get-feature ${controller} -f 0x1D -H
@@ -445,15 +444,12 @@ if (( trim == 1)); then
       total_cap=$(nvme id-ctrl "${controller}" | awk -F: '/^tnvmcap/ {gsub(/[ \t]/,"",$2); print $2}')
       DEV_SIZE=$(( total_cap / 4096 ))
       sequence=$(seq -s ',' 0 $((fdp_nruh - 1)))
-      echo ${sequence}
       PLID_ARG=
       if (( fdp_nruh > 0 )); then
           PLID_ARG="--nphndls=${fdp_nruh} --phndls=${sequence}"
       fi
-      echo $PLID_ARG
       sudo nvme create-ns ${controller} -b 4096 --nsze=${DEV_SIZE}  --ncap=${DEV_SIZE} ${PLID_ARG}
       sudo nvme attach-ns ${controller} --namespace-id=1 --controllers=0x7
-      set +x
       sleep 30
    fi
    sanitize_nvme
@@ -612,10 +608,6 @@ blktrace_ssd_read() {
    sudo blktrace -d ${device} -a read -o blktrace_out/steady -w 300
 }
 
-#TODO(mfd): A temporary flag for common flags.
-# which are ssd device, log deice, OP region, RU size
-
-
 make -j 10
 
 load_flags="load.gflag"
@@ -706,6 +698,7 @@ cat "${common_flags}" >> "${run_flags}"
          # echo "--max_log_records_to_discard=7"
       else
          echo "--noper_page_logging"
+         echo "--noopportunistic_log_compaction"
       fi
       echo "--max_log_records_to_discard=${max_log_records_to_discard}"
    fi

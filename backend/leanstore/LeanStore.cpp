@@ -594,7 +594,8 @@ LeanStore::~LeanStore()
       cr_manager->stopGroupCommitter();
    }
    buffer_manager->waitForAllBackgroundThreads();
-   close(ssd_fd);
+   cr_manager.reset(); // will call destructor of CRMG
+   nvme_close(ssd_fd);
 }
 // -------------------------------------------------------------------------------------
 // Static members
