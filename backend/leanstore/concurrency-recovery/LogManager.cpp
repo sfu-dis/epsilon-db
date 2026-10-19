@@ -271,7 +271,7 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    if (lseg.offset >= log_segment_size) {
       // FIXME(mfd) : Either proper checkpointing of the sink log or obviate it.
       // For now, no writes go to the sink log.
-      ensure(log_i != 0);
+      ensure(!isSinkLog(log_i));
       cerr << "Log space is not enough!!!" << endl;
       raise(SIGTRAP);
    }

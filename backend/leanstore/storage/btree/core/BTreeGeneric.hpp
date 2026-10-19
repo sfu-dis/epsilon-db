@@ -232,7 +232,6 @@ class BTreeGeneric
    u64 countPages();
    u64 countEntries();
    u64 getHeight();
-   double averageSpaceUsage();
    u32 bytesFree();
    void printInfos(uint64_t totalSize);
 };

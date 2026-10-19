@@ -572,11 +572,6 @@ u64 BTreeGeneric::countInner()
    return iterateAllPages([](BTreeNode&) { return 1; }, [](BTreeNode&) { return 0; });
 }
 // -------------------------------------------------------------------------------------
-double BTreeGeneric::averageSpaceUsage()
-{
-   ensure(false);  // TODO
-}
-// -------------------------------------------------------------------------------------
 u32 BTreeGeneric::bytesFree()
 {
    return iterateAllPages([](BTreeNode& inner) { return inner.freeSpaceAfterCompaction(); },
