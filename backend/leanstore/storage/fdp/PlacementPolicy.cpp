@@ -29,7 +29,6 @@ class PlacementPolicy::Impl
 {
   public:
    virtual ~Impl() = default;
-   virtual ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf = nullptr) = 0;
    // Different Policies have diffirent times to decide the placement ID.
    virtual void onAllocateNewPage(BufferFrame& bf) = 0;
    virtual void onWriteBackDirtyPage(BufferFrame& bf) = 0;
@@ -42,11 +41,6 @@ template <typename ConcretePolicy>
 class PolicyAdapter : public PlacementPolicy::Impl
 {
   public:
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf = nullptr) override
-   {
-      return policy.AssignPlacementID(page, bf);
-   }
-
    void onAllocateNewPage(BufferFrame& bf) override
    {
       policy.onAllocateNewPage(bf);
@@ -102,11 +96,6 @@ PlacementPolicy::PlacementPolicy() : impl(assignRUHsAndMakeImpl()) {}
 PlacementPolicy::~PlacementPolicy() = default;
 PlacementPolicy::PlacementPolicy(PlacementPolicy&&) noexcept = default;
 PlacementPolicy& PlacementPolicy::operator=(PlacementPolicy&&) noexcept = default;
-// -------------------------------------------------------------------------------------
-ruh_id_t PlacementPolicy::AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf)
-{
-   return impl->AssignPlacementID(page, bf);
-}
 // -------------------------------------------------------------------------------------
 void PlacementPolicy::onAllocateNewPage(BufferFrame& bf)
 {

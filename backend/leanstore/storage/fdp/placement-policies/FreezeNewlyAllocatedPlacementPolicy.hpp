@@ -13,11 +13,6 @@ class FreezeNewlyAllocatedPlacementPolicy
   public:
    FreezeNewlyAllocatedPlacementPolicy() { freezing_ruh = allocateRUH(); }
 
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf)
-   {
-      return DEFAULT_RUH;
-   }
-
    void onAllocateNewPage(BufferFrame& bf)
    {
       bf.header.next_ruh = freezing_ruh;

@@ -38,11 +38,6 @@ class FreezeTablesPlacementPolicy
       frozen[dt_id] = true;
    }
 
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame*)
-   {
-      return ruhOf(page.dt_id);
-   }
-
    void onAllocateNewPage(BufferFrame& bf)
    {
       bf.header.next_ruh = UNMAPPED_RUH;

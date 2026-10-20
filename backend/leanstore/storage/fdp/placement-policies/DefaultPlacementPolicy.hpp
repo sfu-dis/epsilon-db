@@ -13,11 +13,6 @@ class DefaultPlacementPolicy
   public:
    DefaultPlacementPolicy() = default;
 
-   ruh_id_t AssignPlacementID(BufferFrame::Page&, BufferFrame*)
-   {
-      return DEFAULT_RUH;
-   }
-
    void onAllocateNewPage(BufferFrame& bf)
    {
       bf.header.next_ruh = DEFAULT_RUH;

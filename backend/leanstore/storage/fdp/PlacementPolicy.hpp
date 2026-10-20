@@ -39,9 +39,6 @@ class PlacementPolicy
    PlacementPolicy(PlacementPolicy&&) noexcept;
    PlacementPolicy& operator=(PlacementPolicy&&) noexcept;
    // -------------------------------------------------------------------------------------
-   // Returns the placement ID to use for bf.
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame* bf = nullptr);
-
    void onAllocateNewPage(BufferFrame& bf);
    void onWriteBackDirtyPage(BufferFrame& bf);
    void onFixDiscardedPage(BufferFrame& bf);

@@ -32,11 +32,6 @@ class FrozenRecordsPlacementPolicy
       }
    }
 
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame*)
-   {
-      return ruhOf(page);
-   }
-
    void onAllocateNewPage(BufferFrame& bf)
    {
       // The page is empty at this point, the RUH is decided upon write back.

@@ -33,11 +33,6 @@ class HardcodedTPCCPlacementPolicy
       hot_ruh = allocateRUH();
    }
 
-   ruh_id_t AssignPlacementID(BufferFrame::Page& page, BufferFrame*)
-   {
-      return ruhOf(page);
-   }
-
    void onAllocateNewPage(BufferFrame& bf)
    {
       // The dt_id is not known yet, the RUH is decided upon write back.
