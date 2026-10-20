@@ -118,10 +118,8 @@ OP_RESULT BTreeVI::lookupOptimistic(const u8* key, const u16 key_length, functio
             leaf.recheck();
             PARANOID_BLOCK()
             {
-               const PID pid = leaf.bf->header.pid;
                leaf.recheck();
                cout << "not found" << endl;
-               leanstore::storage::Tracing::printStatus(pid);
                HybridPageGuard<BTreeNode> p_guard(meta_node_bf);
                HybridPageGuard<BTreeNode> target_guard;
                target_guard = HybridPageGuard<BTreeNode>(p_guard, p_guard->upper);

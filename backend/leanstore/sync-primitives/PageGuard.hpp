@@ -4,7 +4,6 @@
 #include "leanstore/concurrency-recovery/CRMG.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/storage/buffer-manager/BufferManager.hpp"
-#include "leanstore/storage/buffer-manager/Tracing.hpp"
 #include "leanstore/storage/btree/core/BTreeGenericWALEntry.hpp"
 // -------------------------------------------------------------------------------------
 namespace leanstore
@@ -86,12 +85,10 @@ class HybridPageGuard
       PARANOID_BLOCK()
       {
          [[maybe_unused]] DTID p_dt_id = p_guard.bf->page.dt_id, dt_id = bf->page.dt_id;
-         [[maybe_unused]] PID pid = bf->header.pid;
          p_guard.recheck();
          recheck();
          if (p_dt_id != dt_id) {
             cout << "p_dt_id != dt_id" << endl;
-            leanstore::storage::Tracing::printStatus(pid);
          }
       }
       // -------------------------------------------------------------------------------------

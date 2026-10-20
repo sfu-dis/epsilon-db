@@ -49,7 +49,6 @@ DEFINE_bool(btree_split_alloc_right, true, "On split, allocate the new node as t
 // -------------------------------------------------------------------------------------
 DEFINE_int64(trace_dt_id, -1, "Print a stack trace for page reads for this DT ID");
 DEFINE_int64(trace_trigger_probability, 100, "");
-DEFINE_bool(pid_tracing, false, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(tag, "", "Unique identifier for this, will be appended to each line csv");
 // -------------------------------------------------------------------------------------

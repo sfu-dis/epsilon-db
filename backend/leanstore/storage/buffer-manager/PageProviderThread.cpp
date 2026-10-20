@@ -3,7 +3,6 @@
 #include "BufferManager.hpp"
 #include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
-#include "Tracing.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/concurrency-recovery/CRMG.hpp"
 #include "leanstore/profiling/counters/CPUCounters.hpp"
@@ -208,9 +207,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                if (!bf.isDiscardable()) {
                   jumpmu::jump();
                }
-               // TODO(mfd) : PARANOID_BLOCK()
-               if (FLAGS_wal && FLAGS_wal_pwrite) {
-                  // ensure(last_write_lsn != INVALID_LSN);
+               PARANOID_BLOCK()
+               {
+                  ensure(FLAGS_wal && FLAGS_wal_pwrite);
                   if (last_write_lsn == INVALID_LSN) {
                      bf.dump();
                      __asm__ volatile("int3");
@@ -315,16 +314,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          freed_bfs_batch.add(bf);
          if (freed_bfs_batch.size() <= std::min<u64>(FLAGS_worker_threads, 128)) {
             freed_bfs_batch.push(current_partition);
-         }
-         // -------------------------------------------------------------------------------------
-         if (FLAGS_pid_tracing) {
-            Tracing::mutex.lock();
-            if (Tracing::ht.contains(evicted_pid)) {
-               std::get<1>(Tracing::ht[evicted_pid])++;
-            } else {
-               Tracing::ht[evicted_pid] = {dt_id, 1};
-            }
-            Tracing::mutex.unlock();
          }
          // -------------------------------------------------------------------------------------
          COUNTERS_BLOCK() { PPCounters::myCounters().evicted_pages++; }
@@ -463,8 +452,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       ensure_lte(written_bf.header.last_written_plsn, written_plsn);
                       // -------------------------------------------------------------------------------------
                       written_bf.header.is_being_written_back = false;
-                      // FIXME(mfd) : I think this is already called in the destructor of ex_guard
-                      o_guard.guard.unlock();
                       jumpmu_break;
                    }
                    jumpmuCatch() { return false; }

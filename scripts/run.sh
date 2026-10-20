@@ -387,6 +387,25 @@ if [[ "${log_device}" == "${device}" ]] ; then
    enable_fdp=1
 fi
 
+if (( enable_fdp == 0 && (fdp_reformat == 1 || fdp_waf == 1) )); then
+   echo "You passed --fdp_reformat and/or --fdp_waf but FDP is not enabled"
+   echo "have you forgotten the option --enable_fdp"
+   read -p "Continue? [Y/y], Enable FDP? [e], type anything else to abort: " answer
+   case "$answer" in
+        [Yy]* )
+            echo "Continuing..."
+            ;;
+        [e]* )
+            enable_fdp=1
+            echo "Will enable FDP, Continuing..."
+            ;;
+        * )
+            echo "Aborting."
+            exit 1
+            ;;
+   esac
+fi
+
 if (( fdp_waf == 1 && fdp_reformat == 0 )); then
    echo "You are asking to use fdp stats command to calculate WAF"
    echo "However, you are not reformatting the device"
