@@ -1,20 +1,19 @@
-#include "Logging.hpp"
-
 #include "LogManager.hpp"
+#include "Logging.hpp"
 #include "leanstore/profiling/counters/CRCounters.hpp"
+#include "leanstore/storage/NvmeDevice.hpp"
 #include "leanstore/storage/buffer-manager/BufferFrame.hpp"
 #include "leanstore/storage/buffer-manager/BufferManager.hpp"
-#include "leanstore/storage/NvmeDevice.hpp"
-
+// -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace cr
 {
-
+// -------------------------------------------------------------------------------------
 LogManager* LogManager::global = nullptr;
-
+// -------------------------------------------------------------------------------------
 LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log_dev_size)
-    : log_count(nb_logs), log_dev_fd(log_dev_fd), log_file_offset(log_file_offset), log_dev_size(log_dev_size), batch_max_size(nb_logs * 2 + 2)
+    : log_count(nb_logs), log_dev_fd(log_dev_fd), log_dev_size(log_dev_size), log_file_offset(log_file_offset), batch_max_size(nb_logs * 2 + 2)
 {
    // -------------------------------------------------------------------------------------
    if (FLAGS_wal_partition_by == "worker") {
@@ -45,14 +44,14 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
    // we simplify log segment wrap around logic, by enforcing each
    // log file size to be an integer multiple of the log buffer size.
    log_segment_size = log_segment_size - (log_segment_size % FLAGS_wal_buffer_size);
-   LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size/1073741824.0);
+   LOG_INFO(logger, "Log Segment Size : %.3f GiB", log_segment_size / 1073741824.0);
    if (FLAGS_log_fake_wrap_around) {
       // There is no checkpointer, pretend one truncates the log whenever half of a segment is used.
       // Keep the wrap around offset a multiple of the log buffer size so that the device offset and the LSN
       // stay congruent to the log buffer offset.
       fake_wrap_around_offset = (log_segment_size / 2) - ((log_segment_size / 2) % FLAGS_wal_buffer_size);
       ensure(fake_wrap_around_offset >= FLAGS_wal_buffer_size);
-      LOG_INFO(logger, "Fake log wrap around at : %.3f GiB", fake_wrap_around_offset/1073741824.0);
+      LOG_INFO(logger, "Fake log wrap around at : %.3f GiB", fake_wrap_around_offset / 1073741824.0);
    }
    trim_enabled.store(FLAGS_log_trim_on_reclaim && FLAGS_wal_pwrite);
    // -------------------------------------------------------------------------------------
@@ -124,10 +123,11 @@ LogManager::LogManager(u32 nb_logs, s32 log_dev_fd, u64 log_file_offset, u64 log
       }
    }
 }
-
+// -------------------------------------------------------------------------------------
 u32 LogManager::LSN2LogID(LID lsn)
 {
-   if (!isRegularLSN(lsn)) return -1;
+   if (!isRegularLSN(lsn))
+      return -1;
    u32 log_id = lsnLogID(lsn);
    {
       ensure_lt(log_id, global->log_count);
@@ -135,7 +135,7 @@ u32 LogManager::LSN2LogID(LID lsn)
    }
    return log_id;
 }
-
+// -------------------------------------------------------------------------------------
 u64 LogManager::LSN2DevOffset(LID lsn)
 {
    ensure(isRegularLSN(lsn));
@@ -143,19 +143,18 @@ u64 LogManager::LSN2DevOffset(LID lsn)
    ensure_lt(lsnOffset(lsn), log_segment_size);
    return all_logs[log_id].log_segment_start + lsnOffset(lsn);
 }
-
+// -------------------------------------------------------------------------------------
 u32 LogManager::getLogID(ru_epoch_t ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
-   return (ru_epoch % (global->log_count-FLAGS_wal_sink_logs)) + FLAGS_wal_sink_logs;
+   return (ru_epoch % (global->log_count - FLAGS_wal_sink_logs)) + FLAGS_wal_sink_logs;
 }
-
+// -------------------------------------------------------------------------------------
 s32 LogManager::getLogID(ru_epoch_t ru_epoch, PID page_id)
 {
    ensure(global->isPartitionedByRUepoch());
    s32 log_id = -1;
-   if ((ru_epoch == -1)
-      || (ru_epoch <= storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire))) {
+   if ((ru_epoch == -1) || (ru_epoch <= storage::BMC::global_bf->reclaiming_ru_epoch.load(std::memory_order_acquire))) {
       log_id = page_id % FLAGS_wal_sink_logs;
    } else {
       log_id = getLogID(ru_epoch);
@@ -165,21 +164,21 @@ s32 LogManager::getLogID(ru_epoch_t ru_epoch, PID page_id)
    }
    return log_id;
 }
-
-Logging& LogManager::getLog(s64 ru_epoch)
+// -------------------------------------------------------------------------------------
+Logging& LogManager::getLog(ru_epoch_t ru_epoch)
 {
    u32 log_id = getLogID(ru_epoch);
    return global->all_logs[log_id];
 }
-
-Logging& LogManager::getLog(s64 ru_epoch, PID page_id)
+// -------------------------------------------------------------------------------------
+Logging& LogManager::getLog(ru_epoch_t ru_epoch, PID page_id)
 {
    s32 log_id = getLogID(ru_epoch, page_id);
    ensure(log_id != -1);
    return global->all_logs[log_id];
 }
-
-Logging& LogManager::getLog(storage::BufferFrame *bf)
+// -------------------------------------------------------------------------------------
+Logging& LogManager::getLog(storage::BufferFrame* bf)
 {
    s32 log_id = -1;
    if (global->isPartitionedByWorker()) {
@@ -196,7 +195,7 @@ Logging& LogManager::getLog(storage::BufferFrame *bf)
    ensure(log_id != -1);
    return global->all_logs[log_id];
 }
-
+// -------------------------------------------------------------------------------------
 void LogManager::resetLogSegment(s64 ru_epoch)
 {
    ensure(global->isPartitionedByRUepoch());
@@ -204,8 +203,8 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    u32 log_id = getLogID(ru_epoch);
    auto& lseg = global->meta->log_segments[log_id];
    LOG_INFO(logger, "Reclaiming log of RU epoch %ld mapped to %u", ru_epoch, log_id);
-   LOG_INFO(logger, "Log space consumption was %.1f%% when trimming log %u", lseg.offset * 100.0f/log_segment_size, log_id);
-   LOG_INFO(logger, "%.4f GiB Log space", lseg.offset/ 1073741824.0);
+   LOG_INFO(logger, "Log space consumption was %.1f%% when trimming log %u", lseg.offset * 100.0f / log_segment_size, log_id);
+   LOG_INFO(logger, "%.4f GiB Log space", lseg.offset / 1073741824.0);
    COUNTERS_BLOCK(log_space_usage)
    {
       log_stats.bytes_used.fetch_sub(lseg.offset);
@@ -214,12 +213,13 @@ void LogManager::resetLogSegment(s64 ru_epoch)
    trimRange(lseg.start_off, log_segment_size);
    lseg.offset = 0;
 }
-
+// -------------------------------------------------------------------------------------
 void LogManager::trimRange(u64 offset, u64 size)
 {
    // TODO(mfd) : First try issue nvme dsm command to trim through blocking ioctl passthrough cmd
    //  then fallback to using ioctl(BLKDISCARD);
-   if (!trim_enabled.load(std::memory_order_relaxed) || size == 0) return;
+   if (!trim_enabled.load(std::memory_order_relaxed) || size == 0)
+      return;
    ensure_equal((offset % LOG_DEV_BLK_SIZE), 0);
    ensure_equal((size % LOG_DEV_BLK_SIZE), 0);
    ensure(offset >= log_start_offset);
@@ -232,11 +232,12 @@ void LogManager::trimRange(u64 offset, u64 size)
    }
    LOG_INFO(logger, "Discarded log range [%lu, %lu) : %.4f GiB", offset, offset + size, size / 1073741824.0);
 }
-
-/// TODO(mfd) : remove the block_full variable and take care of alignment here.
+// -------------------------------------------------------------------------------------
+// TODO(mfd) : remove the block_full variable and take care of alignment here.
 void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_full)
 {
-   if (!FLAGS_wal_pwrite) return;
+   if (!FLAGS_wal_pwrite)
+      return;
    ensure(size % LOG_DEV_BLK_SIZE == 0);
    if (size == 0)
       return;
@@ -258,11 +259,12 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    lseg.offset += size;
    COUNTERS_BLOCK(log_space_usage)
    {
-      //FIXME(mfd) : Do not account for writes to the sink log for now
-      // until we implement recovery.
+      // FIXME(mfd) : Do not account for writes to the sink log for now
+      //  until we implement recovery.
       if (!isSinkLog(log_i)) {
          u64 effective_size = size;
-         if (!block_full) effective_size -= LOG_DEV_BLK_SIZE;
+         if (!block_full)
+            effective_size -= LOG_DEV_BLK_SIZE;
          log_stats.bytes_used.fetch_add(effective_size, std::memory_order_release);
       }
    }
@@ -289,12 +291,16 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
          }
       }
    }
-   COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += size; }
+   COUNTERS_BLOCK(gct_write_bytes)
+   {
+      CRCounters::myCounters().gct_write_bytes += size;
+   }
 }
-
+// -------------------------------------------------------------------------------------
 void LogManager::submitAndWait()
 {
-   if (!FLAGS_wal_pwrite) return;
+   if (!FLAGS_wal_pwrite)
+      return;
    if (io_slot > 0) {
       // TODO(mfd) : submit_and_wait in a single syscall ?
       const s32 ret_code = io_uring_submit(&ring);
@@ -313,7 +319,7 @@ void LogManager::submitAndWait()
          }
          ensure_equal((s64(cqe->res) % LOG_DEV_BLK_SIZE), 0);
          ++i;
-       }
+      }
       ensure_equal(i, io_slot);
       io_uring_cq_advance(&ring, io_slot);
       io_slot = 0;
@@ -322,24 +328,28 @@ void LogManager::submitAndWait()
       }
    }
 }
-
+// -------------------------------------------------------------------------------------
 void LogManager::persistMetaBlock()
 {
-   if (!FLAGS_wal_pwrite) return;
+   if (!FLAGS_wal_pwrite)
+      return;
    s64 ret = pwrite(log_dev_fd, meta, meta_size, log_file_offset);
    ensure_equal(ret, s64(meta_size));
-   COUNTERS_BLOCK(gct_write_bytes) { CRCounters::myCounters().gct_write_bytes += meta_size; }
+   COUNTERS_BLOCK(gct_write_bytes)
+   {
+      CRCounters::myCounters().gct_write_bytes += meta_size;
+   }
    if (FLAGS_wal_fsync) {
       fdatasync(log_dev_fd);
    }
 }
-
+// -------------------------------------------------------------------------------------
 LogManager::~LogManager()
 {
-    // ensure background threads are stopped ?
-    persistMetaBlock();
-    io_uring_queue_exit(&ring);
+   // ensure background threads are stopped ?
+   persistMetaBlock();
+   io_uring_queue_exit(&ring);
 }
-
+// -------------------------------------------------------------------------------------
 }  // namespace cr
 }  // namespace leanstore
