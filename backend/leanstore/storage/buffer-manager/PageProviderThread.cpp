@@ -187,139 +187,130 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
          // -------------------------------------------------------------------------------------
          paranoid(parent_handler.parent_guard.state == GUARD_STATE::OPTIMISTIC);
          BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler.parent_guard);
-         // The page must remain exclusively latched if the function return through
-         // normal path and must release the latch if it jumps().
-         // TODO(mfd) : Define a Guard with this behaviour if necessaray.
-         // For now, make sure to manually release the latch before each non-local jump.
-         c_guard.guard.toExclusive();
-         ensure(&parent_handler.swip.asBufferFrameMasked() == &bf);
-         // -------------------------------------------------------------------------------------
-         if (FLAGS_crc_check && bf.header.crc) {
-            ensure(utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE) == bf.header.crc);
-         }
-         // -------------------------------------------------------------------------------------
-         ensure(!bf.isDirty() || discard);
-         ensure(!bf.header.is_being_written_back);
-         ensure(bf.header.state == BufferFrame::STATE::COOL);
-         ensure(parent_handler.swip.isCOOL());
-         ensure(bf.page.ru_epoch >= 0);
-         // -------------------------------------------------------------------------------------
-         const PID evicted_pid = bf.header.pid;
-         const LID last_write_lsn = bf.page.last_written_lsn;
-         if (discard) {
-            if (!bf.isDiscardable()) {
-               c_guard.guard.unlock();
-               jumpmu::jump();
+         PID evicted_pid;
+         {
+            BMBlockingExclusiveGuard c_x_guard(c_guard);
+            ensure(&parent_handler.swip.asBufferFrameMasked() == &bf);
+            // -------------------------------------------------------------------------------------
+            if (FLAGS_crc_check && bf.header.crc) {
+               ensure(utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE) == bf.header.crc);
             }
-            // TODO(mfd) : PARANOID_BLOCK()
-            if (FLAGS_wal && FLAGS_wal_pwrite) {
-               // ensure(last_write_lsn != INVALID_LSN);
-               if (last_write_lsn == INVALID_LSN) {
-                  bf.dump();
-                  __asm__ volatile("int3");
-               }
-               u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
-               if (log_id != cr::LogManager::getLogID(bf.page.ru_epoch)) {
-                  bf.dump();
-                  raise(SIGTRAP);
-               }
-            }
-            if (bf.page.ru_epoch <= reclaiming_ru_epoch.load(std::memory_order_acquire)) {
-               c_guard.guard.unlock();
-               jumpmu::jump();
-            }
-            cr::Logging& ru_epoch_log = cr::LogManager::getLog(bf.page.ru_epoch);
-            if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
-               bf.markUnDiscardable(OTHER);
-               c_guard.guard.unlock();
-               jumpmu::jump();
-            }
-            ensure(bf.header.pending_lsn_count > 0);
-            if (!bf.header.will_flush_ppl) {
-               ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
-               ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
-               ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
-            }
-            LID *pending_lsn = nullptr;
-            if (bf.header.pending_lsn_count == 1) {
-               pending_lsn = bf.header.pending_lsn;
-            } else {
-               if (FLAGS_per_page_logging && bf.header.pending_lsn_count >= FLAGS_ppl_merge_threshold) {
-                  bool ok = bf.submitPPLEntry();
-                  if (!ok) {
-                     // only fails when the log that is mapped to this page changes.
-                     // just retry and next time I will write the page without trying to discard it.
-                     assert(!bf.isDiscardable());
-                     c_guard.guard.unlock();
-                     jumpmu::jump();
-                  }
-                  ensure_equal(bf.header.pending_lsn_count, 1);
-                  pending_lsn = bf.header.pending_lsn;
-               } else if (FLAGS_discard_lsns_in_parent) {
-                  pending_lsn = bf.header.pending_lsn;
-               } else {
-                  pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
-                  ensure(pending_lsn != nullptr);
-                  std::memcpy(pending_lsn, bf.header.pending_lsn, bf.header.pending_lsn_count * sizeof(LID));
-               }
-            }
-            bool success = false;
-            const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
-            const u8 discard_count = std::min<u8>(bf.header.discard_count + 1, PageState::max_discard_count);
-            // A not yet persisted PPL entry is still in the WAL buffer (the GCT only lets it get
-            // overwritten once written to the log device), so a buffer miss can copy it from there.
-            // The log may have got full since the check above.
-            if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
-               if (pending_lsn != bf.header.pending_lsn) {
-                  per_pp_allocator[pp_id].free(pending_lsn, bf.header.pending_lsn_count);
-               }
-               bf.markUnDiscardable(OTHER);
-               c_guard.guard.unlock();
-               jumpmu::jump();
-            }
-            if (FLAGS_discard_lsns_in_parent) {
-               // The parent is exclusively latched, the LSNs are stored next to the swip and the swip is evicted.
-               auto& parent_node = *reinterpret_cast<btree::BTreeNode*>(parent_handler.parent_bf->page.dt);
-               if (!parent_node.evictAndStorePendingLSNs(parent_handler.swip.cast<btree::BTreeNode>(), parent_handler.pos, evicted_pid, bf.page.ru_epoch, pending_lsn, bf.header.pending_lsn_count)) {
-                  // No space left in the parent for the pending LSNs, write the page back instead.
-                  // TODO(mfd) : split the parent instead.
-                  bf.markUnDiscardable(PARENT_FULL);
-                  c_guard.guard.unlock();
+            // -------------------------------------------------------------------------------------
+            ensure(!bf.isDirty() || discard);
+            ensure(!bf.header.is_being_written_back);
+            ensure(bf.header.state == BufferFrame::STATE::COOL);
+            ensure(parent_handler.swip.isCOOL());
+            ensure(bf.page.ru_epoch >= 0);
+            // -------------------------------------------------------------------------------------
+            evicted_pid = bf.header.pid;
+            const LID last_write_lsn = bf.page.last_written_lsn;
+            if (discard) {
+               if (!bf.isDiscardable()) {
                   jumpmu::jump();
                }
-            }
-            success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
-            ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
-            // The RU discard set identity may change meanwhile.
-            // I simply allow this, this is a very rare event, and these are
-            // stats just to approximate thresolhold of GC in RU epoch.
-            ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).inserted.fetch_add(1);
-#ifdef PER_TPCC_TABLE_STATS_DEBUG
-            if (auto* t = ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).tableStats(bf.page.dt_id)) {
-               t->inserted.fetch_add(1, std::memory_order_relaxed);
-            }
-#endif
-            if (!FLAGS_discard_lsns_in_parent) {
-               parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
-            }
-            COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
-            COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
-         } else {
-            parent_handler.swip.evict(evicted_pid);
-            if (FLAGS_enable_discarding) {
+               // TODO(mfd) : PARANOID_BLOCK()
+               if (FLAGS_wal && FLAGS_wal_pwrite) {
+                  // ensure(last_write_lsn != INVALID_LSN);
+                  if (last_write_lsn == INVALID_LSN) {
+                     bf.dump();
+                     __asm__ volatile("int3");
+                  }
+                  u32 log_id = cr::LogManager::global->LSN2LogID(last_write_lsn);
+                  if (log_id != cr::LogManager::getLogID(bf.page.ru_epoch)) {
+                     bf.dump();
+                     raise(SIGTRAP);
+                  }
+               }
+               if (bf.page.ru_epoch <= reclaiming_ru_epoch.load(std::memory_order_acquire)) {
+                  jumpmu::jump();
+               }
+               cr::Logging& ru_epoch_log = cr::LogManager::getLog(bf.page.ru_epoch);
+               if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
+                  bf.markUnDiscardable(OTHER);
+                  jumpmu::jump();
+               }
+               ensure(bf.header.pending_lsn_count > 0);
+               if (!bf.header.will_flush_ppl) {
+                  ensure(bf.header.pending_lsn_count <= FLAGS_max_log_records_to_discard);
+                  ensure_equal(bf.header.pending_lsn[bf.header.pending_lsn_count - 1], last_write_lsn);
+                  ensure_equal(bf.header.pending_lsn_count, bf.page.PLSN - bf.header.last_written_plsn);
+               }
+               LID *pending_lsn = nullptr;
+               if (bf.header.pending_lsn_count == 1) {
+                  pending_lsn = bf.header.pending_lsn;
+               } else {
+                  if (FLAGS_per_page_logging && bf.header.pending_lsn_count >= FLAGS_ppl_merge_threshold) {
+                     bool ok = bf.submitPPLEntry();
+                     if (!ok) {
+                        // only fails when the log that is mapped to this page changes.
+                        // just retry and next time I will write the page without trying to discard it.
+                        assert(!bf.isDiscardable());
+                        jumpmu::jump();
+                     }
+                     ensure_equal(bf.header.pending_lsn_count, 1);
+                     pending_lsn = bf.header.pending_lsn;
+                  } else if (FLAGS_discard_lsns_in_parent) {
+                     pending_lsn = bf.header.pending_lsn;
+                  } else {
+                     pending_lsn = per_pp_allocator[pp_id].allocate(bf.header.pending_lsn_count);
+                     ensure(pending_lsn != nullptr);
+                     std::memcpy(pending_lsn, bf.header.pending_lsn, bf.header.pending_lsn_count * sizeof(LID));
+                  }
+               }
+               bool success = false;
                const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
-               discard_state[evicted_pid].getLocked();
-               ensure(discard_state[evicted_pid].isHot());
-               discard_state[evicted_pid].unlockClean(last_write_lsn, log_id, bf.header.discard_count);
+               const u8 discard_count = std::min<u8>(bf.header.discard_count + 1, PageState::max_discard_count);
+               // A not yet persisted PPL entry is still in the WAL buffer (the GCT only lets it get
+               // overwritten once written to the log device), so a buffer miss can copy it from there.
+               // The log may have got full since the check above.
+               if (ru_epoch_log.redirect_to_sink_log.load(std::memory_order_acquire)) {
+                  if (pending_lsn != bf.header.pending_lsn) {
+                     per_pp_allocator[pp_id].free(pending_lsn, bf.header.pending_lsn_count);
+                  }
+                  bf.markUnDiscardable(OTHER);
+                  jumpmu::jump();
+               }
+               if (FLAGS_discard_lsns_in_parent) {
+                  // The parent is exclusively latched, the LSNs are stored next to the swip and the swip is evicted.
+                  auto& parent_node = *reinterpret_cast<btree::BTreeNode*>(parent_handler.parent_bf->page.dt);
+                  if (!parent_node.evictAndStorePendingLSNs(parent_handler.swip.cast<btree::BTreeNode>(), parent_handler.pos, evicted_pid, bf.page.ru_epoch, pending_lsn, bf.header.pending_lsn_count)) {
+                     // No space left in the parent for the pending LSNs, write the page back instead.
+                     // TODO(mfd) : split the parent instead.
+                     bf.markUnDiscardable(PARENT_FULL);
+                     jumpmu::jump();
+                  }
+               }
+               success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
+               ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
+               // The RU discard set identity may change meanwhile.
+               // I simply allow this, this is a very rare event, and these are
+               // stats just to approximate thresolhold of GC in RU epoch.
+               ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).inserted.fetch_add(1);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+               if (auto* t = ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).tableStats(bf.page.dt_id)) {
+                  t->inserted.fetch_add(1, std::memory_order_relaxed);
+               }
+#endif
+               if (!FLAGS_discard_lsns_in_parent) {
+                  parent_handler.swip.evictAndMarkDirty(evicted_pid, bf.page.ru_epoch);
+               }
+               COUNTERS_BLOCK(discarded_pages) { PPCounters::myCounters().discarded_pages++; }
+               COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
+            } else {
+               parent_handler.swip.evict(evicted_pid);
+               if (FLAGS_enable_discarding) {
+                  const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
+                  discard_state[evicted_pid].getLocked();
+                  ensure(discard_state[evicted_pid].isHot());
+                  discard_state[evicted_pid].unlockClean(last_write_lsn, log_id, bf.header.discard_count);
+               }
             }
+            parent_handler.parent_bf->markUnDiscardable(INNER_NODE);
+            parent_handler.parent_bf->page.PLSN++;
+            // -------------------------------------------------------------------------------------
+            // Reclaim buffer frame, the latch is released when c_x_guard goes out of scope
+            bf.reset();
          }
-         parent_handler.parent_bf->markUnDiscardable(INNER_NODE);
-         parent_handler.parent_bf->page.PLSN++;
-         // -------------------------------------------------------------------------------------
-         // Reclaim buffer frame
-         bf.reset();
-         bf.header.latch->fetch_add(LATCH_EXCLUSIVE_BIT, std::memory_order_release);
-         bf.header.latch.mutex.unlock();
          // -------------------------------------------------------------------------------------
          freed_bfs_batch.add(bf);
          if (freed_bfs_batch.size() <= std::min<u64>(FLAGS_worker_threads, 128)) {

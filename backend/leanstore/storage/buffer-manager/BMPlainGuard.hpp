@@ -12,6 +12,7 @@ namespace storage
 // -------------------------------------------------------------------------------------
 // The following guards are primarily designed for buffer management use cases
 // This implies that the guards never block (sleep), they immediately jump instead.
+// The only exception is BMBlockingExclusiveGuard.
 class BMOptimisticGuard;
 class BMExclusiveGuard;
 template <typename T>
@@ -53,7 +54,6 @@ class BMExclusiveGuard
   public:
    BMExclusiveGuard(BMOptimisticGuard& o_lock) : optimistic_guard(o_lock)
    {
-      // optimistic_guard.guard.toExclusive();
       optimistic_guard.guard.tryToExclusive();
       jumpmu_registerDestructor();
    }
@@ -61,6 +61,28 @@ class BMExclusiveGuard
    jumpmu_defineCustomDestructor(BMExclusiveGuard)
        // -------------------------------------------------------------------------------------
        ~BMExclusiveGuard()
+   {
+      optimistic_guard.guard.unlock();
+      jumpmu::clearLastDestructor();
+   }
+};
+// -------------------------------------------------------------------------------------
+// Unlike the guards above, it blocks until it acquires the mutex (it still jumps if the version changed).
+class BMBlockingExclusiveGuard
+{
+  private:
+   BMOptimisticGuard& optimistic_guard;  // our basis
+
+  public:
+   BMBlockingExclusiveGuard(BMOptimisticGuard& o_lock) : optimistic_guard(o_lock)
+   {
+      optimistic_guard.guard.toExclusive();
+      jumpmu_registerDestructor();
+   }
+   // -------------------------------------------------------------------------------------
+   jumpmu_defineCustomDestructor(BMBlockingExclusiveGuard)
+       // -------------------------------------------------------------------------------------
+       ~BMBlockingExclusiveGuard()
    {
       optimistic_guard.guard.unlock();
       jumpmu::clearLastDestructor();
