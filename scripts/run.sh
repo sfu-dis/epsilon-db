@@ -1,5 +1,53 @@
 #!/bin/bash
 
+usage() {
+   cat <<EOF
+Usage: BUILD_DIR=<build dir> $(basename "$0") --device <nvme ns> --benchmark <ycsb|tpcc> [options]
+
+Required:
+  --device <path>                 NVMe namespace to run on (e.g. /dev/nvme0n1)
+  --benchmark <ycsb|tpcc>
+  --database_size <GiB>           (ycsb) target database size
+  --tpcc_warehouse_count <n>      (tpcc) number of warehouses
+  --log_device <path>             WAL device (same as --device => shared namespace, implies --enable_fdp)
+
+Common:
+  --trim / --sanitize             blkdiscard (and nvme sanitize) the device before loading
+  --vanilla                       disable discarding (baseline)
+  --buffer_pool_gib <GiB>         DRAM buffer pool (default 64)
+  --worker_threads <n>            (default 64)
+  --run_for_{seconds,minutes,hours} <n>   run duration (default 7200s)
+  --load_only / --run_only        only load / only run (skip load)
+  --debug                         run under gdb
+
+epsilonDB Specific:
+  --threshold <f>                 RU GC threshold (default 0.8)
+  --ru_size <n>                   RU size (default: looked up by SSD model)
+  --bg_page_fixer_threads <n>  --max_log_records_to_discard <n>  --noppl
+
+YCSB:
+  --distribution <uniform|zipfian>  --zipfian_skew <f>
+  --ycsb_read_ratio <n>  --ycsb_dead_tuple_ratio <n>
+
+FDP:
+  --enable_fdp  --fdp_placement <policy>  --fdp_reformat  --fdp_nruh <n>
+  --fdp_waf                       sample WAF via 'nvme fdp stats' instead of OCP
+
+Output:
+  --prefix <str>  --subdir <str>  --stats_dir / --no_stats_dir
+  --description  --override_stats_dir  --blktrace
+
+  -h, --help                      show this help
+EOF
+}
+
+for arg in "$@"; do
+   if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+      usage
+      exit 0
+   fi
+done
+
 
 if [ -z "${BUILD_DIR}" ]; then
    echo "Error: please set up BUILD_DIR environment variable."
@@ -34,14 +82,13 @@ WAF_SCRIPT="$PWD/calcssdwaf.sh"
 PARSE_PY="$PWD/parse_block.py"
 
 device=
-# currently un-used
 log_device=
 vanilla=0
 benchmark=
 threshold=0.8
 trim=0
 sanitize=0
-run_for_seconds=7200 # default to 5 hours
+run_for_seconds=18000 # default to 5 hours
 
 worker_threads=64
 ru_size=
@@ -90,7 +137,6 @@ log_same_namespace=0
 original_args=("$@")
 
 
-# TODO(mfd) : Add a usage() method and --help
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device)
@@ -250,6 +296,7 @@ while [[ $# -gt 0 ]]; do
            ;;
         *)
             echo "Unknown argument: $1"
+            usage
             exit 1
             ;;
     esac
@@ -542,7 +589,12 @@ else
 fi
 
 #TODO(mfd) : Either run for a period of time or until a fixed number of media writes
-# TODO(mfd) : Add chmod for the device.
+
+# The benchmark binary runs unprivileged, so give it access to the devices.
+run chmod 666 "${device}"
+if [ -n "${log_device}" ] && [ "${log_device}" != "${device}" ]; then
+   run chmod 666 "${log_device}"
+fi
 
 # if (( 0 )); then
 if [[ -d "$dir_name" && "$stats_dir" -eq 1 && "$override_stats_dir" -eq 0 ]]; then
@@ -758,8 +810,8 @@ if (( stats_dir == 1 )); then
    fi
 fi
 
-# FIXME(mfd) : This shutdown is run twice, I don't know why.
 shutdown() {
+    trap - EXIT INT TERM
     echo "stopping background waf calculator job..."
     set +e
     echo "$PWD"
