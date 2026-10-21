@@ -122,3 +122,4 @@ DEFINE_bool(log_fake_wrap_around, false, "Artificially wrap each log segment aro
 // -------------------------------------------------------------------------------------
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");
 DEFINE_string(fdp_placement_policy, "Default", "FDP placement policy: Default, FreezeNewlyAllocated, FreezeTables, HardcodedTPCC or FrozenRecords");
+DEFINE_bool(fdp_count_gc_events, false, "Count the device GC events (FDP Media Reallocated events), polled once per second by libfdp");

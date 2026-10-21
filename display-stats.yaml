@@ -146,6 +146,11 @@ columns:
     enabled: true
     source: cr
 
+  device_gc_events:
+    field: "Dev GC"
+    enabled: true
+    source: bm
+
   total_in_use_ru:
     field: "Used RUs"
     enabled: true

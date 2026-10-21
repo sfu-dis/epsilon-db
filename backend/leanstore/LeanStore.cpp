@@ -142,6 +142,14 @@ LeanStore::LeanStore()
                FLAGS_fdp_placement_policy.c_str(), storage::fdp::num_ruhs, ruh_str(DEFAULT_RUH).c_str(),
                ruh_str(storage::fdp::freezing_ruh).c_str(), ruh_str(storage::fdp::hot_ruh).c_str(), ruh_str(storage::fdp::wal_ruh).c_str());
    }
+   if (FLAGS_fdp_count_gc_events) {
+      // Stopped by nvme_close(ssd_fd), before the buffer manager is destroyed.
+      auto& bm_stats = buffer_manager->bm_stats;
+      if (nvme_register_gc_callback(ssd_fd, [&bm_stats] { bm_stats.device_gc_events.fetch_add(1, std::memory_order_relaxed); }) != 0) {
+         LOG_ERROR(logger, "%s: fdp_register_gc_callback failed: %s", FLAGS_ssd_path.c_str(), strerror(errno));
+         SetupFailed("Could not register the device GC events counter");
+      }
+   }
    // -------------------------------------------------------------------------------------
    // TODO(mfd) : Move this to the LogManager Ctor
    if (FLAGS_wal_partition_by == "ru_epoch") {
@@ -487,6 +495,9 @@ void LeanStore::verifyFlags()
       SetupFailed("You have to enable wal or turn of wal_pwrite");
    }
    FLAGS_wal_buffer_size = utils::upAlign(FLAGS_wal_buffer_size, 4096);
+   if (FLAGS_fdp_count_gc_events && !FLAGS_enable_fdp) {
+      SetupFailed("You have to enable FDP to count the device GC events");
+   }
    if (FLAGS_enable_discarding && !FLAGS_wal_pwrite) {
       SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
    }

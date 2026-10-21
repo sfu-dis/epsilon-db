@@ -4,6 +4,8 @@
 #include <fdp.h>
 #endif
 #include <unistd.h>
+
+#include <functional>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -64,6 +66,17 @@ inline int nvme_get_nruh([[maybe_unused]] int fd)
 {
 #ifdef WITH_FDP
    return fdp_get_nruh(fd);
+#else
+   UNREACHABLE();
+#endif
+}
+// -------------------------------------------------------------------------------------
+// Runs callback once per device GC event (FDP Media Reallocated event) from a libfdp
+// background thread, until nvme_close(fd). -1 with errno set on failure.
+inline int nvme_register_gc_callback([[maybe_unused]] int fd, [[maybe_unused]] std::function<void()> callback)
+{
+#ifdef WITH_FDP
+   return fdp_register_gc_callback(fd, std::move(callback));
 #else
    UNREACHABLE();
 #endif

@@ -245,6 +245,9 @@ void BMTable::open()
    columns.emplace("forced_gc_count", [this](Column& col) {
       col << bm.bm_stats.forced_gc_count.load(std::memory_order_acquire);
    });
+   columns.emplace("device_gc_events", [this](Column& col) {
+      col << bm.bm_stats.device_gc_events.load(std::memory_order_relaxed);
+   });
    // -------------------------------------------------------------------------------------
    for (u8 i = 0; i <= bm.max_pending_lsn; ++i) {
       columns.emplace("read_depth_" + to_string(i), [i, this](Column& col) {
