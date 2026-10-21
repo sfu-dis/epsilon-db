@@ -1,0 +1,11 @@
+# Flags for rapid testing (run.sh --dry_run): regular files in BUILD_DIR stand in for the SSD and the log device.
+# Add any flag here (one per line, e.g. --flag=value) to override the default behaviour.
+#
+# run.sh creates the files and passes --ssd_path, --redo_log_file, --ssd_gib, --log_dev_size_gib,
+# --ru_size (default 1280 => ~204 RUs) and --dram_gib (default 0.25) after this file, so setting them here
+# has no effect; use run.sh --ru_size / --buffer_pool_gib instead.
+
+--pp_threads=1
+--partition_bits=6
+
+--run_for_seconds 600
