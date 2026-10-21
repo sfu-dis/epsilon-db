@@ -844,6 +844,10 @@ void RUBackgroundPageFixer::ackHotPage(ThreadContext& ctx, struct io_uring_cqe* 
    }
    const u64 idx = io_uring_cqe_get_data64(cqe);
    BufferFrame& bf = *ctx.hot_bfs[idx];
+   COUNTERS_BLOCK(gc)
+   {
+      GCCounters::myCounters().pages_written++;
+   }
    while (true) {
       jumpmuTry()
       {
@@ -896,6 +900,7 @@ void RUBackgroundPageFixer::ackFixedPage(ThreadContext& ctx, struct io_uring_cqe
    COUNTERS_BLOCK(gc)
    {
       GCCounters::myCounters().total_fixed++;
+      GCCounters::myCounters().pages_written++;
    }
    bf.reset();
 }

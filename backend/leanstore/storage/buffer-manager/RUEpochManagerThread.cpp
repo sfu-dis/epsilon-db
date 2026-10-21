@@ -28,8 +28,8 @@ namespace storage
 // -------------------------------------------------------------------------------------
 namespace
 {
-constexpr mode_t TRACE_FILE_MODE = 0755;
-constexpr mode_t TRACE_DIR_MODE = 0755;
+constexpr mode_t TRACE_FILE_MODE = 0666;
+constexpr mode_t TRACE_DIR_MODE = 0777;
 void makeTraceDir(const std::string& path)
 {
    posix_check(mkdir(path.c_str(), TRACE_DIR_MODE) == 0 || errno == EEXIST);

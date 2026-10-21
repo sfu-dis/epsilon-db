@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -31,6 +32,8 @@ using leanstore::utils::threadlocal::sum;
 namespace rs = rapidjson;
 namespace leanstore
 {
+// -------------------------------------------------------------------------------------
+[[maybe_unused]] static const mode_t prev_umask = umask(0);
 // -------------------------------------------------------------------------------------
 LeanStore::LeanStore()
 {

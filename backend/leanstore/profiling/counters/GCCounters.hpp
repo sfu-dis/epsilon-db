@@ -11,6 +11,7 @@ namespace leanstore
 struct GCCounters {
    // -------------------------------------------------------------------------------------
    atomic<u64> total_fixed;
+   atomic<u64> pages_written;  // fixed + hot pages written back by the GC
    atomic<u64> hot_fixed;
    atomic<u64> clean;
    atomic<u64> dirty_in_other_ru_epoch;

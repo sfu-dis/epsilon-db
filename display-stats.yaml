@@ -113,6 +113,11 @@ columns:
 
   gc_fixed_mib:
     field: "GC Fix MiB/s"
+    enabled: false
+    source: bm
+
+  gc_write_mib:
+    field: "GC W MiB/s"
     enabled: true
     source: bm
 
