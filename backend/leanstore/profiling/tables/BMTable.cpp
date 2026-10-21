@@ -84,6 +84,7 @@ void BMTable::open()
          col << (local_undiscardable_wb_total ? (local_undiscardable_wb_discard_count[i] * 100.0 / local_undiscardable_wb_total) : 0.0);
       });
    }
+   columns.emplace("parent_full", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::parent_full)); });
    columns.emplace("hot_w_mib", [&](Column& col) { col << (sum(PPCounters::pp_counters, &PPCounters::hot) * PAGE_SIZE/1048576.0); });
    columns.emplace("dirty_pct", [&](Column& col) {
       col <<

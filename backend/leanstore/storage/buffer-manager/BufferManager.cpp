@@ -240,7 +240,9 @@ void BufferManager::startBackgroundThreads()
                 } else {
                    // utils::pinThisThread(FLAGS_wal + t_i);
                 }
-                CPUCounters::registerThread("pp_" + std::to_string(t_i));
+                if (FLAGS_cpu_counters) {
+                   CPUCounters::registerThread("pp_" + std::to_string(t_i));
+                }
                 // https://linux.die.net/man/2/setpriority
                 if (FLAGS_root) {
                    posix_check(setpriority(PRIO_PROCESS, 0, -20) == 0);

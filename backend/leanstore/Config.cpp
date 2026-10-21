@@ -3,14 +3,14 @@
 DEFINE_bool(validate_flags_and_exit, false, "");
 // -------------------------------------------------------------------------------------
 DEFINE_double(dram_gib, 1, "");
-DEFINE_double(ssd_gib, 1700, "");
+DEFINE_double(ssd_gib, 0, "");
 DEFINE_uint32(free_pct, 1, "pct");
-DEFINE_uint32(partition_bits, 6, "bits per partition");
-DEFINE_uint32(pp_threads, 1, "number of page provider threads");
+DEFINE_uint32(partition_bits, 12, "bits per partition");
+DEFINE_uint32(pp_threads, 10, "number of page provider threads");
 DEFINE_bool(worker_page_eviction, false, "");
 // -------------------------------------------------------------------------------------
 DEFINE_string(csv_path, "./log", "");
-DEFINE_bool(csv_truncate, false, "");
+DEFINE_bool(csv_truncate, true, "");
 DEFINE_string(ssd_path, "./leanstore", "Position of SSD, gets persisted");
 DEFINE_uint32(write_buffer_size, 1024, "");
 DEFINE_bool(trunc, false, "Truncate file");
@@ -20,7 +20,7 @@ DEFINE_bool(print_tx_console, true, "");
 DEFINE_bool(crc_check, false, "");
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(worker_threads, 4, "");
-DEFINE_bool(cpu_counters, true, "Disable if HW does not have enough counters for all threads");
+DEFINE_bool(cpu_counters, false, "Enable per-thread hardware CPU counters (perf events)");
 DEFINE_bool(pin_threads, false, "Responsibility of the driver");
 DEFINE_bool(smt, true, "Simultaneous multithreading");
 // -------------------------------------------------------------------------------------
@@ -64,13 +64,13 @@ DEFINE_bool(wal_fsync, false, "");
 DEFINE_uint64(wal_buffer_size, 1024 * 1024 * 10, "");
 DEFINE_string(wal_partition_by, "worker", "options: worker, page, ru_epoch");
 DEFINE_uint64(wal_partitions_count, 32, "Valid only when we use page based partitioning");
-DEFINE_uint32(wal_sink_logs, 1, "");
+DEFINE_uint32(wal_sink_logs, 32, "");
 // -------------------------------------------------------------------------------------
-DEFINE_string(isolation_level, "si", "options: ru (READ_UNCOMMITTED), rc (READ_COMMITTED), si (SNAPSHOT_ISOLATION), ser (SERIALIZABLE)");
+DEFINE_string(isolation_level, "rc", "options: ru (READ_UNCOMMITTED), rc (READ_COMMITTED), si (SNAPSHOT_ISOLATION), ser (SERIALIZABLE)");
 DEFINE_bool(mv, true, "Multi-version");
 DEFINE_bool(todo, true, "");
 // -------------------------------------------------------------------------------------
-DEFINE_bool(vi, true, "BTree with SI using in-place version");
+DEFINE_bool(vi, false, "BTree with SI using in-place version");
 DEFINE_bool(vi_delta, true, "");
 DEFINE_bool(vi_fremove, false, "");
 DEFINE_bool(vi_fupdate_chained, false, "");
@@ -91,7 +91,7 @@ DEFINE_bool(persist, false, "This run is persistent: on shutdown flush everythin
 DEFINE_bool(initialize_leanstore, false,
             "Initialize the database and the device (fresh SSD layout). Otherwise recover from leanstore_state_file, which "
             "must have been written by a --persist run");
-DEFINE_bool(skip_wal_recovery, false, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
+DEFINE_bool(skip_wal_recovery, true, "Hacky flag used to allow recovering without checking the WAL (.i.e, assuming no crash)");
 DEFINE_string(leanstore_state_file, "./leanstore.json", "State file written by a --persist run and read when recovering");
 DEFINE_string(ru_table_stats_file, "./ru_table_stats.json", "Where the per table (dt_id) RU epoch stats are persisted to and recovered from");
 // -------------------------------------------------------------------------------------

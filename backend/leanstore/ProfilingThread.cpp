@@ -57,7 +57,10 @@ void LeanStore::profilingThread()
    profiling::DTTable dt_table(*buffer_manager.get());
    profiling::CPUTable cpu_table;
    profiling::CRTable cr_table;
-   std::vector<profiling::ProfilingTable*> tables = {&configs_table, &bm_table, &dt_table, &cpu_table, &cr_table};
+   std::vector<profiling::ProfilingTable*> tables = {&configs_table, &bm_table, &dt_table, &cr_table};
+   if (FLAGS_cpu_counters) {
+      tables.push_back(&cpu_table);
+   }
    // std::vector<profiling::ProfilingTable*> tables = {&bm_table, &cr_table};
    // -------------------------------------------------------------------------------------
    std::vector<std::ofstream> csvs;

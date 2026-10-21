@@ -400,7 +400,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                               break;
                            }
                            case (PARENT_FULL) : {
-                              // PPCounters::myCounters().parent_full++;
+                              PPCounters::myCounters().parent_full++;
                               break;
                            }
                         }

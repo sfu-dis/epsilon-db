@@ -25,6 +25,8 @@ struct PPCounters {
    atomic<u64> write_new_page = 0;
    atomic<u64> ppl_buffer_full = 0;
    atomic<u64> hot = 0;
+   // We were not able to discard because the parent has no space left for the pending LSNs.
+   atomic<u64> parent_full = 0;
    // Write backs caused by PPL_BUFFER_FULL or MAX_DISCARDING_DEPTH_EXCEEDED, bucketed by discard_count: [0] = 0, [1] = 1, [2] = >1
    atomic<u64> undiscardable_wb_discard_count[3] = {0};
    // -------------------------------------------------------------------------------------

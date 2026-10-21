@@ -441,7 +441,7 @@ s16 BTreeGeneric::mergeLeftIntoRight(ExclusivePageGuard<BTreeNode>& parent,
 // -------------------------------------------------------------------------------------
 BTreeGeneric::~BTreeGeneric() {
    if (FLAGS_persist) {
-      printf("\ndt_id %lu : %s size is %.3f GiB\n", dt_id , DTRegistry::global_dt_registry.getDTName(dt_id).c_str() , node_count.load() * 4.0 / 1048576.0);
+      // printf("\ndt_id %lu : %s size is %.3f GiB\n", dt_id , DTRegistry::global_dt_registry.getDTName(dt_id).c_str() , node_count.load() * 4.0 / 1048576.0);
    }
 }
 // -------------------------------------------------------------------------------------
