@@ -2,7 +2,7 @@
 
 usage() {
    cat <<EOF
-Usage: BUILD_DIR=<build dir> $(basename "$0") --device <nvme ns> --benchmark <ycsb|tpcc> [options]
+Usage: BUILD_DIR=<build dir> [STATS_DIR=<results root>] $(basename "$0") --device <nvme ns> --benchmark <ycsb|tpcc> [options]
 
 Required:
   --device <path>                 NVMe namespace to run on (e.g. /dev/nvme0n1)
@@ -19,11 +19,17 @@ Common:
   --run_for_{seconds,minutes,hours} <n>   run duration (default 7200s)
   --load_only / --run_only        only load / only run (skip load)
   --debug                         run under gdb
+  --dry_run                       rapid testing on files in BUILD_DIR instead of an NVMe device
+                                  (no --device needed, small RUs and buffer pool, no stats/WAF,
+                                  defaults to --database_size 0.7 / --tpcc_warehouse_count 7)
 
 epsilonDB Specific:
   --threshold <f>                 RU GC threshold (default 0.8)
   --ru_size <n>                   RU size (default: looked up by SSD model)
   --bg_page_fixer_threads <n>  --max_log_records_to_discard <n>  --noppl
+
+TPC-C:
+  --steady_tpcc                   enable --steady_tpcc and --order_wdc_index (default: both disabled)
 
 YCSB:
   --distribution <uniform|zipfian>  --zipfian_skew <f>
@@ -57,23 +63,13 @@ fi
 set -euo pipefail
 # set -x
 
-sudo -v || exit 1
-
-# refresh sudo every 50 seconds until the script ends
-while true; do
-    sudo -n true
-    sleep 50
-    kill -0 "$$" 2>/dev/null || exit
-done &
-KEEPALIVE=$!
-
 trap 'echo "Error: command failed: $BASH_COMMAND"' ERR
 
-STATS_DIR=/home/mfd4/fdp/paper
+# Root of the results, can be overridden from the environment like BUILD_DIR
+STATS_DIR="${STATS_DIR:-/home/mfd4/fdp/paper}"
 # BUILD_DIR="."
 # Put all necessary flags into the scripts dir
 # SRC_DIR=".." # assume running from build dir
-DEVICE_RESET_SCRIPT="$PWD/reset-single-ns.sh"
 FLAGS_FILE="$PWD/template.gflag"
 DRY_RUN_FLAGS_FILE="$PWD/template.dry_run.gflag"
 YCSB_FLAGS_FILE="$PWD/ycsb.gflag"
@@ -101,6 +97,7 @@ gdb=0
 # TPC-C only flags
 tpcc_warehouse_count=
 max_log_records_to_discard=7
+steady_tpcc=0
 
 # YCSB only flags
 ycsb_read_ratio=0
@@ -108,7 +105,7 @@ ycsb_dead_tuple_ratio=0
 distribution=
 zipfian_skew=0.8
 database_size_gib=
-dram_gib=64
+dram_gib=
 
 subdir=
 
@@ -178,6 +175,10 @@ while [[ $# -gt 0 ]]; do
         --tpcc_warehouse_count)
             tpcc_warehouse_count="$2"
             shift 2
+            ;;
+        --steady_tpcc)
+            steady_tpcc=1
+            shift 1
             ;;
         --threshold)
             threshold="$2"
@@ -309,7 +310,28 @@ if (( dry_run )); then
    else
       stats_dir=0
    fi
+   # Regular files inside the build dir stand in for the SSD and the log device.
+   if [[ -n "${device}" || -n "${log_device}" ]]; then
+      echo "Warning: --dry_run ignores --device and --log_device, using files in ${BUILD_DIR}"
+   fi
+   build_dir_abs="$(realpath "${BUILD_DIR}")"
+   device="${build_dir_abs}/dry_run_ssd.img"
+   log_device="${build_dir_abs}/dry_run_log.img"
+   dry_run_ssd_gib=1
+   dry_run_log_gib=1
+   # 1 GiB / (1280 * 4 KiB = 5 MiB) => ~204 RUs
+   ru_size="${ru_size:-1280}"
+   dram_gib="${dram_gib:-0.25}"
+   # Fill ~70% of the file
+   database_size_gib="${database_size_gib:-0.7}"
+   tpcc_warehouse_count="${tpcc_warehouse_count:-7}"
+   enable_fdp=0
+   fdp_waf=0
+   fdp_reformat=0
+   blktrace=0
 fi
+
+dram_gib="${dram_gib:-64}"
 
 missing=0
 
@@ -458,11 +480,25 @@ controller=$(echo "${device}" | sed -E 's/n[0-9]+$//')
 # The use of root here is for 2 purpouses, first one can be avoided
 # 1. direct access to the block device
 # 2. To sample waf from device
+# A dry run only touches files in the build dir, no root needed.
 need_sudo=0
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -ne 0 ]] && (( dry_run == 0 )); then
     # echo "This script must be run as root. Re-running with sudo..."
     need_sudo=1
     # exec sudo bash "$0" "$original_args"
+fi
+
+KEEPALIVE=
+if (( need_sudo )); then
+   sudo -v || exit 1
+
+   # refresh sudo every 50 seconds until the script ends
+   while true; do
+       sudo -n true
+       sleep 50
+       kill -0 "$$" 2>/dev/null || exit
+   done &
+   KEEPALIVE=$!
 fi
 
 run () {
@@ -495,7 +531,6 @@ sanitize_nvme() {
 if (( trim == 1)); then
    echo "Trimmimg the device"
    if (( fdp_reformat == 1 )); then
-      # bash ${DEVICE_RESET_SCRIPT} --dev "${controller}"
       NUM_NS=$(sudo nvme list-ns ${controller} -a | wc -l)
       echo $NUM_NS
       for ((i=1; i <= NUM_NS; i++)); do
@@ -533,7 +568,11 @@ if (( ycsb_dead_tuple_ratio > 0 )); then
    skew="${skew}_0.25dead"
 fi
 
-model=$(lsblk -ndo MODEL ${device} | tr ' ' '_')
+if (( dry_run )); then
+   model="dry_run_file"
+else
+   model=$(lsblk -ndo MODEL ${device} | tr ' ' '_')
+fi
 echo "$model"
 
 declare -A MODEL_MAP=(
@@ -556,7 +595,7 @@ if [[ -n "$subdir" ]]; then
    STATS_DIR="${STATS_DIR}/${subdir}"
 fi
 
-short="${MODEL_MAP[$model]}"
+short="${MODEL_MAP[$model]:-}"
 echo $short
 if [[ -z "$short" ]]; then
    short="$model"
@@ -565,7 +604,7 @@ fi
 dir_name="${STATS_DIR}/${short}/${prefix}${benchmark}"
 
 if [[ -z "${ru_size}" ]]; then
-   ru_size="${RU_SIZE_MAP[$model]}"
+   ru_size="${RU_SIZE_MAP[$model]:-}"
    echo "Unspecified RU Size, will use ${ru_size}"
 else
    # If I provided an ru_size I add it to the dir.
@@ -609,10 +648,22 @@ fi
 
 #TODO(mfd) : Either run for a period of time or until a fixed number of media writes
 
-# The benchmark binary runs unprivileged, so give it access to the devices.
-run chmod 666 "${device}"
-if [ -n "${log_device}" ] && [ "${log_device}" != "${device}" ]; then
-   run chmod 666 "${log_device}"
+if (( dry_run )); then
+   # Loading starts from fresh files (the equivalent of --trim), a run only reuses them.
+   if (( run_only == 0 )); then
+      rm -f "${device}" "${log_device}"
+      truncate -s "${dry_run_ssd_gib}G" "${device}"
+      truncate -s "${dry_run_log_gib}G" "${log_device}"
+   elif [[ ! -f "${device}" || ! -f "${log_device}" ]]; then
+      echo "Error: --run_only needs ${device} and ${log_device} from a previous --dry_run load"
+      exit 1
+   fi
+else
+   # The benchmark binary runs unprivileged, so give it access to the devices.
+   run chmod 666 "${device}"
+   if [ -n "${log_device}" ] && [ "${log_device}" != "${device}" ]; then
+      run chmod 666 "${log_device}"
+   fi
 fi
 
 # if (( 0 )); then
@@ -705,12 +756,25 @@ cp "$FLAGS_FILE" "$run_flags"
       echo "--enable_fdp"
    fi
 
+   if (( dry_run )); then
+      # A regular file has no BLKGETSIZE64, the sizes must be explicit.
+      echo "--ssd_gib=${dry_run_ssd_gib}"
+      echo "--log_dev_size_gib=${dry_run_log_gib}"
+   fi
+
    if [[ "$benchmark" == "ycsb" ]]; then
       cat "$YCSB_FLAGS_FILE"
       echo "--ycsb_read_ratio=${ycsb_read_ratio}"
       echo "--ycsb_dead_tuple_ratio=${ycsb_dead_tuple_ratio}"
    else
       cat "$TPCC_FLAGS_FILE"
+      if (( steady_tpcc )); then
+         echo "--steady_tpcc"
+         echo "--order_wdc_index"
+      else
+         echo "--nosteady_tpcc"
+         echo "--noorder_wdc_index"
+      fi
    fi
 
    echo "--fdp_placement_policy=${fdp_placement}"
@@ -817,7 +881,8 @@ if (( load_only == 1 )); then
 fi
 
 # lauch the WAF calculator in the background
-if (( stats_dir == 1 )); then
+waf_pid=
+if (( stats_dir == 1 && dry_run == 0 )); then
    waf > "${dir_name}/waf" &
    # run bash ${WAF_SCRIPT} ${dir_name}/detailed_waf "${device}" > "${dir_name}/waf" &
 
@@ -841,9 +906,11 @@ shutdown() {
        cp absorbed_writes_histogram.txt ${dir_name}
        cp "${load_flags}" ${dir_name}
        cp "${run_flags}" ${dir_name}
-       pkill -TERM -P "$waf_pid" 2>/dev/null
-       kill $waf_pid 2>/dev/null
-       wait "$waf_pid"
+       if [[ -n "$waf_pid" ]]; then
+          pkill -TERM -P "$waf_pid" 2>/dev/null
+          kill $waf_pid 2>/dev/null
+          wait "$waf_pid"
+       fi
        if (( blktrace )); then
           wait "$blktrace_pid" || true
           rm blkparse_out
@@ -854,7 +921,9 @@ shutdown() {
        echo "results are saved to ${dir_name}"
        run chmod 777 ${dir_name}
     fi
-    kill "$KEEPALIVE" 2>/dev/null
+    if [[ -n "$KEEPALIVE" ]]; then
+       kill "$KEEPALIVE" 2>/dev/null
+    fi
     popd
     exit 0
 }

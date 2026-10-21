@@ -1,5 +1,1 @@
---tpcc_abort_pct=0
---nosteady_tpcc
---nomodified_tpcc_uniform
---notpcc_skip_neworder
---noorder_wdc_index
+# Add any flag here (one per line, e.g. --flag=value) to override the default behaviour.

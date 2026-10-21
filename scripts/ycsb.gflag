@@ -1,5 +1,1 @@
---ycsb_read_ratio=0
---ycsb_worker_per_table
---ycsb_profiler_thread
---noycsb_warmup
-
+# Add any flag here (one per line, e.g. --flag=value) to override the default behaviour.
