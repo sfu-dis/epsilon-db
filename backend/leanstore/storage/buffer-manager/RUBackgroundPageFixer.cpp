@@ -707,6 +707,10 @@ void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
 {
    ensure(ctx.to_fix_pids.empty());
    ensure(ctx.hot_bfs.empty());
+   if (!FLAGS_bg_fixer_write_back_hot_pages) {
+      ctx.hot_pids.clear();
+      return;
+   }
    for (const PID pid : ctx.hot_pids) {
       switch (tryWriteBackHotPage(ctx, pid)) {
          case HotPage::DONE:

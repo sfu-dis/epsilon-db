@@ -93,6 +93,7 @@ DECLARE_string(io_trace_file);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(enable_discarding);
 DECLARE_bool(discard_lsns_in_parent);
+DECLARE_bool(bg_fixer_write_back_hot_pages);
 DECLARE_int32(ru_gc_threads);
 DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
