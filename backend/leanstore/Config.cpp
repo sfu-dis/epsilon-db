@@ -46,6 +46,7 @@ DEFINE_int64(btree_hints, 1, "0: disabled 1: serial 1: AVX512");
 // -------------------------------------------------------------------------------------
 DEFINE_bool(bulk_insert, false, "");
 DEFINE_bool(btree_split_alloc_right, true, "On split, allocate the new node as the right sibling (current node keeps the left half)");
+DEFINE_bool(btree_pin_inner_nodes, false, "Pin B-Tree inner nodes in memory so that they are never evicted");
 // -------------------------------------------------------------------------------------
 DEFINE_int64(trace_dt_id, -1, "Print a stack trace for page reads for this DT ID");
 DEFINE_int64(trace_trigger_probability, 100, "");

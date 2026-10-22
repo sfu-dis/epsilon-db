@@ -72,6 +72,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                // -------------------------------------------------------------------------------------
                BMOptimisticGuard r_guard(r_buffer->header.latch);
                repickIf(r_buffer->header.keep_in_memory || r_buffer->header.is_being_written_back || r_buffer->header.latch.isExclusivelyLatched());
+               repickIf(FLAGS_btree_pin_inner_nodes && !reinterpret_cast<btree::BTreeNode*>(r_buffer->page.dt)->is_leaf);
                if (FLAGS_enable_discarding && FLAGS_wal && FLAGS_wal_pwrite && (r_buffer->header.logging != nullptr)) {
                   // FIXME(mfd) : Account for the page that has changed from an active RU epoch to the collected RU epoch.
                   // TODO(mfd) : Monitor failures because of this.
