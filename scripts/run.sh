@@ -904,6 +904,7 @@ shutdown() {
        cp log_bm.csv ${dir_name}
        cp log_cr.csv ${dir_name}
        cp absorbed_writes_histogram.txt ${dir_name}
+       cp *_journal.txt ${dir_name}
        cp "${load_flags}" ${dir_name}
        cp "${run_flags}" ${dir_name}
        if [[ -n "$waf_pid" ]]; then
