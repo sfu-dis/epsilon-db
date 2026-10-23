@@ -305,8 +305,15 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                   discard_state[evicted_pid].unlockClean(last_write_lsn, log_id, bf.header.discard_count);
                }
             }
-            parent_handler.parent_bf->markUnDiscardable(INNER_NODE);
-            parent_handler.parent_bf->page.PLSN++;
+            // The parent only needs to be persisted again when its on-disk swip becomes stale :
+            // 1. Discarding : the swip now carries the pending LSNs.
+            // 2. Clean eviction of a page loaded through a dirty swip : the persisted parent may still carry
+            //    the old pending LSNs. (A parent can't be written back while the child is swizzled, so otherwise
+            //    its persisted swip is already the clean one.)
+            if (FLAGS_discard_lsns_in_parent && (discard || bf.header.loaded_from_dirty_swip)) {
+               parent_handler.parent_bf->markUnDiscardable(INNER_NODE);
+               parent_handler.parent_bf->page.PLSN++;
+            }
             // -------------------------------------------------------------------------------------
             // Reclaim buffer frame, the latch is released when c_x_guard goes out of scope
             bf.reset();

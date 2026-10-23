@@ -961,6 +961,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       bf.header.discardable.store(true, std::memory_order_release);
       bf.header.not_yet_persisted = false;
       bf.header.discard_count = discard_count;
+      bf.header.loaded_from_dirty_swip = page_need_fixing;
       if (FLAGS_crc_check) {
          bf.header.crc = utils::CRC(bf.page.dt, EFFECTIVE_PAGE_SIZE);
       }

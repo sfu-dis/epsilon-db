@@ -73,6 +73,10 @@ struct BufferFrame {
       // Saturating counter of how many times the page got discarded since its last write back.
       // Loaded from the PageState when the page gets cached and stored back in it upon eviction.
       u8 discard_count = 0;
+      // The page got loaded through the swip of a discarded page.
+      // If the page is clean (copy on SSD is up-to-date) this means that if this page is clean evicted
+      // the the parent should become dirty.
+      bool loaded_from_dirty_swip = false;
       // Any page is by default discardable unless :
       // 1. It is an inner node. (Simplicity)
       // 2. It has been splitted. (Simplicity)
@@ -122,6 +126,7 @@ struct BufferFrame {
          keep_in_memory = false;
          pending_lsn_count = 0;
          discard_count = 0;
+         loaded_from_dirty_swip = false;
          undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
          will_flush_ppl = false;
          // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);
