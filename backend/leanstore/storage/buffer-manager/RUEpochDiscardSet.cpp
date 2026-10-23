@@ -74,7 +74,6 @@ void RUEpochDiscardSet::clearGCState()
 // -------------------------------------------------------------------------------------
 void RUEpochDiscardSet::clear()
 {
-   ensure(force_gc == false);
    inserted = 0;
    deleted = 0;
    total = 0;
@@ -107,7 +106,6 @@ void RUEpochDiscardSet::dump()
    cout << "log_segment_start: " << log_segment_start << endl;
    cout << "log_segment_size: " << log_segment_size << endl;
 
-   cout << "force_gc: " << (force_gc ? "true" : "false") << endl;
    cout << "log_reclaimed: " << (log_reclaimed.load() ? "true" : "false") << endl;
 
    cout << "offset_batch: " << offset_batch.load() << endl;
@@ -142,14 +140,7 @@ bool RUEpochDiscardSet::shouldGC()
    s32 i = invalid.load(std::memory_order_acquire);
    s32 tot = total.load(std::memory_order_acquire);
    double per = (i + d) * 1.0f / tot;
-   bool ok = false;
-   if (force_gc) {
-      printf("[WARN] Forcing GC \n");
-      force_gc = false;
-      ok = true;
-   } else {
-      ok = per > FLAGS_ru_gc_threshold;
-   }
+   const bool ok = per > FLAGS_ru_gc_threshold;
    if (ok || (++cnt[ruh] % 1024) == 0) {
       printf("\n RUH = %u ru_epoch = %ld tot = %d, invalid = %d, to_gc = %d => per %f %%\n", ruh, cur_ru_epoch, tot, i, d, per * 100);
       const u32 c_none = undiscardable_cause_distribution[UNDISCARDABLE_CAUSE::NONE].load(std::memory_order_acquire);

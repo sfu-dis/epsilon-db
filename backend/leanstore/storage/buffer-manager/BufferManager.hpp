@@ -153,7 +153,6 @@ public:
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad1[7];
    static u64 RU_SIZE;
-   bool global_force_gc = false;
    PageState *discard_state;
    u32 max_open_ru_epochs;
    u32 max_pending_lsn = 0;

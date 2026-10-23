@@ -66,6 +66,7 @@ void RUEpochManager::run()
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       checkForNewRUEpochs();
       if (FLAGS_enable_discarding) {
+         regulateFreeRUEpochs();
          dispatchFullLogRUEpochsToGC();
          dispatchOldestRUEpochToGC();
          // The HOT RUH holds the self invalidating pages, its RU epochs are reclaimed inline.
@@ -151,40 +152,8 @@ void RUEpochManager::checkForNewRUEpoch(ruh_id_t ruh)
    tot_page_written[ruh] -= BufferManager::RU_SIZE;
    const ru_epoch_t new_ru_epoch = bm.ru_epoch[ruh].load(std::memory_order_relaxed) + 1;
    if (FLAGS_enable_discarding) {
-      s64 free_ru_epochs = freeRUEpochsAfterOpeningOne();
-      if (fdp::hot_ruh != UNMAPPED_RUH) {
-         // Reclaiming the hot records is merly a metadata change and does not affect WAF.
-         // I try inline to release as much of these RU epochs as necessary.
-         while (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
-            if (tryReclaimNonDefaultRUEpoch(fdp::hot_ruh, /* forced */ true)) {
-               free_ru_epochs++;
-            } else {
-               // Not success here means there is only one left RU Epoch
-               break;
-            }
-         }
-      }
-      // Once we almost exhausted all free RUs, we enter the steady state where we reclaim RUs continously.
-      // This will only happen if the workload access pattern never reaches the threshold of RU usage.
-      // When this happens the first time, I reclaim agressively the oldest 20 ru epochs. This is very
-      // similar to the device GC behaviour because, after all, there is no much time for the ru usage
-      // to improve the threshold.
-      // Probably too early ?
-      if (free_ru_epochs < FLAGS_overprovisioning_ru_epochs) {
-         // cap the new rate at 80%
-         u64 new_rate = (free_ru_epochs * 80) / FLAGS_overprovisioning_ru_epochs;
-         bm.rate.store(new_rate, std::memory_order_release);
-         LOG_WARN(bm.logger, "Updated the rate of writes to %lu%%, free ru epochs = %ld", new_rate, free_ru_epochs);
-         // TODO(mfd) : Pick the one with the highest RU Usage and free it.
-         // For now I will start with the two RUH examples therefore I force only the default RUH for now.
-         // Later I should also force the HOT RUH.
-         forceGCOldestRUEpochs();
-      } else {
-         if (bm.rate.load(std::memory_order_relaxed) < 100) {
-            bm.rate.store(100, std::memory_order_release);
-            LOG_INFO(bm.logger, "Restored the rate of writes to 100%%, free ru epochs = %ld", free_ru_epochs);
-         }
-      }
+      // The budget is regulated by regulateFreeRUEpochs(), this only catches its overflow.
+      ensure_lte(0, freeRUEpochs());
    }
    auto& set = bm.ru_discard_set[ruh].at(new_ru_epoch);
    {
@@ -206,10 +175,9 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
    auto& set = bm.ru_discard_set[DEFAULT_RUH][oldest];
    // Its log is already reclaimed and it is undiscardable since, nothing to wait for.
    const bool log_reclaimed = set.log_reclaimed.load(std::memory_order_relaxed);
-   if (log_reclaimed) {
-      set.force_gc = false;
-   }
-   if (log_reclaimed || set.shouldGC()) {
+   // Being forced is not consumed here, a failed enqueue is simply retried on the next tick.
+   const bool forced = oldest < force_gc_up_to;
+   if (log_reclaimed || forced || set.shouldGC()) {
       if (bm.ru_bg_page_fixer->tryEnqueueRUEpoch(oldest)) {
          bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
       }
@@ -320,39 +288,112 @@ void RUEpochManager::tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t olde
 }
 #endif
 // -------------------------------------------------------------------------------------
-// Free RU epochs left in the budget shared by all RUHs once one more RU epoch gets opened.
-s64 RUEpochManager::freeRUEpochsAfterOpeningOne()
+// Free RU epochs left in the budget shared by all RUHs, the open RU epochs count as used.
+// Negative once an RU epoch got opened while none was free.
+s64 RUEpochManager::freeRUEpochs()
 {
-   s64 used_ru_epochs = 1;
+   s64 used_ru_epochs = 0;
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
-      used_ru_epochs += bm.ru_epoch[ruh].load(std::memory_order_relaxed) - bm.reclaimed_ru_epoch[ruh].load(std::memory_order_relaxed);
+      used_ru_epochs += bm.ru_epoch[ruh].load(std::memory_order_relaxed) - bm.reclaimed_ru_epoch[ruh].load(std::memory_order_acquire);
    }
-   ensure_lte(used_ru_epochs - 1, bm.max_open_ru_epochs);
    return static_cast<s64>(bm.max_open_ru_epochs) - used_ru_epochs;
 }
 // -------------------------------------------------------------------------------------
-void RUEpochManager::forceGCOldestRUEpochs()
+//    free <= OP + margin : the oldest RU epochs are forced to GC.
+//    free <  OP          : the writes are additionally rate limited.
+void RUEpochManager::regulateFreeRUEpochs()
 {
-   /// XXX(mfd) : For now this will force only the DEFAULT_RUH, which is the discardable RUH.
-   /// Eventually If I force GC, I need to pick the 20 oldest RU epochs from both streams.
+   s64 free_ru_epochs = freeRUEpochs();
+   if (free_ru_epochs <= static_cast<s64>(FLAGS_overprovisioning_ru_epochs + FLAGS_ru_force_gc_margin)) {
+      free_ru_epochs = forceGCOldestRUEpochs(free_ru_epochs);
+   }
+   updateWriteRate(free_ru_epochs);
+}
+// -------------------------------------------------------------------------------------
+// The rate (%) is the probability for the page provider to write back a dirty page:
+//    free >= OP       : 100
+//    0 < free < OP    : free * 80 / OP, at least ru_rate_limit_floor
+//    free <= 0        : 0, opening one more RU epoch would exceed the budget
+void RUEpochManager::updateWriteRate(s64 free_ru_epochs)
+{
+   const s64 op = FLAGS_overprovisioning_ru_epochs;
+   s64 new_rate;
+   if (free_ru_epochs <= 0) {
+      new_rate = 0;
+   } else if (free_ru_epochs >= op) {
+      new_rate = 100;
+   } else {
+      // cap the rate at 80% once rate limited, op > 0 here.
+      new_rate = std::max<s64>((free_ru_epochs * 80) / op, std::min<s64>(FLAGS_ru_rate_limit_floor, 80));
+   }
+   if (static_cast<u64>(new_rate) == bm.rate.load(std::memory_order_relaxed)) {
+      return;
+   }
+   bm.rate.store(new_rate, std::memory_order_release);
+   if (new_rate == 100) {
+      LOG_INFO(bm.logger, "Restored the rate of writes to 100%%, free ru epochs = %ld", free_ru_epochs);
+   } else {
+      LOG_WARN(bm.logger, "Updated the rate of writes to %ld%%, free ru epochs = %ld", new_rate, free_ru_epochs);
+   }
+}
+// -------------------------------------------------------------------------------------
+// Usage ((invalid + discarded) / total) of the oldest closed RU epoch of the RUH not yet handed to GC,
+// -1 if there is none, i.e. only the open RU epoch is left.
+double RUEpochManager::oldestUncollectedRUEpochUsage(ruh_id_t ruh)
+{
+   const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
+   if (oldest >= bm.ru_epoch[ruh].load(std::memory_order_relaxed)) {
+      return -1;
+   }
+   auto& set = bm.ru_discard_set[ruh][oldest];
+   const s32 total = set.total.load(std::memory_order_relaxed);
+   return total == 0 ? 0 : set.ReclaimUnitUsage() * 1.0 / total;
+}
+// -------------------------------------------------------------------------------------
+// Repeatedly frees the oldest RU epoch of the RUH with the highest usage until we are out of the forcing
+// zone. A HOT RU epoch is reclaimed inline since it is merely a metadata change, the DEFAULT RUH is
+// forced in batches. Returns the free RU epochs after the inline reclaims.
+s64 RUEpochManager::forceGCOldestRUEpochs(s64 free_ru_epochs)
+{
+   /// XXX(mfd) : Only the DEFAULT_RUH and the HOT RUH are considered, the other RUHs are never forced.
+   const s64 force_gc_zone = FLAGS_overprovisioning_ru_epochs + FLAGS_ru_force_gc_margin;
+   while (free_ru_epochs <= force_gc_zone) {
+      const double default_usage = oldestUncollectedRUEpochUsage(DEFAULT_RUH);
+      const double hot_usage = (fdp::hot_ruh != UNMAPPED_RUH) ? oldestUncollectedRUEpochUsage(fdp::hot_ruh) : -1;
+      if (hot_usage < 0 && default_usage < 0) {
+         break;
+      }
+      if (hot_usage > default_usage) {
+         LOG_INFO(bm.logger, "Forcing HOT RU epoch, usage %.2f%% > DEFAULT usage %.2f%%", hot_usage * 100, default_usage * 100);
+         ensure(tryReclaimNonDefaultRUEpoch(fdp::hot_ruh, /* forced */ true));
+         bm.bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
+         free_ru_epochs++;
+         continue;
+      }
+      // The DEFAULT RU epochs free up asynchronously, once GCed.
+      forceGCDefaultRUEpochsBatch();
+      break;
+   }
+   return free_ru_epochs;
+}
+// -------------------------------------------------------------------------------------
+void RUEpochManager::forceGCDefaultRUEpochsBatch()
+{
+   // The previous batch is still being garbage collected, its RU epochs will free up the budget.
+   if (bm.reclaimed_ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire) + 1 < force_gc_up_to) {
+      return;
+   }
+   // Since the previous batch is reclaimed, oldest >= force_gc_up_to.
    const ru_epoch_t oldest = bm.oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
    const ru_epoch_t newest = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
    if (oldest >= newest) {
-      // Only the open RU epoch is left, nothing to force.
+      // Every closed RU epoch is already dispatched to GC, only the open one is left.
       return;
    }
-   auto& sets = bm.ru_discard_set[DEFAULT_RUH];
-   if (!bm.global_force_gc) {
-      bm.global_force_gc = true;
-      const ru_epoch_t up_to = std::min<ru_epoch_t>(oldest + 20, newest - 1);
-      for (ru_epoch_t r = oldest; r < up_to; ++r) {
-         sets[r].force_gc = true;
-         bm.bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
-      }
-   } else {
-      sets[oldest].force_gc = true;
-      bm.bm_stats.forced_gc_count.fetch_add(1, std::memory_order_relaxed);
-   }
+   // The batch covers up to the last closed RU epoch, never the open one.
+   force_gc_up_to = std::min<ru_epoch_t>(oldest + FLAGS_ru_force_gc_batch, newest);
+   bm.bm_stats.forced_gc_count.fetch_add(force_gc_up_to - oldest, std::memory_order_relaxed);
+   LOG_WARN(bm.logger, "Forcing GC of RU epochs %ld..%ld", oldest, force_gc_up_to - 1);
 }
 // -------------------------------------------------------------------------------------
 // Pages of a non default RUH are never fixed, the RU epoch is declared reclaimed as soon as

@@ -107,6 +107,9 @@ DEFINE_uint32(max_log_records_to_discard, 7, "Limit discarding if log records to
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 0, "Force GC if the number of active RU epochs is less than max open by this value");
 DEFINE_double(overprovisioning_ratio, 0.05, "");
+DEFINE_uint32(ru_force_gc_margin, 2, "Start forcing GC this many free RU epochs before entering the over provisioning (rate limited) ones");
+DEFINE_uint32(ru_force_gc_batch, 20, "Oldest RU epochs forced to GC at once, the next batch waits until this one is fully reclaimed");
+DEFINE_uint32(ru_rate_limit_floor, 10, "Lowest rate (%) of the writes while rate limited, they are stopped only once no free RU epoch is left");
 DEFINE_uint32(ru_size, 0, "Unit of garbage collection in database pages (4 KiB)");
 DEFINE_bool(per_page_logging, true, "Group log records per page");
 DEFINE_uint32(ppl_merge_threshold, 4, "Threshold after which we merge the log records of a page");

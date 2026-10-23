@@ -21,7 +21,6 @@ struct RUEpochDiscardSet {
    void* mmaped_log = nullptr;
    u64 log_segment_start = -1;
    u64 log_segment_size = -1;
-   bool force_gc = false;
    // Set by the ru_epoch_mgr once it dispatched the RU epoch because its log got full. Its log
    // is then reclaimed without freeing the RU epoch, which stays undiscardable until it is reclaimed.
    atomic<bool> log_reclaimed{false};

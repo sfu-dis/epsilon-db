@@ -30,6 +30,9 @@ class RUEpochManager
    // Per RUH: pages written in the open RU epoch, and the last seen counter of each writer thread.
    std::array<u64, MAX_RUHS> tot_page_written{};
    std::array<std::vector<u64>, MAX_RUHS> last_seen;
+   // DEFAULT_RUH only: RU epochs below it are forced to GC regardless of their usage. A new batch is
+   // only forced once every RU epoch of the previous one got reclaimed.
+   ru_epoch_t force_gc_up_to = 0;
    // Threshold tracing: THRESHOLDS_DIR/threshold.txt holds the summary of all RUHs for every sample,
    // THRESHOLDS_DIR/ruh_<ruh>/sample_<n>.txt the per table decomposition of one RUH for sample n.
    static constexpr const char* THRESHOLDS_DIR = "thresholds";
@@ -48,8 +51,12 @@ class RUEpochManager
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    void tracePerTableStats(FILE* tfp, ruh_id_t ruh, ru_epoch_t oldest, ru_epoch_t newest);
 #endif
-   s64 freeRUEpochsAfterOpeningOne();
-   void forceGCOldestRUEpochs();
+   s64 freeRUEpochs();
+   void regulateFreeRUEpochs();
+   void updateWriteRate(s64 free_ru_epochs);
+   double oldestUncollectedRUEpochUsage(ruh_id_t ruh);
+   s64 forceGCOldestRUEpochs(s64 free_ru_epochs);
+   void forceGCDefaultRUEpochsBatch();
    bool tryReclaimNonDefaultRUEpoch(ruh_id_t ruh, bool force_reclaim);
 };
 // -------------------------------------------------------------------------------------
