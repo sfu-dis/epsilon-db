@@ -281,6 +281,16 @@ columns:
     enabled: true
     source: bm
 
+  comp_ratio:
+    field: "Comp Ratio"
+    enabled: true
+    source: bm
+
+  comp_used_gib:
+    field: "Comp GiB"
+    enabled: true
+    source: bm
+
   ruh_0_util_pct:
     field: "RUH0 %"
     enabled: true
