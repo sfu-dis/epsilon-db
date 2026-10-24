@@ -52,7 +52,7 @@ class LeanStore
    void serializeState();
    void deserializeState();
    void verifyPersistedSSDLayout();
-   void verifyStateFileIsRecoverable();
+   void verifyStateFile();
    void invalidateStateFile();
    void writeStateFile(const rapidjson::Document& d);
    void profilingThread();

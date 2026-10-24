@@ -39,7 +39,7 @@ LeanStore::LeanStore()
 {
    // LeanStore::addStringFlag("ssd_path", &FLAGS_ssd_path);
    if (!FLAGS_initialize_leanstore) {
-      verifyStateFileIsRecoverable();
+      verifyStateFile();
       deserializeFlags();
    }
    // -------------------------------------------------------------------------------------
@@ -325,7 +325,7 @@ void LeanStore::writeStateFile(const rs::Document& d)
    ensure_equal(rename(tmp_file.c_str(), FLAGS_leanstore_state_file.c_str()), 0);
 }
 // -------------------------------------------------------------------------------------
-void LeanStore::verifyStateFileIsRecoverable()
+void LeanStore::verifyStateFile()
 {
    std::ifstream json_file;
    json_file.open(FLAGS_leanstore_state_file);
@@ -338,10 +338,12 @@ void LeanStore::verifyStateFileIsRecoverable()
    if (d.HasParseError() || !d.IsObject()) {
       SetupFailed(FLAGS_leanstore_state_file + " is not a valid state file, pass --initialize_leanstore to initialize the database and the device");
    }
+   // Not a hard requirement, e.g. to rerun after a crash on top of a loaded database.
    if (!d.HasMember("recoverable") || !d["recoverable"].IsBool() || !d["recoverable"].GetBool()) {
-      SetupFailed("Cannot recover from " + FLAGS_leanstore_state_file +
-                  ": it was not written by a clean shutdown of a --persist run (the last run on the device was not persistent, crashed, or "
-                  "is still running). Pass --initialize_leanstore to initialize the database and the device");
+      std::cerr << "Warning: " << FLAGS_leanstore_state_file
+                << " was not written by a clean shutdown of a --persist run (the last run on the device was not persistent, crashed, or "
+                   "is still running), the device content may not match it"
+                << std::endl;
    }
 }
 // -------------------------------------------------------------------------------------
