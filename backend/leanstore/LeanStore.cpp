@@ -111,6 +111,7 @@ LeanStore::LeanStore()
        .ru_size = FLAGS_ru_size,
        .overprovisioning_ru_epochs = FLAGS_overprovisioning_ru_epochs,
        .overprovisioning_ratio = FLAGS_overprovisioning_ratio,
+       .lba_chain_heads = FLAGS_bg_page_fixer_variant == 2,
    });
    ssd_layout = plan.layout;
    FLAGS_overprovisioning_ru_epochs = plan.overprovisioning_ru_epochs;

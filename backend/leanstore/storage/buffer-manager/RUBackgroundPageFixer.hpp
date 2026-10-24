@@ -19,6 +19,7 @@ struct Logging;  // Forward declaration
 namespace storage
 {
 class BufferManager;  // Forward declaration
+struct RUEpochDiscardSet;  // Forward declaration
 // -------------------------------------------------------------------------------------
 // Owns the ru_gc background threads: they wait for the RU epochs handed over by the
 // ru_epoch_mgr, scan their log segment, and fix and write back the discarded pages that
@@ -66,9 +67,15 @@ class RUBackgroundPageFixer
    void mapRUEpochLog(ThreadContext& ctx, cr::Logging& logging, bool scan_log);
    void finishRUEpoch(ThreadContext& ctx, u64 seconds_taken);
    void finishRUEpochLogReclaim(ThreadContext& ctx, u64 seconds_taken);
+   // FLAGS_bg_page_fixer_variant 2: reads the LBA chain of the RU epoch into the set.
+   void loadLBAChain(RUEpochDiscardSet& set, ru_epoch_t ru_epoch, bool with_entries);
    // Scans the next 4 KiB of the log and issues the reads of the discarded pages to fix.
    u64 scanLogBatch(ThreadContext& ctx, u64& offset);
-   bool registerPageToFix(ThreadContext& ctx, const cr::WALEntry& entry, PID pid, u64 idx);
+   // FLAGS_bg_page_fixer_variant 2: same for a batch of the PIDs listed in the LBA chain.
+   u64 scanLBAChainBatch(ThreadContext& ctx, const PID* pids, u64 count);
+   bool needsFix(ThreadContext& ctx, PID pid);
+   bool registerPageToFix(ThreadContext& ctx, LID first_lsn, PID pid, u64 idx);
+   void issueFixRead(ThreadContext& ctx, PID pid, u64& pages_to_fix, u64& submitted);
    void fixPages(ThreadContext& ctx, u64 pages_to_fix);
    // Completion handlers of the read, resp. write, ring.
    void fixPage(ThreadContext& ctx, io_uring_cqe* cqe);

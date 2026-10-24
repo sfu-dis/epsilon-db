@@ -2,6 +2,7 @@
 
 #include "BufferManager.hpp"
 #include "CustomSlabAllocator.hpp"
+#include "LBAChain.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/concurrency-recovery/Logging.hpp"
@@ -185,14 +186,29 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
    ctx.log_records = static_cast<u8*>(set.mmaped_log);
    ctx.cur_log_segment_size = scan_log ? set.log_segment_size : 0;
 
-   // The GC threads split the log in batches of 4 KiB.
-   while (offset + sizeof(cr::WALEntry) < ctx.cur_log_segment_size) {
-      ctx.actually_fixed = 0;
-      offset = set.offset_batch.fetch_add(4096);
-      const u64 pages_to_fix = scanLogBatch(ctx, offset);
-      fixPages(ctx, pages_to_fix);
-      // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
-      fixHotPages(ctx);
+   if (FLAGS_bg_page_fixer_variant == 2) {
+      // The GC threads split the PIDs of the LBA chain in batches.
+      const u64 entries = set.lba_chain_entries.size();
+      while (true) {
+         const u64 begin = set.offset_batch.fetch_add(ThreadContext::batch_size);
+         if (begin >= entries) {
+            break;
+         }
+         ctx.actually_fixed = 0;
+         const u64 pages_to_fix = scanLBAChainBatch(ctx, set.lba_chain_entries.data() + begin, std::min<u64>(entries - begin, ThreadContext::batch_size));
+         fixPages(ctx, pages_to_fix);
+         fixHotPages(ctx);
+      }
+   } else {
+      // The GC threads split the log in batches of 4 KiB.
+      while (offset + sizeof(cr::WALEntry) < ctx.cur_log_segment_size) {
+         ctx.actually_fixed = 0;
+         offset = set.offset_batch.fetch_add(4096);
+         const u64 pages_to_fix = scanLogBatch(ctx, offset);
+         fixPages(ctx, pages_to_fix);
+         // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
+         fixHotPages(ctx);
+      }
    }
    drainDeferredHotPages(ctx);
    // -------------------------------------------------------------------------------------
@@ -235,6 +251,10 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
    if (!scan_log) {
       // The log was reclaimed early and stayed redirected since, nothing to scan.
       logging.mutex.unlock();
+      if (FLAGS_bg_page_fixer_variant == 2) {
+         // Only the blocks of the chain, they are recycled once the RU epoch is reclaimed.
+         loadLBAChain(set, gc_ru_epoch, /* with_entries */ false);
+      }
       set.m.unlock();
       LOG_INFO(bm.logger, "Garbage collecting RU epoch %lu whose log was already reclaimed", gc_ru_epoch);
       return;
@@ -264,13 +284,25 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
    set.log_segment_start = logging.log_segment_start;
    set.log_segment_size = logging.wal_lsn_counter;
    logging.mutex.unlock();
+   if (FLAGS_bg_page_fixer_variant == 2) {
+      loadLBAChain(set, gc_ru_epoch, /* with_entries */ true);
+   }
 
    ensure_equal(set.offset_batch.load(), 0);
    set.m.unlock();
    const double threshold = set.ReclaimUnitUsage() * 100.0 / set.total.load(std::memory_order_relaxed);
    const s32 discarded_pages = set.inserted.load(std::memory_order_relaxed) - set.deleted.load(std::memory_order_relaxed);
-   LOG_INFO(bm.logger, "Garbage collecting %sRU epoch %lu with threshold %.2f: upper bound on pages to fix %d, log size to scan %lu",
-            ctx.log_only ? "the full log of " : "", gc_ru_epoch, threshold, discarded_pages, set.log_segment_size);
+   LOG_INFO(bm.logger, "Garbage collecting %sRU epoch %lu with threshold %.2f: upper bound on pages to fix %d, log size %lu, LBA chain of %lu blocks, %lu entries",
+            ctx.log_only ? "the full log of " : "", gc_ru_epoch, threshold, discarded_pages, set.log_segment_size, set.lba_chain_blocks.size(),
+            set.lba_chain_entries.size());
+}
+// -------------------------------------------------------------------------------------
+// Caller holds set.m, the other GC threads wait on it before scanning.
+void RUBackgroundPageFixer::loadLBAChain(RUEpochDiscardSet& set, ru_epoch_t ru_epoch, bool with_entries)
+{
+   ensure(set.lba_chain_entries.empty() && set.lba_chain_blocks.empty());
+   const PID head = bm.persistant_ru_state->chainHead(ru_epoch);
+   LBAChain::readChain(bm.ssd_fd, head, ru_epoch, with_entries ? &set.lba_chain_entries : nullptr, set.lba_chain_blocks);
 }
 // -------------------------------------------------------------------------------------
 // Called by the last GC thread done with the RU epoch.
@@ -291,6 +323,15 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
       ensure_equal(rc, 0);
       set.mmaped_log = nullptr;
    }
+   const u64 lba_chain_blocks = set.lba_chain_blocks.size();
+   if (FLAGS_bg_page_fixer_variant == 2) {
+      // The chain lives as long as the RU epoch. Its head slot is reused by the RU epoch opened in this slot, which
+      // only happens once the set is reset.
+      for (const auto& [pid, written_ru_epoch] : set.lba_chain_blocks) {
+         bm.recyclePID(pid, written_ru_epoch, DEFAULT_RUH);
+      }
+      bm.persistant_ru_state->chainHead(ctx.current_gc_epoch) = INVALID_PID;
+   }
    set.reset();
    bm.reclaimed_ru_epoch[DEFAULT_RUH].fetch_add(1);
    // Also stops redirecting an early reclaimed log, so that the next RU epoch mapped to it can use it.
@@ -299,7 +340,8 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
    if (!log_already_reclaimed && FLAGS_wal && FLAGS_wal_pwrite) {
       cr::LogManager::global->resetLogSegment(ctx.current_gc_epoch);
    }
-   LOG_INFO(bm.logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u", ctx.current_gc_epoch, seconds_taken, fixed_pages_in_ru, ru_usage);
+   LOG_INFO(bm.logger, "GC epoch %lu, time taken %lu seconds : Pages fixed = %lu, RU usage : %u, LBA chain blocks recycled : %lu", ctx.current_gc_epoch,
+            seconds_taken, fixed_pages_in_ru, ru_usage, lba_chain_blocks);
 }
 // -------------------------------------------------------------------------------------
 // Called by the last GC thread done with a log_only job: the discarded pages are fixed, so the log
@@ -359,66 +401,13 @@ u64 RUBackgroundPageFixer::scanLogBatch(ThreadContext& ctx, u64& offset)
       }
 
       const PID pid = dte.pid;
-      auto& page_state = bm.discard_state[pid];
-
-      // It is safe to continue if the page is clean. In fact, from a clean state the page
-      // can only concurrently move to a cached state (in the buffer pool). It cannot get
-      // concurrently discarded again because pages that are belonging to an ru_epoch older
-      // or equal to the currently reclaiming ru do not get evicted.
-      // It is also possible that the page is clean but in a newer RU. In that case the page
-      // can get discarded and we will double check for that after acquiring the latching the page state.
-      if (page_state.isClean()) {
-         COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+      if (!needsFix(ctx, pid)) {
          continue;
       }
-
-      // if state is a buffer frame, Issue the write to that page.
-      // Make sure the page in the same RU epoch that we're garbage collecting.
-      // Keep this step synchronous for now.
-      // Need to acquire a lock on the buffer frame and mark it, is being written back.
-      // ATTENTION : There might be a risk of deadlock between the guard and the page status lock.
-      // If the page is Dirty in the conventional sense write it back.
-      if (page_state.isHot()) {
-         // Page is in buffer frame
-         // For now just continue, I'll handle that later
-         COUNTERS_BLOCK(gc)
-         {
-            GCCounters::myCounters().hot_fixed++;
-         }
-         ctx.hot_pids.emplace_back(pid);
+      if (!registerPageToFix(ctx, entry.lsn, pid, pages_to_fix)) {
          continue;
       }
-
-      // The page is Free when we it was reclaimed but its pid is still not reused.
-      // Even if the page id is reused we can later find out by checking whether the RU epoch
-      // stored in the page is the same as the RU epoch we're currentlty reclaiming.
-      // There is a case when the page is reclaimed and the RU is the same, which is after the
-      // pid is allocated and before the page is written to storage, in that case the page is
-      // in HOT state and we should handle it separately.
-      if (page_state.isFree()) {
-         continue;
-      }
-
-      if (!registerPageToFix(ctx, entry, pid, pages_to_fix)) {
-         continue;
-      }
-
-      struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.r_ring);
-      ensure(sqe != nullptr);
-      // TODO(mfd) : Fixed buffer read
-      io_uring_prep_read(sqe, bm.ssd_fd, ctx.buf_pages[pages_to_fix].page, PAGE_SIZE, pid * PAGE_SIZE);
-      // TODO(mfd) : store just the index into the array.
-      //  we can keep the pid here just for debugging.
-      ensure((pid & 0xFFFF000000000000) == 0);
-      u64 data = (pages_to_fix << 48) | pid;
-      io_uring_sqe_set_data64(sqe, data);
-      ensure(ctx.to_fix_pids.back().last_lsn != INVALID_LSN);
-      ++pages_to_fix;
-      if (pages_to_fix == ThreadContext::batch_size / 2) {
-         int s = io_uring_submit(&ctx.r_ring);
-         ensure(s > 0);
-         submitted += s;
-      }
+      issueFixRead(ctx, pid, pages_to_fix, submitted);
    }
    int s = io_uring_submit(&ctx.r_ring);
    ensure(s >= 0);
@@ -428,9 +417,107 @@ u64 RUBackgroundPageFixer::scanLogBatch(ThreadContext& ctx, u64& offset)
    return pages_to_fix;
 }
 // -------------------------------------------------------------------------------------
+// The PIDs of a batch of the LBA chain, see scanLogBatch(). A PID written several times to the RU epoch is listed as
+// many times, it is fixed once since its state is clean afterwards.
+u64 RUBackgroundPageFixer::scanLBAChainBatch(ThreadContext& ctx, const PID* pids, u64 count)
+{
+   ensure_lte(count, ThreadContext::batch_size);
+   u64 pages_to_fix = 0;
+   u64 submitted = 0;
+   for (u64 i = 0; i < count; ++i) {
+      const PID pid = pids[i];
+      // A tombstone, see LBAChain::record().
+      if (pid == INVALID_PID) {
+         continue;
+      }
+      ensure_lt(pid, bm.max_pid);
+      if (!needsFix(ctx, pid)) {
+         continue;
+      }
+      // The LBA chain does not tell the first log record of the page in this log.
+      if (!registerPageToFix(ctx, INVALID_LSN, pid, pages_to_fix)) {
+         continue;
+      }
+      issueFixRead(ctx, pid, pages_to_fix, submitted);
+   }
+   int s = io_uring_submit(&ctx.r_ring);
+   ensure(s >= 0);
+   submitted += s;
+   ensure_equal(submitted, pages_to_fix);
+   ensure_equal(pages_to_fix, ctx.to_fix_pids.size());
+   return pages_to_fix;
+}
+// -------------------------------------------------------------------------------------
+// Returns true if the page may be discarded with log records in the log being reclaimed. A cached page is queued in
+// hot_pids instead.
+bool RUBackgroundPageFixer::needsFix(ThreadContext& ctx, PID pid)
+{
+   auto& page_state = bm.discard_state[pid];
+
+   // It is safe to continue if the page is clean. In fact, from a clean state the page
+   // can only concurrently move to a cached state (in the buffer pool). It cannot get
+   // concurrently discarded again because pages that are belonging to an ru_epoch older
+   // or equal to the currently reclaiming ru do not get evicted.
+   // It is also possible that the page is clean but in a newer RU. In that case the page
+   // can get discarded and we will double check for that after acquiring the latching the page state.
+   if (page_state.isClean()) {
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+      return false;
+   }
+
+   // if state is a buffer frame, Issue the write to that page.
+   // Make sure the page in the same RU epoch that we're garbage collecting.
+   // Keep this step synchronous for now.
+   // Need to acquire a lock on the buffer frame and mark it, is being written back.
+   // ATTENTION : There might be a risk of deadlock between the guard and the page status lock.
+   // If the page is Dirty in the conventional sense write it back.
+   if (page_state.isHot()) {
+      // Page is in buffer frame
+      // For now just continue, I'll handle that later
+      COUNTERS_BLOCK(gc)
+      {
+         GCCounters::myCounters().hot_fixed++;
+      }
+      ctx.hot_pids.emplace_back(pid);
+      return false;
+   }
+
+   // The page is Free when we it was reclaimed but its pid is still not reused.
+   // Even if the page id is reused we can later find out by checking whether the RU epoch
+   // stored in the page is the same as the RU epoch we're currentlty reclaiming.
+   // There is a case when the page is reclaimed and the RU is the same, which is after the
+   // pid is allocated and before the page is written to storage, in that case the page is
+   // in HOT state and we should handle it separately.
+   if (page_state.isFree()) {
+      return false;
+   }
+   return true;
+}
+// -------------------------------------------------------------------------------------
+// Issues the read of the page registered by registerPageToFix() at index pages_to_fix, submits every half batch.
+void RUBackgroundPageFixer::issueFixRead(ThreadContext& ctx, PID pid, u64& pages_to_fix, u64& submitted)
+{
+   struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.r_ring);
+   ensure(sqe != nullptr);
+   // TODO(mfd) : Fixed buffer read
+   io_uring_prep_read(sqe, bm.ssd_fd, ctx.buf_pages[pages_to_fix].page, PAGE_SIZE, pid * PAGE_SIZE);
+   // TODO(mfd) : store just the index into the array.
+   //  we can keep the pid here just for debugging.
+   ensure((pid & 0xFFFF000000000000) == 0);
+   u64 data = (pages_to_fix << 48) | pid;
+   io_uring_sqe_set_data64(sqe, data);
+   ensure(ctx.to_fix_pids.back().last_lsn != INVALID_LSN);
+   ++pages_to_fix;
+   if (pages_to_fix == ThreadContext::batch_size / 2) {
+      int s = io_uring_submit(&ctx.r_ring);
+      ensure(s > 0);
+      submitted += s;
+   }
+}
+// -------------------------------------------------------------------------------------
 // Locks the discarded page and inserts an IO frame for it so that the workers wait for it
 // to be fixed. Returns false if the page must not be fixed by us.
-bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, const cr::WALEntry& entry, PID pid, u64 idx)
+bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, LID first_lsn, PID pid, u64 idx)
 {
    LID* lsn_list = nullptr;
    LID last_lsn = INVALID_LSN;
@@ -476,7 +563,7 @@ bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, const cr::WALE
       last_lsn = p.first;
    }
    ensure_equal(ctx.to_fix_pids.size(), idx);
-   ctx.to_fix_pids.emplace_back(pid, lsn_list, entry.lsn, last_lsn, nb_log_records);
+   ctx.to_fix_pids.emplace_back(pid, lsn_list, first_lsn, last_lsn, nb_log_records);
    if (nb_log_records == 1) {
       ctx.to_fix_pids.back().lsn_list = &ctx.to_fix_pids.back().last_lsn;
    }

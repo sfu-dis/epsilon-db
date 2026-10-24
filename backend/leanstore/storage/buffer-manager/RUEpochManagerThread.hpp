@@ -33,6 +33,8 @@ class RUEpochManager
    // DEFAULT_RUH only: RU epochs below it are forced to GC regardless of their usage. A new batch is
    // only forced once every RU epoch of the previous one got reclaimed.
    ru_epoch_t force_gc_up_to = 0;
+   // DEFAULT_RUH with the LBA chain only: the last RU epoch whose opening got deferred, to warn once.
+   ru_epoch_t deferred_ru_epoch = -1;
    // Threshold tracing: THRESHOLDS_DIR/threshold.txt holds the summary of all RUHs for every sample,
    // THRESHOLDS_DIR/ruh_<ruh>/sample_<n>.txt the per table decomposition of one RUH for sample n.
    static constexpr const char* THRESHOLDS_DIR = "thresholds";
@@ -43,6 +45,7 @@ class RUEpochManager
    void initWriteCounters();
    void checkForNewRUEpochs();
    void checkForNewRUEpoch(ruh_id_t ruh);
+   void accountLBAChainBlocks(u64 written_blocks);
    void dispatchOldestRUEpochToGC();
    // Dispatches the RU epochs whose log got full so that their log space gets reclaimed.
    void dispatchFullLogRUEpochsToGC();

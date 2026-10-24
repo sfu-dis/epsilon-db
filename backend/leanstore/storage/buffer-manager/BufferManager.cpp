@@ -4,6 +4,7 @@
 #include "BufferFrame.hpp"
 #include "CompressedSpace.hpp"
 #include "CustomSlabAllocator.hpp"
+#include "LBAChain.hpp"
 #include "DTRegistry.hpp"
 #include "Exceptions.hpp"
 #include "PageState.hpp"
@@ -61,6 +62,12 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
 {
    // PIDs are used as raw page offsets on ssd_fd.
    ensure(ssd_layout.db_start == 0);
+   if (FLAGS_bg_page_fixer_variant != 1 && FLAGS_bg_page_fixer_variant != 2) {
+      SetupFailed("bg_page_fixer_variant must be 1 or 2");
+   }
+   if (FLAGS_bg_page_fixer_variant == 2 && FLAGS_compress_pages) {
+      SetupFailed("bg_page_fixer_variant 2 does not support compress_pages");
+   }
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
    {
@@ -158,7 +165,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       // -------------------------------------------------------------------------------------
       ensure(io_writer_threads_count > 0);
       writers_iostat = std::make_unique<padded_iostat[]>(io_writer_threads_count);
-      u64 aligned_size = utils::upAlign(PersistantRUState::sizeFor(max_open_ru_epochs), 4096);
+      u64 aligned_size = utils::upAlign(PersistantRUState::sizeFor(max_open_ru_epochs, FLAGS_bg_page_fixer_variant == 2), 4096);
       persistant_ru_state = reinterpret_cast<PersistantRUState*>(std::aligned_alloc(4096, aligned_size));
       ensure(persistant_ru_state != nullptr);
       new (persistant_ru_state) PersistantRUState(max_open_ru_epochs);
@@ -213,6 +220,11 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             ru_discard_set[ruh].at(0).cur_ru_epoch = 0;
             ru_discard_set[ruh].at(0).active.store(true);
          }
+         if (FLAGS_bg_page_fixer_variant == 2) {
+            for (ru_epoch_t e = 0; e < max_open_ru_epochs; ++e) {
+               persistant_ru_state->chainHead(e) = INVALID_PID;
+            }
+         }
       }
       if (FLAGS_wal && FLAGS_wal_pwrite) {
          ensure(!FLAGS_redo_log_file.empty());
@@ -233,6 +245,10 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          }
       }
       // -------------------------------------------------------------------------------------
+      if (FLAGS_bg_page_fixer_variant == 2) {
+         // Continues the chain of the recovered open RU epoch, if any.
+         lba_chain = std::make_unique<LBAChain>(*this, ru_epoch[DEFAULT_RUH].load());
+      }
       ru_epoch_mgr = std::make_unique<RUEpochManager>(*this);
       ru_bg_page_fixer = std::make_unique<RUBackgroundPageFixer>(*this);
    }
@@ -1286,7 +1302,13 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
    page.prev_ruh = prev_ruh;
    ensure(bf.header.next_ruh != UNMAPPED_RUH);
    const ruh_id_t ruh = page.ruh = bf.header.next_ruh;
-   page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
+   if (lba_chain && ruh == DEFAULT_RUH) {
+      // The RU epoch is the one of the LBA chain block the PID got recorded into. The writers keep
+      // magic_debugging_number equal to the PID of the page being written back.
+      page.ru_epoch = lba_chain->record(page.magic_debugging_number);
+   } else {
+      page.ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
+   }
    if (!FLAGS_wal) { page.last_written_lsn = NON_PERSISTED_LSN; }
    // Update the stats here
    if (prev_ruh != ruh) {

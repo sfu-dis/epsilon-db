@@ -44,6 +44,7 @@ class RUEpochManager;  // Forward declaration
 class RUBackgroundPageFixer;  // Forward declaration
 class SSDLayout;  // Forward declaration
 class CompressedSpace;  // Forward declaration
+class LBAChain;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -93,6 +94,7 @@ class BufferManager
    friend class AsyncWriteBuffer;
    friend class RUEpochManager;
    friend class RUBackgroundPageFixer;
+   friend class LBAChain;
    // -------------------------------------------------------------------------------------
    BufferFrame* bfs;
    // -------------------------------------------------------------------------------------
@@ -134,6 +136,8 @@ class BufferManager
    std::unique_ptr<RUEpochManager> ru_epoch_mgr;
    // Owns and manages the background page fixer threads.
    std::unique_ptr<RUBackgroundPageFixer> ru_bg_page_fixer;
+   // Only with FLAGS_bg_page_fixer_variant 2: the LBAs written to each RU epoch of the DEFAULT_RUH.
+   std::unique_ptr<LBAChain> lba_chain;
    // -------------------------------------------------------------------------------------
    std::unique_ptr<utils::Logger> logger;
    // -------------------------------------------------------------------------------------

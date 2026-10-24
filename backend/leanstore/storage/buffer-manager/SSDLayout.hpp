@@ -45,6 +45,7 @@ struct SSDLayoutConfig {
    u64 ru_size = 0;  // in 4KiB pages
    u64 overprovisioning_ru_epochs = 0;  // 0 = derive from overprovisioning_ratio
    double overprovisioning_ratio = 0;
+   bool lba_chain_heads = false;  // the persistant RU state holds the LBA chain heads, see PersistantRUState
 };
 // -------------------------------------------------------------------------------------
 struct SSDLayoutPlan {

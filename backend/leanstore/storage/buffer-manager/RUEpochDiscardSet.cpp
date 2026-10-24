@@ -65,6 +65,8 @@ void RUEpochDiscardSet::afterLogReclaim()
 void RUEpochDiscardSet::clearGCState()
 {
    offset_batch = 0;
+   std::vector<PID>().swap(lba_chain_entries);
+   std::vector<std::pair<PID, ru_epoch_t>>().swap(lba_chain_blocks);
    is_currently_being_garbage_collected = false;
    log_segment_start = -1;
    log_segment_size = -1;
@@ -174,6 +176,13 @@ void PersistantRUState::writetoPersistantStorage(int fd, u64 offset)
    u64 sz = utils::upAlign(getSize(), 4096);
    s64 ret = pwrite(fd, this, sz, offset);
    ensure_equal(ret, s64(sz));
+}
+// -------------------------------------------------------------------------------------
+void PersistantRUState::writeChainHeadToPersistantStorage(int fd, u64 offset, ru_epoch_t ru_epoch)
+{
+   const u64 block_offset = chainHeadBlockOffset(ru_epoch);
+   s64 ret = pwrite(fd, reinterpret_cast<u8*>(this) + block_offset, 4096, offset + block_offset);
+   ensure_equal(ret, s64(4096));
 }
 // -------------------------------------------------------------------------------------
 }  // namespace storage

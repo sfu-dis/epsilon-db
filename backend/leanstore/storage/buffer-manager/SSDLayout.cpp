@@ -123,7 +123,7 @@ SSDLayoutPlan computeSSDLayout(const SSDLayoutConfig& config)
    }
    max_open_ru_epochs += plan.overprovisioning_ru_epochs;
    plan.max_open_ru_epochs = max_open_ru_epochs;
-   const u64 persistant_state_blocks = utils::upAlign(PersistantRUState::sizeFor(max_open_ru_epochs), PAGE_SIZE) / PAGE_SIZE;
+   const u64 persistant_state_blocks = utils::upAlign(PersistantRUState::sizeFor(max_open_ru_epochs, config.lba_chain_heads), PAGE_SIZE) / PAGE_SIZE;
    if (total_blocks <= persistant_state_blocks * 100) {
       SetupFailed("Database region too small for the persistant RU state ");
    }

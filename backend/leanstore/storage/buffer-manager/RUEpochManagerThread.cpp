@@ -3,6 +3,7 @@
 #include "BufferManager.hpp"
 #include "DTRegistry.hpp"
 #include "Exceptions.hpp"
+#include "LBAChain.hpp"
 #include "RUBackgroundPageFixer.hpp"
 #include "leanstore/Config.hpp"
 #include "leanstore/concurrency-recovery/LogManager.hpp"
@@ -65,6 +66,9 @@ void RUEpochManager::run()
    while (bm.bg_threads_keep_running || bm.shutdown_flush_in_progress.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       checkForNewRUEpochs();
+      if (bm.lba_chain) {
+         accountLBAChainBlocks(bm.lba_chain->sealClosedBlocks());
+      }
       if (FLAGS_enable_discarding) {
          regulateFreeRUEpochs();
          dispatchFullLogRUEpochsToGC();
@@ -93,6 +97,14 @@ void RUEpochManager::run()
    }
    // No thread is able to write now
    checkForNewRUEpochs();
+   if (bm.lba_chain) {
+      // Persists the LBAs of the open RU epoch, the next run continues its chain. Its blocks may open a new RU epoch,
+      // whose (empty) chain is sealed again.
+      accountLBAChainBlocks(bm.lba_chain->sealUpTo(bm.ru_epoch[DEFAULT_RUH].load()));
+      checkForNewRUEpochs();
+      accountLBAChainBlocks(bm.lba_chain->sealUpTo(bm.ru_epoch[DEFAULT_RUH].load()));
+      LOG_INFO(bm.logger, "LBA chain: the writers stalled %lu times on a full ring", bm.lba_chain->stalls());
+   }
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    // Also for the load (no discarding), covers the shutdown flush.
    if (FLAGS_trace_ru_threshold) {
@@ -156,13 +168,34 @@ void RUEpochManager::checkForNewRUEpoch(ruh_id_t ruh)
       ensure_lte(0, freeRUEpochs());
    }
    auto& set = bm.ru_discard_set[ruh].at(new_ru_epoch);
+   const bool lba_chain = bm.lba_chain && ruh == DEFAULT_RUH;
+   if (lba_chain && set.active.load()) {
+      // The bg page fixers did not reclaim the slot yet. Blocking in open() would stop us from sealing the LBA chain
+      // blocks, the bg page fixers would then stall on the full ring while recording the pages they fix.
+      tot_page_written[ruh] += BufferManager::RU_SIZE;
+      if (deferred_ru_epoch != new_ru_epoch) {
+         deferred_ru_epoch = new_ru_epoch;
+         LOG_WARN(bm.logger, "RUH %u : Deferred opening RU epoch %lu, the bg page fixers could not keep up", ruh, new_ru_epoch);
+      }
+      return;
+   }
    {
       std::lock_guard _l(set.m);
       set.open(new_ru_epoch);
    }
+   if (lba_chain) {
+      // Before publishing the new RU epoch, the pages recorded from now on are written to it.
+      accountLBAChainBlocks(bm.lba_chain->openRUEpoch(new_ru_epoch));
+   }
    bm.ru_epoch[ruh].store(new_ru_epoch, std::memory_order_release);
    LOG_INFO(bm.logger, "RUH %u : Opened up a new RU Epoch %lu, closed previous ru epoch with %lu pages!!!", ruh, new_ru_epoch,
             bm.ru_discard_set[ruh][new_ru_epoch - 1].total.load());
+}
+// -------------------------------------------------------------------------------------
+// The LBA chain blocks are written to the DEFAULT_RUH and fill its open RU epoch like the pages.
+void RUEpochManager::accountLBAChainBlocks(u64 written_blocks)
+{
+   tot_page_written[DEFAULT_RUH] += written_blocks;
 }
 // -------------------------------------------------------------------------------------
 void RUEpochManager::dispatchOldestRUEpochToGC()
@@ -178,6 +211,10 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
    // Being forced is not consumed here, a failed enqueue is simply retried on the next tick.
    const bool forced = oldest < force_gc_up_to;
    if (log_reclaimed || forced || set.shouldGC()) {
+      if (bm.lba_chain) {
+         // The bg page fixers walk its chain.
+         accountLBAChainBlocks(bm.lba_chain->sealUpTo(oldest));
+      }
       if (bm.ru_bg_page_fixer->tryEnqueueRUEpoch(oldest)) {
          bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
       }
@@ -199,6 +236,11 @@ void RUEpochManager::dispatchFullLogRUEpochsToGC()
       if (set.log_reclaimed.load(std::memory_order_relaxed)
           || !cr::LogManager::getLog(r).redirect_to_sink_log.load(std::memory_order_acquire)) {
          continue;
+      }
+      if (bm.lba_chain) {
+         // The RU epoch may still be open, its chain then lists the pages written to it so far. The pages written
+         // to it from now on are undiscardable since its log is redirected.
+         accountLBAChainBlocks(bm.lba_chain->sealUpTo(r));
       }
       // Before enqueuing, the GC threads expect it set.
       set.log_reclaimed.store(true, std::memory_order_release);

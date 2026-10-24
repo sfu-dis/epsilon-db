@@ -103,6 +103,9 @@ DEFINE_bool(enable_discarding, true, "Discard dirty pages upon evictions");
 DEFINE_bool(discard_lsns_in_parent, true, "Store the pending LSNs of a discarded page next to its swip in the parent instead of the page state");
 DEFINE_bool(bg_fixer_write_back_hot_pages, false, "The RU bg page fixer writes back the cached (hot) pages of the RU epoch it reclaims");
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");
+DEFINE_uint32(bg_page_fixer_variant, 1, "1: the bg page fixer scans the log of the RU epoch for the pages to fix. "
+              "2: it walks the chain of the LBAs written to the RU epoch (DEFAULT_RUH only, no compress_pages)");
+DEFINE_uint32(lba_chain_buffer_blocks, 1024, "bg_page_fixer_variant 2: 4 KiB blocks of the in memory ring the writers record their LBAs into");
 DEFINE_uint32(max_log_records_to_discard, 7, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 0, "Force GC if the number of active RU epochs is less than max open by this value");

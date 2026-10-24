@@ -4,9 +4,12 @@
 // -------------------------------------------------------------------------------------
 #include "leanstore/Config.hpp"
 #include "leanstore/sync-primitives/InstrumentedMutex.hpp"
+#include "leanstore/utils/Misc.hpp"
 // -------------------------------------------------------------------------------------
 #include <atomic>
 #include <memory>
+#include <utility>
+#include <vector>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -24,6 +27,10 @@ struct RUEpochDiscardSet {
    // Set by the ru_epoch_mgr once it dispatched the RU epoch because its log got full. Its log
    // is then reclaimed without freeing the RU epoch, which stays undiscardable until it is reclaimed.
    atomic<bool> log_reclaimed{false};
+   // FLAGS_bg_page_fixer_variant 2: loaded from the LBA chain by the first GC thread to reach the RU epoch, the PIDs
+   // written to it (offset_batch then indexes them) and the chain's blocks (PID, RU epoch they were written to).
+   std::vector<PID> lba_chain_entries;
+   std::vector<std::pair<PID, ru_epoch_t>> lba_chain_blocks;
    alignas(CACHE_LINE_SIZE) atomic<u64> offset_batch{0};
    // -------------------------------------------------------------------------------------
    alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
@@ -112,18 +119,38 @@ struct alignas(4096) PersistantRUState {
    // Laid out RUH major, max_open_ru_epochs slots per RUH, see total().
    u32 totals[0];
 
+   // With FLAGS_bg_page_fixer_variant 2, the totals are followed by the head of the LBA chain of each RU
+   // epoch of the DEFAULT_RUH (see LBAChain), the layout of the other variants is left unchanged.
    PersistantRUState(u32 max_open_ru_epochs);
-   static u64 sizeFor(u64 max_open_ru_epochs) {
-      return sizeof(PersistantRUState) + max_open_ru_epochs * MAX_RUHS * sizeof(u32);
+   static u64 sizeFor(u64 max_open_ru_epochs, bool with_lba_chain_heads) {
+      const u64 size = chainHeadsOffset(max_open_ru_epochs);
+      return with_lba_chain_heads ? size + max_open_ru_epochs * sizeof(PID) : size;
    }
-   u64 getSize() const { return sizeFor(max_open_ru_epochs); }
+   u64 getSize() const { return sizeFor(max_open_ru_epochs, FLAGS_bg_page_fixer_variant == 2); }
    // Total of the i-th RU epoch of ruh, counted from its oldest active RU epoch.
    u32& total(ruh_id_t ruh, u64 i) {
       ensure_lt(i, max_open_ru_epochs);
       return totals[ruh * max_open_ru_epochs + i];
    }
+   // Head of the LBA chain of the RU epoch, INVALID_PID if none of its blocks is sealed yet.
+   PID& chainHead(ru_epoch_t ru_epoch) {
+      ensure(FLAGS_bg_page_fixer_variant == 2);
+      return reinterpret_cast<PID*>(reinterpret_cast<u8*>(this) + chainHeadsOffset(max_open_ru_epochs))[ru_epoch % max_open_ru_epochs];
+   }
+   // Byte offset from the start of the state of the 4 KiB block holding the head of the RU epoch.
+   u64 chainHeadBlockOffset(ru_epoch_t ru_epoch) const {
+      const u64 offset = chainHeadsOffset(max_open_ru_epochs) + (ru_epoch % max_open_ru_epochs) * sizeof(PID);
+      return offset - offset % 4096;
+   }
    void loadFromPersistantStorage(int fd, u64 offset);
    void writetoPersistantStorage(int fd, u64 offset);
+   // Writes only the 4 KiB block that holds the chain head of the RU epoch.
+   void writeChainHeadToPersistantStorage(int fd, u64 offset, ru_epoch_t ru_epoch);
+
+  private:
+   static u64 chainHeadsOffset(u64 max_open_ru_epochs) {
+      return utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs * MAX_RUHS * sizeof(u32), sizeof(PID));
+   }
 };
 // -------------------------------------------------------------------------------------
 }  // namespace storage
