@@ -452,7 +452,8 @@ void BufferManager::writeAllBufferFramesCompressed()
             if (FLAGS_compression_zero_free_space) {
                reinterpret_cast<btree::BTreeNode*>(page.dt)->zeroFreeSpace();
             }
-            const PID new_pid = packer.add(page);
+            // The meta nodes (kept in memory) are stored uncompressed, recovery reads them without zstd.
+            const PID new_pid = packer.add(page, !bf.header.keep_in_memory);
             compressed_space->free(bf.header.pid);
             bf.header.pid = new_pid;
             bf.header.pid_changed = true;
@@ -775,6 +776,9 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    ensure(meta_swip.isEVICTED());
    ensure(!meta_swip.isDIRTY());
    PID meta_pid = meta_swip.asPageID();
+   if (FLAGS_compress_pages && cpid::length(meta_pid) != PAGE_SIZE) {
+      SetupFailed("The meta node of this database is compressed, it was loaded by an older build, please load it again");
+   }
    BufferFrame& bf = randomPartition().dram_free_list.tryPop(false);
    readPageSync(meta_pid, bf.page);
    if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);

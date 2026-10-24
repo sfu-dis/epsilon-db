@@ -22,7 +22,7 @@ This is the artifact for the paper:
 Required dependencies:
 
 ```sh
-apt install cmake build-essential nvme-cli libaio-dev liburing-dev libnvme-dev libtbb2-dev
+apt install cmake build-essential nvme-cli liburing-dev libnvme-dev libtbb2-dev
 ```
 
 Build:
@@ -39,16 +39,17 @@ After building, from inside the `scripts/` directory, run the following command 
 
 ### YCSB
 ```bash
-sudo BUILD_DIR="../build" bash run.sh --device /dev/nvme2n1 --log_device /dev/nvme0n1 --benchmark ycsb --database_size 410 --distribution uniform --trim --run_for_hours 5 --worker_threads 64  --buffer_pool_gib 40
+BUILD_DIR="../build" bash run.sh --device /dev/nvme2n1 --log_device /dev/nvme0n1 --benchmark ycsb --database_size 410 --distribution uniform --trim --run_for_hours 5 --worker_threads 64  --buffer_pool_gib 40
 ```
 
 ### TPC-C
 
 ```bash
- sudo BUILD_DIR="../build" bash run.sh --device /dev/nvme2n1 --log_device /dev/nvme0n1 --benchmark tpcc --tpcc_warehouse_count 3800 --trim --run_for_hours 5 --bg_page_fixer_threads 4 --threshold 0.7
+ BUILD_DIR="../build" bash run.sh --device /dev/nvme2n1 --log_device /dev/nvme0n1 --benchmark tpcc --tpcc_warehouse_count 3800 --trim --run_for_hours 5 --bg_page_fixer_threads 4 --threshold 0.7
  ```
 
 For running the Baseline add `--vanilla` to the above commands (you can remove *epsilonDB* specific flags).
+More examples can be found under the `scripts/`
 
 #### Mandatory flags
 
@@ -65,6 +66,23 @@ For running the Baseline add `--vanilla` to the above commands (you can remove *
 `--noppl` You can use this flag to turn off the PPL optimisation.
 
 `--max_log_records_to_discard` If you turn off PPL, this flag enables you to set the maximum number of log records to discard. Valid numbers are between (0-7), where 0 falls back to the baseline (no discarding).
+
+#### FDP Support
+
+epsilonDB implents Flexible Data Placement Support through a lightweight library libfdp implemened by us.
+
+`--enable_fdp` This requires to run the binary with root. This is because I/O is issued using NVMe Passthrough which requires root privilage from kernel versiom 6.2.
+
+`--fdp_placement` Different placement policies are defined under `backend/leanstore/storage/fdp/placement-policies`. The one used in the paper is `FrozenRecords`.
+
+`--fdp_reformat` Besides `--trim` this reformats the FDP device. Together with  `--fdp_nruh` to specify the number of RUH. For example, `FrozenRecords` requires formatting the namespace with 3 RUHs (or 4 if the WAL is colocated on the same namespace).
+
+`--fdp_waf` Uses `nvme fdp stats` to calculate the WAF instead of OCP.
+
+
+#### WAL on the same device
+
+`--wal_`
 
 ## License
 This project is licensed under the [MIT License](LICENSE).

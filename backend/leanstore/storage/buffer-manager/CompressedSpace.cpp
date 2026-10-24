@@ -229,10 +229,15 @@ BlockPacker::BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks)
    ensure(reinterpret_cast<u64>(blocks) % 512 == 0);
 }
 // -------------------------------------------------------------------------------------
-PID BlockPacker::add(const u8* page)
+PID BlockPacker::add(const u8* page, bool compress)
 {
    ensure(!sealed);
-   const u32 length = compression::compressPage(page, scratch.get());
+   u32 length = PAGE_SIZE;
+   if (compress) {
+      length = compression::compressPage(page, scratch.get());
+   } else {
+      std::memcpy(scratch.get(), page, PAGE_SIZE);
+   }
    u64 slot = blocks_count;
    for (u64 b_i = 0; b_i < blocks_count; b_i++) {
       if (used[b_i] + length <= PAGE_SIZE && (slot == blocks_count || used[b_i] > used[slot])) {

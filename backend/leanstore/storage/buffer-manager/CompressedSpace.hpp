@@ -118,7 +118,8 @@ class BlockPacker
    // blocks: max_blocks * PAGE_SIZE bytes, aligned for O_DIRECT.
    BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks);
    // Returns the new PID of the page. Pre: !full()
-   PID add(const u8* page);
+   // compress = false stores the page as is in a block of its own, for the special nodes (e.g. the meta nodes).
+   PID add(const u8* page, bool compress = true);
    // There may be no room left for another page.
    bool full() const { return blocks_count >= max_blocks; }
    // Pre: the batch is sealed and written.
