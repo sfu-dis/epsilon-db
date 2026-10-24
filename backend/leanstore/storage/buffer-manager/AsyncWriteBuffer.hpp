@@ -59,7 +59,7 @@ class AsyncWriteBuffer
    AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size);
    // Caller takes care of sync
    bool full();
-   // Returns the PID the page is written to, a new one with FLAGS_compress_pages.
+   // Returns the PID the page is written to, its new location (cpid) with FLAGS_compress_pages.
    PID add(BufferFrame& bf, PID pid);
    u64 submit();
    u64 pollEventsSync();

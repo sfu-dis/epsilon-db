@@ -299,7 +299,6 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
             } else {
                parent_handler.swip.evict(evicted_pid);
-               onEvictedPageSwip(bf, *parent_handler.parent_bf);
                if (FLAGS_enable_discarding) {
                   const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
                   discard_state[evicted_pid].getLocked();
@@ -357,7 +356,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             }
             // -------------------------------------------------------------------------------------
             // With compression, a page that has never been written has no location on the SSD yet.
-            if (cooled_bf->isDirty() || (FLAGS_compress_pages && !cpid::onSSD(cooled_bf_pid))) {
+            if (cooled_bf->isDirty() || (FLAGS_compress_pages && !cpid::onSSD(compressed_space->location(cooled_bf_pid)))) {
                std::optional<bool> page_in_live_ru_epoch;
                if (FLAGS_enable_discarding
                   && cooled_bf->isDiscardable()
@@ -422,12 +421,14 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      if (FLAGS_compress_pages && FLAGS_compression_zero_free_space) {
                         reinterpret_cast<btree::BTreeNode*>(page.dt)->zeroFreeSpace();
                      }
-                     const PID written_pid = async_write_buffer.add(*cooled_bf, cooled_bf_pid);
+                     const PID written_location = async_write_buffer.add(*cooled_bf, cooled_bf_pid);
                      if (FLAGS_compress_pages) {
-                        // Out-of-place write, the page is cached so nobody reads its previous copy anymore.
-                        compressed_space->free(cooled_bf_pid);
-                        header.pid = written_pid;
-                        header.pid_changed = true;
+                        // Out-of-place write (in place for an uncompressed page), the page is cached so nobody reads its
+                        // previous copy anymore.
+                        const PID previous = compressed_space->exchangeLocation(cooled_bf_pid, written_location);
+                        if (previous != written_location) {
+                           compressed_space->free(previous);
+                        }
                      }
                   }
                } else {
@@ -475,7 +476,9 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       written_bf.header.is_being_written_back = false;
                       if (FLAGS_compress_pages && written_bf.isFree()) {
                          // Deleted while being written back (see reclaimPage), nothing references this copy.
-                         compressed_space->free(written_bf.header.pid);
+                         const PID pid = written_bf.header.pid;
+                         compressed_space->free(compressed_space->exchangeLocation(pid, 0));
+                         recyclePID(pid, written_bf.page.ru_epoch, written_bf.page.ruh);
                          written_bf.reset();
                          reclaimed = true;
                       }

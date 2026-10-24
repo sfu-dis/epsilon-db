@@ -162,8 +162,15 @@ public:
    u32 max_open_ru_epochs;
    u32 max_pending_lsn = 0;
    u64 persistant_ru_state_offset;
-   // Every allocated PID is < max_pid, page max_pid - 1 is the last one before persistant_ru_state_offset.
+   // Number of database pages (4 KiB blocks), page max_pid - 1 is the last one before persistant_ru_state_offset.
    const PID max_pid;
+   // Every allocated PID is < pid_space. Same as max_pid, except with FLAGS_compress_pages where the PIDs are logical
+   // and may outnumber the blocks.
+   const PID pid_space;
+   // Exclusive upper bound of the PIDs allocated so far.
+   PID allocatedPIDsEnd();
+   // Gives a PID back to the partition it comes from.
+   void recyclePID(PID pid, ru_epoch_t ru_epoch, ruh_id_t ruh);
    PersistantRUState *persistant_ru_state;
    std::vector<RUEpochsState> ru_discard_set; // one per RUH
    // -------------------------------------------------------------------------------------
@@ -195,7 +202,7 @@ public:
    BufferFrame& resolveMetaSwip(Swip<BufferFrame>& meta_swip);
    BufferFrame& resolveSwip(Guard& swip_guard, Swip<BufferFrame>& swip_value);
    void evictLastPage();
-   // Called when every PID below max_pid is allocated, does not return.
+   // Called when every PID below pid_space is allocated, does not return.
    [[noreturn]] void outOfSpace();
    void reclaimPage(BufferFrame& bf);
    // -------------------------------------------------------------------------------------
@@ -209,9 +216,6 @@ public:
     */
    // -------------------------------------------------------------------------------------
    void readPageSync(PID pid, u8* destination);
-   // FLAGS_compress_pages : the parent of an evicted page must be written again if it does not hold the latest PID.
-   // Pre: parent_bf is exclusively latched
-   static void onEvictedPageSwip(BufferFrame& bf, BufferFrame& parent_bf);
    // Accounts device writes for the RU epochs, called by the writers.
    void countWrittenBlocks(ruh_id_t ruh, u64 n);
    void readPageAsync(PID pid, u8* destination, std::function<void()> callback);

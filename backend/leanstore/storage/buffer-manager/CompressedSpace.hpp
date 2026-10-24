@@ -11,19 +11,20 @@
 // Experimental page compression (--compress_pages), in the spirit of ZLeanStore.
 // Pages are compressed upon write back and packed out-of-place into 4 KiB blocks, a compressed page never
 // straddles two blocks so that a buffer miss is still a single 4 KiB read.
-// Every write back gets a new PID and frees the previous one, the parent learns the new PID when the page
-// gets evicted, which makes the parent dirty. There is no crash recovery, only a clean shutdown is persisted.
+// The PIDs are logical, the page map gives the location (cpid) of each page on the SSD. Every write back of a
+// compressed page goes to a new location and frees the previous one, the uncompressed pages (inner and meta nodes)
+// are rewritten in place. There is no crash recovery, only a clean shutdown is persisted.
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
 namespace storage
 {
 // -------------------------------------------------------------------------------------
-// PID of a compressed page on the SSD:
-//   [63..61] swip status bits, always 0 in a PID
+// Location (cpid) of a page on the SSD, as stored in the page map:
+//   [63..61] always 0
 //   [60..48] compressed length in (0, PAGE_SIZE], PAGE_SIZE means the page is stored uncompressed
 //   [47..0]  byte address on ssd_fd
-// A page that has never been written has length 0, its PID is then the logical id given by allocatePage.
+// 0 (length 0) means the page has never been written.
 namespace cpid
 {
 constexpr u64 ADDRESS_BITS = 48;
@@ -74,7 +75,24 @@ u8* threadLocalBlockBuffer();
 class CompressedSpace
 {
   public:
-   CompressedSpace(u64 blocks_count, u32 writers_count);
+   // The logical pages may outnumber the physical blocks, we assume a compression ratio of up to 2.
+   static constexpr u64 LOGICAL_PAGES_FACTOR = 2;
+   CompressedSpace(u64 blocks_count, u64 logical_pages, u32 writers_count);
+   ~CompressedSpace();
+   // -------------------------------------------------------------------------------------
+   // Page map: logical PID -> cpid, 0 if the page has never been written.
+   PID location(PID pid) const
+   {
+      ensure(pid < logical_pages);
+      return page_map[pid].load(std::memory_order_acquire);
+   }
+   // Returns the previous location, the caller frees it (unless the page got rewritten in place).
+   PID exchangeLocation(PID pid, PID location)
+   {
+      ensure(pid < logical_pages);
+      return page_map[pid].exchange(location, std::memory_order_acq_rel);
+   }
+   // -------------------------------------------------------------------------------------
    // Pre: called by a writer (tls_writer_thread_id != -1).
    u64 allocateBlock();
    // Called by the writer once it is done packing pages into the block, before writing it.
@@ -82,7 +100,8 @@ class CompressedSpace
    // Frees the copy of a page that got rewritten elsewhere or deleted, no-op if the page is not on the SSD.
    void free(PID pid);
    // -------------------------------------------------------------------------------------
-   void persist(const std::string& path);
+   // Persists the page map of the PIDs [0, pids_end) and the bump pointer, the live bytes are recomputed on recovery.
+   void persist(const std::string& path, PID pids_end);
    void recover(const std::string& path);
    // -------------------------------------------------------------------------------------
    // Stats, written blocks are counted by the writers.
@@ -100,7 +119,10 @@ class CompressedSpace
       std::vector<u64> blocks;
    };
    const u64 blocks_count;
+   const u64 logical_pages;
    const u32 writers_count;
+   // mmap'ed without prefaulting, the pages of the map get backed on first touch.
+   std::atomic<u64>* page_map;
    std::unique_ptr<std::atomic<s32>[]> live_bytes;
    // Life cycle of a block, checked on every transition to catch a double free before it corrupts data:
    // FREE -allocateBlock-> OPEN (being packed) -sealBlock-> SEALED -last free-> FREE
@@ -122,9 +144,10 @@ class BlockPacker
   public:
    // blocks: max_blocks * PAGE_SIZE bytes, aligned for O_DIRECT.
    BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks);
-   // Returns the new PID of the page. Pre: !full()
-   // compress = false stores the page as is in a block of its own, for the special nodes (e.g. the meta nodes).
-   PID add(const u8* page, bool compress = true);
+   // Returns the new location of the page. Pre: !full()
+   // compress = false stores the page as is in a block of its own, for the special nodes (inner and meta nodes).
+   // Such a page is rewritten in place when its current location is already an uncompressed block.
+   PID add(const u8* page, bool compress, PID current_location);
    // There may be no room left for another page.
    bool full() const { return blocks_count >= max_blocks; }
    // Pre: the batch is sealed and written.
@@ -144,6 +167,8 @@ class BlockPacker
    bool sealed = false;
    std::vector<u64> block_ids;
    std::vector<u32> used;
+   // The block is rewritten in place, it is already sealed.
+   std::vector<bool> in_place;
    std::unique_ptr<u8[]> scratch;
 };
 // -------------------------------------------------------------------------------------

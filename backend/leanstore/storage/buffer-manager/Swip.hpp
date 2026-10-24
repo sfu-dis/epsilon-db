@@ -68,13 +68,7 @@ class Swip
    bool isEVICTED() { return pid & evicted_bit; }
    bool isDIRTY() { return pid & dirty_bit; }
    // -------------------------------------------------------------------------------------
-   u64 asPageID() {
-      if (FLAGS_compress_pages) {
-         // The whole PID is a byte address with the compressed length, see CompressedSpace.hpp
-         return pid & evicted_mask;
-      }
-      return pid2.page_id;
-   }
+   u64 asPageID() { return pid2.page_id; }
    BufferFrame& asBufferFrame() { return *bf; }
    BufferFrame& asBufferFrameMasked() { return *reinterpret_cast<BufferFrame*>(pid & hot_mask); }
    u64 raw() const { return pid; }
@@ -84,7 +78,7 @@ class Swip
    }
    u8 pendingLSNCount()
    {
-      if (!isEVICTED() || FLAGS_compress_pages) {
+      if (!isEVICTED()) {
          return 0;
       }
       return (pid2.meta & pending_lsn_count_mask) >> pending_lsn_count_shift;
@@ -107,11 +101,6 @@ class Swip
    // -------------------------------------------------------------------------------------
    void evict(PID pid)
    {
-      if (FLAGS_compress_pages) {
-         ensure_equal((pid & (~hot_mask | dirty_bit)), 0);
-         this->pid = pid | evicted_bit;
-         return;
-      }
       ensure_equal((pid & ~(0xFFFFFFFF)), 0);
       this->pid2.page_id = pid;
       this->pid2.meta = 0x80000000;

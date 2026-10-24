@@ -64,17 +64,17 @@ PID AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
    if (packer) {
-      // The magic debugging number keeps the logical id of the page, the PID is not known before compressing it.
+      ensure_equal(bf.page.magic_debugging_number, pid);
       ++bf.page.write_back_count;
-      // Only the leaves are compressed, the inner nodes are pinned (see --btree_pin_inner_nodes).
-      pid = packer->add(bf.page, !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->is_leaf);
-      write_buffer_commands[slot].pid = pid;
+      // Only the leaves are compressed, the inner nodes are pinned (see --btree_pin_inner_nodes) and rewritten in place.
+      const bool compress = !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->is_leaf;
+      const PID location = packer->add(bf.page, compress, BMC::global_bf->compressed_space->location(pid));
       write_buffer_commands[slot].plsn = bf.page.PLSN;
       write_buffer_commands[slot].ru_epoch = bf.page.ru_epoch;
       if (FLAGS_io_trace) {
          tracing.buffer.push_back({__rdtsc(), pid, bf.page.dt_id});
       }
-      return pid;
+      return location;
    }
    if (bf.page.ru_epoch == UNMAPPED_RU_EPOCH) {
       ensure(bf.header.not_yet_persisted);

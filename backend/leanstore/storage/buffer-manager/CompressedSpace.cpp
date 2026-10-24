@@ -7,6 +7,8 @@
 #include <zstd.h>
 #include <zstd_errors.h>
 // -------------------------------------------------------------------------------------
+#include <sys/mman.h>
+
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -89,8 +91,9 @@ u8* threadLocalBlockBuffer()
 }
 }  // namespace compression
 // -------------------------------------------------------------------------------------
-CompressedSpace::CompressedSpace(u64 blocks_count, u32 writers_count)
+CompressedSpace::CompressedSpace(u64 blocks_count, u64 logical_pages, u32 writers_count)
     : blocks_count(blocks_count),
+      logical_pages(logical_pages),
       writers_count(writers_count),
       live_bytes(std::make_unique<std::atomic<s32>[]>(blocks_count)),
       block_states(std::make_unique<std::atomic<u8>[]>(blocks_count)),
@@ -100,6 +103,18 @@ CompressedSpace::CompressedSpace(u64 blocks_count, u32 writers_count)
       live_bytes[b].store(0, std::memory_order_relaxed);
       block_states[b].store(FREE, std::memory_order_relaxed);
    }
+   // Anonymous memory reads as 0 (never written) until it is touched.
+   void* map = mmap(nullptr, logical_pages * sizeof(std::atomic<u64>), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+   if (map == MAP_FAILED) {
+      perror("mmap");
+      SetupFailed("Could not reserve the page map of the compressed pages");
+   }
+   page_map = static_cast<std::atomic<u64>*>(map);
+}
+// -------------------------------------------------------------------------------------
+CompressedSpace::~CompressedSpace()
+{
+   munmap(page_map, logical_pages * sizeof(std::atomic<u64>));
 }
 // -------------------------------------------------------------------------------------
 void CompressedSpace::transition(u64 block, BlockState from, BlockState to)
@@ -198,22 +213,19 @@ u64 CompressedSpace::usedBlocks()
 // -------------------------------------------------------------------------------------
 namespace
 {
-constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0001;
+// 0002: the page map replaced the live bytes, the PIDs are logical.
+constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0002;
 }
-// Format: magic, blocks_count, next_unused_block, live_bytes[0, next_unused_block)
-void CompressedSpace::persist(const std::string& path)
+// Format: magic, blocks_count, logical_pages, next_unused_block, pids_end, page_map[0, pids_end)
+void CompressedSpace::persist(const std::string& path, PID pids_end)
 {
+   ensure(pids_end <= logical_pages);
    std::ofstream file(path, std::ios::binary | std::ios::trunc);
    ensure(file.is_open());
-   const u64 next = std::min(next_unused_block.load(), blocks_count);
-   const u64 header[3] = {SPACE_MAP_MAGIC, blocks_count, next};
+   const u64 header[5] = {SPACE_MAP_MAGIC, blocks_count, logical_pages, std::min(next_unused_block.load(), blocks_count), pids_end};
    file.write(reinterpret_cast<const char*>(header), sizeof(header));
-   std::vector<s32> live(next);
-   for (u64 b = 0; b < next; b++) {
-      live[b] = live_bytes[b].load();
-      ensure(live[b] >= 0 && live[b] <= static_cast<s32>(PAGE_SIZE));
-   }
-   file.write(reinterpret_cast<const char*>(live.data()), live.size() * sizeof(s32));
+   static_assert(sizeof(std::atomic<u64>) == sizeof(u64));
+   file.write(reinterpret_cast<const char*>(page_map), pids_end * sizeof(u64));
    ensure(file.good());
 }
 // -------------------------------------------------------------------------------------
@@ -223,22 +235,37 @@ void CompressedSpace::recover(const std::string& path)
    if (!file.is_open()) {
       SetupFailed("Could not open the compression space map " + path + ", was the database loaded with --compress_pages ?");
    }
-   u64 header[3];
+   u64 header[5];
    file.read(reinterpret_cast<char*>(header), sizeof(header));
    ensure(file.good());
-   ensure_equal(header[0], SPACE_MAP_MAGIC);
-   if (header[1] != blocks_count) {
+   if (header[0] != SPACE_MAP_MAGIC) {
+      SetupFailed("The compression space map " + path + " was written by an older build, please load the database again");
+   }
+   if (header[1] != blocks_count || header[2] != logical_pages) {
       SetupFailed("The compression space map was written for a database of a different size");
    }
-   const u64 next = header[2];
-   std::vector<s32> live(next);
-   file.read(reinterpret_cast<char*>(live.data()), live.size() * sizeof(s32));
+   const u64 next = header[3];
+   const PID pids_end = header[4];
+   ensure(next <= blocks_count && pids_end <= logical_pages);
+   file.read(reinterpret_cast<char*>(page_map), pids_end * sizeof(u64));
    ensure(file.good());
+   // The live bytes of a block are the lengths of the pages it holds.
+   for (PID pid = 0; pid < pids_end; pid++) {
+      const PID loc = page_map[pid].load(std::memory_order_relaxed);
+      if (!cpid::onSSD(loc)) {
+         continue;
+      }
+      const u64 block = cpid::block(loc);
+      ensure(block < next);
+      ensure(cpid::offsetInBlock(loc) + cpid::length(loc) <= PAGE_SIZE);
+      const s32 live = live_bytes[block].fetch_add(cpid::length(loc), std::memory_order_relaxed) + cpid::length(loc);
+      ensure(live <= static_cast<s32>(PAGE_SIZE));
+   }
    std::unique_lock guard(shared_free_list.mutex);
    for (u64 b = 0; b < next; b++) {
-      live_bytes[b].store(live[b]);
-      block_states[b].store(live[b] == 0 ? FREE : SEALED);
-      if (live[b] == 0) {
+      const bool free = live_bytes[b].load(std::memory_order_relaxed) == 0;
+      block_states[b].store(free ? FREE : SEALED);
+      if (free) {
          shared_free_list.blocks.push_back(b);
       }
    }
@@ -252,15 +279,28 @@ BlockPacker::BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks)
       max_blocks(max_blocks),
       block_ids(max_blocks),
       used(max_blocks),
+      in_place(max_blocks),
       scratch(std::make_unique<u8[]>(PAGE_SIZE))
 {
    ensure(max_blocks > 0);
    ensure(reinterpret_cast<u64>(blocks) % 512 == 0);
 }
 // -------------------------------------------------------------------------------------
-PID BlockPacker::add(const u8* page, bool compress)
+PID BlockPacker::add(const u8* page, bool compress, PID current_location)
 {
    ensure(!sealed);
+   if (!compress && cpid::length(current_location) == PAGE_SIZE) {
+      // Uncompressed pages own their block, rewrite it in place.
+      ensure(!full());
+      const u64 slot = blocks_count++;
+      block_ids[slot] = cpid::block(current_location);
+      used[slot] = PAGE_SIZE;
+      in_place[slot] = true;
+      std::memcpy(block(slot), page, PAGE_SIZE);
+      space.written_pages.fetch_add(1, std::memory_order_relaxed);
+      space.written_compressed_bytes.fetch_add(PAGE_SIZE, std::memory_order_relaxed);
+      return current_location;
+   }
    u32 length = PAGE_SIZE;
    if (compress) {
       length = compression::compressPage(page, scratch.get());
@@ -277,6 +317,7 @@ PID BlockPacker::add(const u8* page, bool compress)
       ensure(!full());
       block_ids[slot] = space.allocateBlock();
       used[slot] = 0;
+      in_place[slot] = false;
       blocks_count++;
    }
    std::memcpy(block(slot) + used[slot], scratch.get(), length);
@@ -295,7 +336,9 @@ void BlockPacker::seal()
    for (u64 b_i = 0; b_i < blocks_count; b_i++) {
       // Keep the tail of the block deterministic.
       std::memset(block(b_i) + used[b_i], 0, PAGE_SIZE - used[b_i]);
-      space.sealBlock(block_ids[b_i], used[b_i]);
+      if (!in_place[b_i]) {
+         space.sealBlock(block_ids[b_i], used[b_i]);
+      }
    }
    sealed = true;
 }
