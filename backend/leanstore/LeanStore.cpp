@@ -520,6 +520,8 @@ void LeanStore::verifyFlags()
       if (FLAGS_fdp_placement_policy != "Default") {
          SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");
       }
+      // For simplicity, the inner nodes stay in memory and are stored uncompressed (only written by the shutdown flush).
+      FLAGS_btree_pin_inner_nodes = true;
    }
    if (FLAGS_log_fake_wrap_around && FLAGS_enable_discarding) {
       SetupFailed("log_fake_wrap_around is only supported when discarding is disabled");

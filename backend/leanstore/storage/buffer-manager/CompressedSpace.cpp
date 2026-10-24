@@ -93,10 +93,22 @@ CompressedSpace::CompressedSpace(u64 blocks_count, u32 writers_count)
     : blocks_count(blocks_count),
       writers_count(writers_count),
       live_bytes(std::make_unique<std::atomic<s32>[]>(blocks_count)),
+      block_states(std::make_unique<std::atomic<u8>[]>(blocks_count)),
       writer_free_lists(std::make_unique<BlockFreeList[]>(writers_count))
 {
    for (u64 b = 0; b < blocks_count; b++) {
       live_bytes[b].store(0, std::memory_order_relaxed);
+      block_states[b].store(FREE, std::memory_order_relaxed);
+   }
+}
+// -------------------------------------------------------------------------------------
+void CompressedSpace::transition(u64 block, BlockState from, BlockState to)
+{
+   u8 expected = from;
+   if (!block_states[block].compare_exchange_strong(expected, to)) {
+      std::cerr << "[FATAL] Compressed block " << block << " is in state " << int(expected) << " instead of " << int(from)
+                << " (0 free, 1 open, 2 sealed), live bytes " << live_bytes[block].load() << std::endl;
+      ensure(false);
    }
 }
 // -------------------------------------------------------------------------------------
@@ -117,7 +129,8 @@ u64 CompressedSpace::allocateBlock()
          const u64 block = mine.blocks.back();
          mine.blocks.pop_back();
          free_blocks.fetch_sub(1, std::memory_order_relaxed);
-         paranoid(live_bytes[block].load() == 0);
+         ensure_equal(live_bytes[block].load(), 0);
+         transition(block, FREE, OPEN);
          return block;
       }
    }
@@ -129,16 +142,19 @@ u64 CompressedSpace::allocateBlock()
                 << written_compressed_bytes.load() << " compressed bytes)" << std::endl;
       BMC::global_bf->outOfSpace();
    }
+   ensure_equal(live_bytes[block].load(), 0);
+   transition(block, FREE, OPEN);
    return block;
 }
 // -------------------------------------------------------------------------------------
 void CompressedSpace::sealBlock(u64 block, u32 packed_bytes)
 {
    ensure(block < blocks_count);
-   // A page packed into this block may already have been deleted, which made the counter negative.
-   if (live_bytes[block].fetch_add(packed_bytes) + static_cast<s32>(packed_bytes) == 0) {
-      releaseBlock(block);
-   }
+   ensure(packed_bytes > 0 && packed_bytes <= PAGE_SIZE);
+   // No page of an open block can be freed: a page that is being written back is not freed when deleted.
+   ensure_equal(live_bytes[block].load(), 0);
+   transition(block, OPEN, SEALED);
+   live_bytes[block].store(packed_bytes);
 }
 // -------------------------------------------------------------------------------------
 void CompressedSpace::free(PID pid)
@@ -150,13 +166,25 @@ void CompressedSpace::free(PID pid)
    const s32 length = cpid::length(pid);
    ensure(block < blocks_count);
    ensure(cpid::offsetInBlock(pid) + length <= PAGE_SIZE);
-   if (live_bytes[block].fetch_sub(length) == length) {
+   if (block_states[block].load() != SEALED) {
+      std::cerr << "[FATAL] Freeing the page " << pid << " of the compressed block " << block << " in state "
+                << int(block_states[block].load()) << ", double free ?" << std::endl;
+      ensure(false);
+   }
+   const s32 left = live_bytes[block].fetch_sub(length) - length;
+   if (left < 0) {
+      std::cerr << "[FATAL] Freeing the page " << pid << " made the live bytes of block " << block << " negative (" << left
+                << "), double free ?" << std::endl;
+      ensure(false);
+   }
+   if (left == 0) {
       releaseBlock(block);
    }
 }
 // -------------------------------------------------------------------------------------
 void CompressedSpace::releaseBlock(u64 block)
 {
+   transition(block, SEALED, FREE);
    auto& list = (tls_writer_thread_id >= 0) ? writer_free_lists[tls_writer_thread_id] : shared_free_list;
    std::unique_lock guard(list.mutex);
    list.blocks.push_back(block);
@@ -209,6 +237,7 @@ void CompressedSpace::recover(const std::string& path)
    std::unique_lock guard(shared_free_list.mutex);
    for (u64 b = 0; b < next; b++) {
       live_bytes[b].store(live[b]);
+      block_states[b].store(live[b] == 0 ? FREE : SEALED);
       if (live[b] == 0) {
          shared_free_list.blocks.push_back(b);
       }

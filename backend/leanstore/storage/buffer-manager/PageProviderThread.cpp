@@ -462,6 +462,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
 
          async_write_buffer.getWrittenBfs(
              [&](BufferFrame& written_bf, u64 written_plsn, ru_epoch_t written_ru_epoch) {
+                bool reclaimed = false;
                 while (true) {
                    jumpmuTry()
                    {
@@ -472,9 +473,19 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                       ensure_lte(written_bf.header.last_written_plsn, written_plsn);
                       // -------------------------------------------------------------------------------------
                       written_bf.header.is_being_written_back = false;
+                      if (FLAGS_compress_pages && written_bf.isFree()) {
+                         // Deleted while being written back (see reclaimPage), nothing references this copy.
+                         compressed_space->free(written_bf.header.pid);
+                         written_bf.reset();
+                         reclaimed = true;
+                      }
                       jumpmu_break;
                    }
                    jumpmuCatch() { return false; }
+                }
+                if (reclaimed) {
+                   freed_bfs_batch.add(written_bf);
+                   return true;
                 }
                 // -------------------------------------------------------------------------------------
                 {

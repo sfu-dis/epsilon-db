@@ -102,6 +102,11 @@ class CompressedSpace
    const u64 blocks_count;
    const u32 writers_count;
    std::unique_ptr<std::atomic<s32>[]> live_bytes;
+   // Life cycle of a block, checked on every transition to catch a double free before it corrupts data:
+   // FREE -allocateBlock-> OPEN (being packed) -sealBlock-> SEALED -last free-> FREE
+   enum BlockState : u8 { FREE = 0, OPEN = 1, SEALED = 2 };
+   std::unique_ptr<std::atomic<u8>[]> block_states;
+   void transition(u64 block, BlockState from, BlockState to);
    // Blocks above have never been used.
    std::atomic<u64> next_unused_block = 0;
    std::atomic<u64> free_blocks = 0;

@@ -453,7 +453,9 @@ void BufferManager::writeAllBufferFramesCompressed()
                reinterpret_cast<btree::BTreeNode*>(page.dt)->zeroFreeSpace();
             }
             // The meta nodes (kept in memory) are stored uncompressed, recovery reads them without zstd.
-            const PID new_pid = packer.add(page, !bf.header.keep_in_memory);
+            // The inner nodes (pinned) too, only the leaves are compressed.
+            const bool compress = !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf;
+            const PID new_pid = packer.add(page, compress);
             compressed_space->free(bf.header.pid);
             bf.header.pid = new_pid;
             bf.header.pid_changed = true;
@@ -466,6 +468,26 @@ void BufferManager::writeAllBufferFramesCompressed()
          written += local_written;
       });
       written_frames += written;
+   }
+   // Recovery starts from the meta nodes, read them back.
+   {
+      BufferFrame::Page check;
+      u64 meta_nodes = 0;
+      for (u64 bf_i = 0; bf_i < dram_pool_size; bf_i++) {
+         auto& bf = bfs[bf_i];
+         if (bf.isFree() || !bf.header.keep_in_memory) {
+            continue;
+         }
+         ensure_equal(cpid::length(bf.header.pid), PAGE_SIZE);
+         readPageSync(bf.header.pid, check);
+         if (check.dt_id != bf.page.dt_id || check.PLSN != bf.page.PLSN) {
+            std::cerr << "[FATAL] The meta node of dt " << bf.page.dt_id << " read back from " << cpid::address(bf.header.pid)
+                      << " holds dt " << check.dt_id << " PLSN " << check.PLSN << " instead of PLSN " << bf.page.PLSN << std::endl;
+            ensure(false);
+         }
+         meta_nodes++;
+      }
+      LOG_INFO(logger, "Read back %lu meta nodes after the compressed shutdown flush", meta_nodes);
    }
    compressed_space->persist(FLAGS_compression_space_map_file);
    LOG_INFO(logger, "Compressed shutdown flush: %lu frames written in %lu rounds, %lu blocks in use. Persisted the space map to %s",
@@ -748,9 +770,11 @@ void BufferManager::reclaimPage(BufferFrame& bf)
       if (FLAGS_recycle_pages) {
          partitions[logical_pid & partitions_mask]->freePage(logical_pid, bf.page.ru_epoch, bf.page.ruh);
       }
-      // A block must not be reused while a write to it is in flight, so the space of a page that is
-      // being written back is leaked.
-      if (!bf.header.is_being_written_back) {
+      if (bf.header.is_being_written_back) {
+         // A block must not be reused while a write to it is in flight. The frame is marked free, so that it
+         // leaves the tree for good, and the page provider frees its copy and the frame once the write completed.
+         bf.header.state = BufferFrame::STATE::FREE;
+      } else {
          compressed_space->free(bf.header.pid);
       }
    } else if (FLAGS_recycle_pages) {

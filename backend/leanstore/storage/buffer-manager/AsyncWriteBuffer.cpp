@@ -4,6 +4,7 @@
 
 #include "Exceptions.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
+#include "leanstore/storage/btree/core/BTreeNode.hpp"
 #include "leanstore/storage/NvmeDevice.hpp"
 // -------------------------------------------------------------------------------------
 #include "gflags/gflags.h"
@@ -65,7 +66,8 @@ PID AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    if (packer) {
       // The magic debugging number keeps the logical id of the page, the PID is not known before compressing it.
       ++bf.page.write_back_count;
-      pid = packer->add(bf.page);
+      // Only the leaves are compressed, the inner nodes are pinned (see --btree_pin_inner_nodes).
+      pid = packer->add(bf.page, !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->is_leaf);
       write_buffer_commands[slot].pid = pid;
       write_buffer_commands[slot].plsn = bf.page.PLSN;
       write_buffer_commands[slot].ru_epoch = bf.page.ru_epoch;
