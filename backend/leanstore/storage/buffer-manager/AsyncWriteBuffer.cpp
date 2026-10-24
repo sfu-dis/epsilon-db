@@ -1,5 +1,7 @@
 #include "AsyncWriteBuffer.hpp"
 
+#include "BufferManager.hpp"
+
 #include "Exceptions.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
 #include "leanstore/storage/NvmeDevice.hpp"
@@ -31,6 +33,10 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
    }
    rc = io_uring_register_files(&ring, &fd, 1);
    ensure_equal(rc, 0);
+   if (FLAGS_compress_pages) {
+      // A block holds at least one page, so batch_max_size blocks are enough.
+      packer = std::make_unique<BlockPacker>(*BMC::global_bf->compressed_space, reinterpret_cast<u8*>(write_buffer.get()), batch_max_size);
+   }
    // TODO(mfd) : consider registering the write buffer arrray.
 }
 // -------------------------------------------------------------------------------------
@@ -43,7 +49,7 @@ bool AsyncWriteBuffer::full()
    }
 }
 // -------------------------------------------------------------------------------------
-void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
+PID AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
 {
    assert(!full());
    assert(u64(&bf.page) % 512 == 0);
@@ -56,6 +62,18 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
    auto slot = pending_requests++;
    write_buffer_commands[slot].bf = &bf;
    write_buffer_commands[slot].pid = pid;
+   if (packer) {
+      // The magic debugging number keeps the logical id of the page, the PID is not known before compressing it.
+      ++bf.page.write_back_count;
+      pid = packer->add(bf.page);
+      write_buffer_commands[slot].pid = pid;
+      write_buffer_commands[slot].plsn = bf.page.PLSN;
+      write_buffer_commands[slot].ru_epoch = bf.page.ru_epoch;
+      if (FLAGS_io_trace) {
+         tracing.buffer.push_back({__rdtsc(), pid, bf.page.dt_id});
+      }
+      return pid;
+   }
    if (bf.page.ru_epoch == UNMAPPED_RU_EPOCH) {
       ensure(bf.header.not_yet_persisted);
       bf.page.magic_debugging_number = pid;
@@ -78,10 +96,27 @@ void AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
       // TODO(mfd) : Use RU epochs instead of rdtsc
       tracing.buffer.push_back({__rdtsc(), pid, bf.page.dt_id});
    }
+   return pid;
 }
 // -------------------------------------------------------------------------------------
 u64 AsyncWriteBuffer::submit()
 {
+   if (pending_requests > 0 && packer) {
+      packer->seal();
+      const u64 blocks = packer->blocksCount();
+      for (u64 b_i = 0; b_i < blocks; b_i++) {
+         struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+         ensure(sqe != nullptr);
+         nvme_io_uring_prep_write(sqe, fd, packer->block(b_i), PAGE_SIZE, packer->blockOffset(b_i), DEFAULT_RUH);
+         io_uring_sqe_set_data(sqe, packer->block(b_i));
+      }
+      submitted_commands = pending_requests;
+      submitted_blocks = blocks;
+      BMC::global_bf->countWrittenBlocks(DEFAULT_RUH, blocks);
+      int ret_code = io_uring_submit(&ring);
+      ensure(ret_code == s32(blocks));
+      return pending_requests;
+   }
    if (pending_requests > 0) {
       int ret_code = io_uring_submit(&ring);
       ensure(ret_code == s32(pending_requests));
@@ -98,8 +133,9 @@ u64 AsyncWriteBuffer::pollEventsSync()
 {
    u64 ret = 0;
    if (pending_requests > 0) {
-      ret = pending_requests;
-      const int rc = io_uring_wait_cqe_nr(&ring, events.get(), pending_requests);
+      // With compression, the completions are per block.
+      ret = packer ? submitted_blocks : pending_requests;
+      const int rc = io_uring_wait_cqe_nr(&ring, events.get(), ret);
       if (rc != 0) {
          cerr << rc << endl;
          raise(SIGTRAP);
@@ -117,6 +153,41 @@ void AsyncWriteBuffer::getWrittenBfs(std::function<bool(BufferFrame&, LID, ru_ep
    unsigned head;
    u64 i = 0;
    std::vector<u64> retry_slots;
+   if (packer) {
+      // A page may land in any block of the batch, the pages are acknowledged once all the blocks are written.
+      io_uring_for_each_cqe(&ring, head, cqe)
+      {
+         ensure_lt(packer->slotOf(io_uring_cqe_get_data(cqe)), submitted_blocks);
+         if (FLAGS_enable_fdp) {
+            ensure_equal(cqe->res, 0);
+         } else {
+            ensure_equal(cqe->res, static_cast<s32>(PAGE_SIZE));
+         }
+         ++i;
+      }
+      ensure_equal(i, n_events);
+      ensure_equal(i, submitted_blocks);
+      io_uring_cq_advance(&ring, n_events);
+      // retry_slots holds commands here.
+      for (u64 c_i = 0; c_i < submitted_commands; c_i++) {
+         auto& command = write_buffer_commands[c_i];
+         if (!callback(*command.bf, command.plsn, command.ru_epoch)) {
+            retry_slots.push_back(c_i);
+         }
+      }
+      while (!retry_slots.empty()) {
+         std::vector<u64> next;
+         for (const auto& c_i : retry_slots) {
+            auto& command = write_buffer_commands[c_i];
+            if (!callback(*command.bf, command.plsn, command.ru_epoch)) {
+               next.push_back(c_i);
+            }
+         }
+         retry_slots = next;
+      }
+      packer->reset();
+      return;
+   }
    io_uring_for_each_cqe(&ring, head, cqe)
    {
       const auto slot = (u64(io_uring_cqe_get_data(cqe)) - u64(write_buffer.get())) / page_size;

@@ -513,6 +513,14 @@ void LeanStore::verifyFlags()
          FLAGS_discard_lsns_in_parent = false;
       }
    }
+   if (FLAGS_compress_pages) {
+      if (FLAGS_enable_discarding) {
+         SetupFailed("compress_pages is not supported with discarding");
+      }
+      if (FLAGS_fdp_placement_policy != "Default") {
+         SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");
+      }
+   }
    if (FLAGS_log_fake_wrap_around && FLAGS_enable_discarding) {
       SetupFailed("log_fake_wrap_around is only supported when discarding is disabled");
    }

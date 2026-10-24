@@ -77,6 +77,9 @@ struct BufferFrame {
       // If the page is clean (copy on SSD is up-to-date) this means that if this page is clean evicted
       // the the parent should become dirty.
       bool loaded_from_dirty_swip = false;
+      // --compress_pages : the page got a new PID by its last write back that its parent does not hold
+      // on the SSD yet. The parent becomes dirty when the page gets evicted.
+      bool pid_changed = false;
       // Any page is by default discardable unless :
       // 1. It is an inner node. (Simplicity)
       // 2. It has been splitted. (Simplicity)
@@ -127,6 +130,7 @@ struct BufferFrame {
          pending_lsn_count = 0;
          discard_count = 0;
          loaded_from_dirty_swip = false;
+         pid_changed = false;
          undiscardable_cause = UNDISCARDABLE_CAUSE::NONE;
          will_flush_ppl = false;
          // std::memset(reinterpret_cast<u8*>(&page), 0, PAGE_SIZE);

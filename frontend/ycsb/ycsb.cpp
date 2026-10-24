@@ -26,12 +26,25 @@ DEFINE_uint32(ycsb_ops_per_tx, 1, "");
 DEFINE_bool(ycsb_worker_per_table, true, "Each worker is assigned a table to work on, This will turn off CC");
 DEFINE_bool(ycsb_profiler_thread, true, "");
 DEFINE_uint32(ycsb_dead_tuple_ratio, 0, "fraction of the database that is never accessed, value in range [0,100]");
+DEFINE_string(ycsb_payload, "random", "Payload content, to play with the page compression ratio: random, zero (all 0 bytes) or repeat (one random byte repeated)");
 // -------------------------------------------------------------------------------------
 using namespace leanstore;
 // -------------------------------------------------------------------------------------
 using YCSBKey = u64;
 using YCSBPayload = BytesPayload<8>;
 using KVTable = Relation<YCSBKey, YCSBPayload>;
+// -------------------------------------------------------------------------------------
+static void generatePayload(YCSBPayload& payload)
+{
+   static const std::string mode = FLAGS_ycsb_payload;
+   if (mode == "zero") {
+      std::memset(&payload, 0, sizeof(YCSBPayload));
+   } else if (mode == "repeat") {
+      std::memset(&payload, utils::RandomGenerator::getRandU64(0, 256), sizeof(YCSBPayload));
+   } else {
+      utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
+   }
+}
 // -------------------------------------------------------------------------------------
 double calculateMTPS(chrono::high_resolution_clock::time_point begin, chrono::high_resolution_clock::time_point end, u64 factor)
 {
@@ -43,6 +56,10 @@ int main(int argc, char** argv)
 {
    gflags::SetUsageMessage("Leanstore Frontend");
    gflags::ParseCommandLineFlags(&argc, &argv, true);
+   if (FLAGS_ycsb_payload != "random" && FLAGS_ycsb_payload != "zero" && FLAGS_ycsb_payload != "repeat") {
+      cerr << "--ycsb_payload must be random, zero or repeat" << endl;
+      return 1;
+   }
    // -------------------------------------------------------------------------------------
    if (FLAGS_validate_flags_and_exit) { return 0; }
    // -------------------------------------------------------------------------------------
@@ -155,7 +172,7 @@ int main(int argc, char** argv)
 				 crm.scheduleJobAsync(t_i, [&, t_i]() {
 					for (u64 i = 0; i < n; i++) {
 					   YCSBPayload payload;
-					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
+					   generatePayload(payload);
 					   YCSBKey key = i;
 					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::READ_COMMITTED);
 					   tables[t_i].insert({key}, {payload});
@@ -168,7 +185,7 @@ int main(int argc, char** argv)
 				 crm.scheduleJobAsync(t_i, [&, begin, end]() {
 					for (u64 i = begin; i < end; i++) {
 					   YCSBPayload payload;
-					   utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&payload), sizeof(YCSBPayload));
+					   generatePayload(payload);
 					   YCSBKey key = i;
 					   cr::Worker::my().startTX(tx_type, leanstore::TX_ISOLATION_LEVEL::READ_COMMITTED);
 					   tables[0].insert({key}, {payload});
@@ -243,7 +260,7 @@ int main(int argc, char** argv)
                      // leanstore::storage::BMC::global_bf->evictLastPage();  // to ignore the replacement strategy effect on MVCC experiment
                   } else {
                      UpdateDescriptorGenerator1(tabular_update_descriptor, KVTable, my_payload);
-                     utils::RandomGenerator::getRandString(reinterpret_cast<u8*>(&result), sizeof(YCSBPayload));
+                     generatePayload(result);
                      // -------------------------------------------------------------------------------------
                      table->update1(
                          {key}, [&](KVTable& rec) { rec.my_payload = result; }, tabular_update_descriptor);

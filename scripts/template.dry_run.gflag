@@ -9,3 +9,6 @@
 --partition_bits=6
 
 --run_for_seconds 600
+
+# The 1 GiB dry run log is split into one segment per RU (+ sink logs), each must hold 2 WAL buffers.
+--wal_buffer_size=1048576

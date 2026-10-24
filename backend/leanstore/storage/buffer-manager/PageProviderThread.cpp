@@ -1,6 +1,7 @@
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
 #include "BufferManager.hpp"
+#include "CompressedSpace.hpp"
 #include "CustomSlabAllocator.hpp"
 #include "Exceptions.hpp"
 #include "leanstore/Config.hpp"
@@ -298,6 +299,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
             } else {
                parent_handler.swip.evict(evicted_pid);
+               onEvictedPageSwip(bf, *parent_handler.parent_bf);
                if (FLAGS_enable_discarding) {
                   const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
                   discard_state[evicted_pid].getLocked();
@@ -342,7 +344,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
             const u64 p_i = getPartitionID(cooled_bf_pid);
             // Prevent evicting a page that already has an IO Frame with (possibly) threads working on it.
             {
-               Partition& partition = getPartition(p_i);
+               Partition& partition = *partitions[p_i];
                bool success = partition.ht_mutex.try_lock();
                if (!success || partition.io_ht.lookup(cooled_bf_pid)) {
                   if (success) {
@@ -354,7 +356,8 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                partition.ht_mutex.unlock();
             }
             // -------------------------------------------------------------------------------------
-            if (cooled_bf->isDirty()) {
+            // With compression, a page that has never been written has no location on the SSD yet.
+            if (cooled_bf->isDirty() || (FLAGS_compress_pages && !cpid::onSSD(cooled_bf_pid))) {
                std::optional<bool> page_in_live_ru_epoch;
                if (FLAGS_enable_discarding
                   && cooled_bf->isDiscardable()
@@ -416,7 +419,16 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      ++PPCounters::myCounters().written_back_pages_per_dtid[page.dt_id];
                      prepareDirtyWriteBack(*cooled_bf);
                      // TODO: preEviction callback according to DTID
-                     async_write_buffer.add(*cooled_bf, cooled_bf_pid);
+                     if (FLAGS_compress_pages && FLAGS_compression_zero_free_space) {
+                        reinterpret_cast<btree::BTreeNode*>(page.dt)->zeroFreeSpace();
+                     }
+                     const PID written_pid = async_write_buffer.add(*cooled_bf, cooled_bf_pid);
+                     if (FLAGS_compress_pages) {
+                        // Out-of-place write, the page is cached so nobody reads its previous copy anymore.
+                        compressed_space->free(cooled_bf_pid);
+                        header.pid = written_pid;
+                        header.pid_changed = true;
+                     }
                   }
                } else {
                   jumpmu_break;

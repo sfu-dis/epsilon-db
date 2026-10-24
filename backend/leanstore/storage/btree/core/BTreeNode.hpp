@@ -119,6 +119,17 @@ struct BTreeNode : public BTreeNodeHeader {
    bool evictAndStorePendingLSNs(SwipType& swip, s64 pos, PID pid, u64 ru_epoch, const LID* pending_lsn, u8 pending_lsn_count);
    // -------------------------------------------------------------------------------------
    u16 freeSpace() { return data_offset - (reinterpret_cast<u8*>(slot + count) - ptr()); }
+   // The free space may hold stale bytes, zeroing it helps the page compression.
+   void zeroFreeSpace()
+   {
+      // Addressed from the node, the free space goes past the declared size of slot[].
+      const u16 free_space_offset = reinterpret_cast<u8*>(slot + count) - ptr();
+      if (data_offset <= free_space_offset || data_offset > EFFECTIVE_PAGE_SIZE) {
+         // The meta node does not use the node layout (data_offset = 0).
+         return;
+      }
+      std::memset(ptr() + free_space_offset, 0, freeSpace());
+   }
    u16 freeSpaceAfterCompaction() { return EFFECTIVE_PAGE_SIZE - (reinterpret_cast<u8*>(slot + count) - ptr()) - space_used; }
    // -------------------------------------------------------------------------------------
    double fillFactorAfterCompaction() { return (1 - (freeSpaceAfterCompaction() * 1.0 / EFFECTIVE_PAGE_SIZE)); }

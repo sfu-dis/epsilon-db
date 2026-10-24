@@ -14,6 +14,7 @@ Required:
 Common:
   --trim / --sanitize             blkdiscard (and nvme sanitize) the device before loading
   --vanilla                       disable discarding (baseline)
+  --compress_pages                experimental: compress pages into 4 KiB blocks out-of-place (implies --vanilla)
   --buffer_pool_gib <GiB>         DRAM buffer pool (default 64)
   --worker_threads <n>            (default 64)
   --run_for_{seconds,minutes,hours} <n>   run duration (default 7200s)
@@ -34,6 +35,7 @@ TPC-C:
 YCSB:
   --distribution <uniform|zipfian>  --zipfian_skew <f>
   --ycsb_read_ratio <n>  --ycsb_dead_tuple_ratio <n>
+  --ycsb_payload <random|zero|repeat>  payload content, zero/repeat make the pages compressible (default random)
 
 FDP:
   --enable_fdp  --fdp_placement <policy>  --fdp_reformat  --fdp_nruh <n>
@@ -80,6 +82,7 @@ PARSE_PY="$PWD/parse_block.py"
 device=
 log_device=
 vanilla=0
+compress_pages=0
 benchmark=
 threshold=0.8
 trim=0
@@ -102,6 +105,7 @@ steady_tpcc=0
 # YCSB only flags
 ycsb_read_ratio=0
 ycsb_dead_tuple_ratio=0
+ycsb_payload=random
 distribution=
 zipfian_skew=0.8
 database_size_gib=
@@ -153,6 +157,11 @@ while [[ $# -gt 0 ]]; do
             shift 1
             ;;
         --vanilla)
+            vanilla=1
+            shift 1
+            ;;
+        --compress_pages)
+            compress_pages=1
             vanilla=1
             shift 1
             ;;
@@ -257,6 +266,10 @@ while [[ $# -gt 0 ]]; do
            ;;
         --ru_size)
            ru_size="$2"
+           shift 2
+           ;;
+        --ycsb_payload)
+           ycsb_payload="$2"
            shift 2
            ;;
         --ycsb_dead_tuple_ratio)
@@ -628,7 +641,9 @@ fi
 
 dir_name="${dir_name}_${worker_threads}W"
 
-if (( vanilla == 1 )); then
+if (( compress_pages == 1 )); then
+   dir_name="${dir_name}_compressed"
+elif (( vanilla == 1 )); then
    dir_name="${dir_name}_vanilla"
 else
    dir_name="${dir_name}_${threshold}_discard${max_log_records_to_discard}_epsilondb"
@@ -766,6 +781,7 @@ cp "$FLAGS_FILE" "$run_flags"
       cat "$YCSB_FLAGS_FILE"
       echo "--ycsb_read_ratio=${ycsb_read_ratio}"
       echo "--ycsb_dead_tuple_ratio=${ycsb_dead_tuple_ratio}"
+      echo "--ycsb_payload=${ycsb_payload}"
    else
       cat "$TPCC_FLAGS_FILE"
       if (( steady_tpcc )); then
@@ -781,6 +797,11 @@ cp "$FLAGS_FILE" "$run_flags"
 
    if (( log_same_namespace == 1 )); then
       echo "--log_same_namespace"
+   fi
+
+   # Load and run must agree, the run recovers the compressed pages written by the load.
+   if (( compress_pages == 1 )); then
+      echo "--compress_pages"
    fi
 
 } > "${common_flags}"

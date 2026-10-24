@@ -128,3 +128,8 @@ DEFINE_bool(log_fake_wrap_around, false, "Artificially wrap each log segment aro
 DEFINE_bool(enable_fdp, false, "Support for NVMe Flexible Data Placement");
 DEFINE_string(fdp_placement_policy, "Default", "FDP placement policy: Default, FreezeNewlyAllocated, FreezeTables, HardcodedTPCC or FrozenRecords");
 DEFINE_bool(fdp_count_gc_events, false, "Count the device GC events (FDP Media Reallocated events), polled once per second by libfdp");
+// -------------------------------------------------------------------------------------
+DEFINE_bool(compress_pages, false, "Experimental: compress pages on write back and pack them out-of-place into 4 KiB blocks (no crash recovery)");
+DEFINE_int32(compression_level, 1, "zstd compression level used with compress_pages");
+DEFINE_bool(compression_zero_free_space, true, "Zero the free space of a B-Tree node before compressing it");
+DEFINE_string(compression_space_map_file, "./compression_space_map.bin", "Where the live bytes of the compressed blocks are persisted to and recovered from");

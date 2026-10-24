@@ -2,6 +2,7 @@
 
 #include "AsyncWriteBuffer.hpp"
 #include "BufferFrame.hpp"
+#include "CompressedSpace.hpp"
 #include "CustomSlabAllocator.hpp"
 #include "DTRegistry.hpp"
 #include "Exceptions.hpp"
@@ -134,7 +135,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
          u64 p_i = 0;
          for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
-            getPartition(p_i).dram_free_list.push(*new (bfs + bf_i) BufferFrame());
+            partitions[p_i]->dram_free_list.push(*new (bfs + bf_i) BufferFrame());
             p_i = (p_i + 1) % partitions_count;
          }
       });
@@ -218,6 +219,15 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          ensure(log_fd > 0);
       }
       // -------------------------------------------------------------------------------------
+      if (FLAGS_compress_pages) {
+         compressed_space = std::make_unique<CompressedSpace>(max_pid, io_writer_threads_count);
+         if (!FLAGS_initialize_leanstore) {
+            compressed_space->recover(FLAGS_compression_space_map_file);
+            LOG_INFO(logger, "Recovered the compression space map from %s, %lu blocks in use", FLAGS_compression_space_map_file.c_str(),
+                     compressed_space->usedBlocks());
+         }
+      }
+      // -------------------------------------------------------------------------------------
       ru_epoch_mgr = std::make_unique<RUEpochManager>(*this);
       ru_bg_page_fixer = std::make_unique<RUBackgroundPageFixer>(*this);
    }
@@ -273,7 +283,7 @@ std::unordered_map<std::string, std::string> BufferManager::serialize()
    // "max_pid" is the allocation high watermark, not BufferManager::max_pid. The key is kept for old state files.
    PID next_pid = 0;
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-      next_pid = std::max<PID>(getPartition(p_i).next_pid, next_pid);
+      next_pid = std::max<PID>(partitions[p_i]->next_pid, next_pid);
    }
    map["max_pid"] = std::to_string(next_pid);
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
@@ -291,7 +301,7 @@ void BufferManager::deserialize(std::unordered_map<std::string, std::string> map
                   std::to_string(max_pid) + " database pages, was it created with a larger ssd_gib?");
    }
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-      getPartition(p_i).next_pid = next_pid + p_i;
+      partitions[p_i]->next_pid = next_pid + p_i;
    }
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
       const std::string key = "ruh_" + std::to_string(ruh) + "_pages";
@@ -314,26 +324,30 @@ void BufferManager::writeAllBufferFrames()
       ensure_lt(ru_discard_set[ruh][ru_epoch[ruh].load()].total.load(), static_cast<s32>(RU_SIZE));
    }
 
-   std::atomic<u32> ephemeral_write_id = 0;
-   utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
-      tls_writer_thread_id = ephemeral_write_id.fetch_add(1) % io_writer_threads_count;
-      BufferFrame::Page page;
-      for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
-         auto& bf = bfs[bf_i];
-         bf.header.latch.mutex.lock();
-         if (!bf.isFree() && bf.isDirty()) {
-            bf.page.magic_debugging_number = bf.header.pid;
-            fdp_placement_policy.onWriteBackDirtyPage(bf);
-            pageWriteBackPrologue(bf);
-            bf.header.discard_count = 0;
-            ++bf.page.write_back_count;
-            DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
-            s64 ret = nvme_pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE, bf.header.next_ruh);
-            ensure_equal(ret, PAGE_SIZE);
+   if (FLAGS_compress_pages) {
+      writeAllBufferFramesCompressed();
+   } else {
+      std::atomic<u32> ephemeral_write_id = 0;
+      utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
+         tls_writer_thread_id = ephemeral_write_id.fetch_add(1) % io_writer_threads_count;
+         BufferFrame::Page page;
+         for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
+            auto& bf = bfs[bf_i];
+            bf.header.latch.mutex.lock();
+            if (!bf.isFree() && bf.isDirty()) {
+               bf.page.magic_debugging_number = bf.header.pid;
+               fdp_placement_policy.onWriteBackDirtyPage(bf);
+               pageWriteBackPrologue(bf);
+               bf.header.discard_count = 0;
+               ++bf.page.write_back_count;
+               DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
+               s64 ret = nvme_pwrite(ssd_fd, page, PAGE_SIZE, bf.header.pid * PAGE_SIZE, bf.header.next_ruh);
+               ensure_equal(ret, PAGE_SIZE);
+            }
+            bf.header.latch.mutex.unlock();
          }
-         bf.header.latch.mutex.unlock();
-      }
-   });
+      });
+   }
    stopRUEpochManagerThread();
    // TODO(mfd) : Move this as the responsability of the RU Epoch Manager.
    for (ruh_id_t ruh = 0; ruh < MAX_RUHS; ++ruh) {
@@ -360,6 +374,107 @@ void BufferManager::writeAllBufferFrames()
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    persistPerTableStats();
 #endif
+}
+// -------------------------------------------------------------------------------------
+// Every write gives the page a new PID that the copy of its parent on the SSD must hold, so a parent is
+// written after its cached children. This goes in rounds, each round writes the frames that need a write
+// (dirty, never written or one of their cached children got a new PID) and whose cached children do not.
+void BufferManager::writeAllBufferFramesCompressed()
+{
+   auto forEachCachedChild = [&](BufferFrame& bf, auto&& callback) {
+      getDTRegistry().iterateChildrenSwips(bf.page.dt_id, bf, [&](Swip<BufferFrame>& swip) {
+         if (!swip.isEVICTED()) {
+            callback(swip.asBufferFrameMasked());
+         }
+         return true;
+      });
+   };
+   constexpr u64 PACKER_BLOCKS = 64;
+   std::vector<u8> needs_write(dram_pool_size);
+   std::atomic<u32> ephemeral_write_id = 0;
+   u64 rounds = 0, written_frames = 0;
+   while (true) {
+      std::atomic<u64> to_write = 0;
+      utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
+         u64 local_to_write = 0;
+         for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
+            auto& bf = bfs[bf_i];
+            bool write = !bf.isFree() && (bf.isDirty() || !cpid::onSSD(bf.header.pid));
+            if (!write && !bf.isFree()) {
+               forEachCachedChild(bf, [&](BufferFrame& child) { write |= child.header.pid_changed; });
+            }
+            needs_write[bf_i] = write;
+            local_to_write += write;
+         }
+         to_write += local_to_write;
+      });
+      if (to_write == 0) {
+         break;
+      }
+      ensure(++rounds < 64);
+      std::atomic<u64> written = 0;
+      utils::Parallelize::parallelRange(dram_pool_size, [&](u64 bf_b, u64 bf_e) {
+         tls_writer_thread_id = ephemeral_write_id.fetch_add(1) % io_writer_threads_count;
+         std::unique_ptr<u8, decltype(&std::free)> blocks(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, PACKER_BLOCKS * PAGE_SIZE)), &std::free);
+         ensure(blocks != nullptr);
+         BlockPacker packer(*compressed_space, blocks.get(), PACKER_BLOCKS);
+         auto flush = [&]() {
+            packer.seal();
+            for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
+               s64 ret = nvme_pwrite(ssd_fd, packer.block(b_i), PAGE_SIZE, packer.blockOffset(b_i), DEFAULT_RUH);
+               ensure_equal(ret, PAGE_SIZE);
+            }
+            countWrittenBlocks(DEFAULT_RUH, packer.blocksCount());
+            packer.reset();
+         };
+         BufferFrame::Page page;
+         u64 local_written = 0;
+         for (u64 bf_i = bf_b; bf_i < bf_e; bf_i++) {
+            if (!needs_write[bf_i]) {
+               continue;
+            }
+            auto& bf = bfs[bf_i];
+            bool children_written = true;
+            forEachCachedChild(bf, [&](BufferFrame& child) { children_written &= !needs_write[&child - bfs]; });
+            if (!children_written) {
+               continue;
+            }
+            if (packer.full()) {
+               flush();
+            }
+            bf.header.latch.mutex.lock();
+            fdp_placement_policy.onWriteBackDirtyPage(bf);
+            pageWriteBackPrologue(bf);
+            bf.header.discard_count = 0;
+            ++bf.page.write_back_count;
+            // The cached children are written already, the checkpoint holds their latest PIDs.
+            DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, static_cast<u8*>(page));
+            if (FLAGS_compression_zero_free_space) {
+               reinterpret_cast<btree::BTreeNode*>(page.dt)->zeroFreeSpace();
+            }
+            const PID new_pid = packer.add(page);
+            compressed_space->free(bf.header.pid);
+            bf.header.pid = new_pid;
+            bf.header.pid_changed = true;
+            bf.header.last_written_plsn = bf.page.PLSN;
+            forEachCachedChild(bf, [&](BufferFrame& child) { child.header.pid_changed = false; });
+            bf.header.latch.mutex.unlock();
+            local_written++;
+         }
+         flush();
+         written += local_written;
+      });
+      written_frames += written;
+   }
+   compressed_space->persist(FLAGS_compression_space_map_file);
+   LOG_INFO(logger, "Compressed shutdown flush: %lu frames written in %lu rounds, %lu blocks in use. Persisted the space map to %s",
+            written_frames, rounds, compressed_space->usedBlocks(), FLAGS_compression_space_map_file.c_str());
+   const u64 written_pages = compressed_space->written_pages.load();
+   if (written_pages) {
+      LOG_INFO(logger, "Compression: %lu pages written into %lu blocks, %.2f compression ratio, %.2f pages per block", written_pages,
+               compressed_space->written_blocks.load(), written_pages * PAGE_SIZE * 1.0 / compressed_space->written_compressed_bytes.load(),
+               written_pages * 1.0 / compressed_space->written_blocks.load());
+   }
 }
 // -------------------------------------------------------------------------------------
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
@@ -466,8 +581,8 @@ u64 BufferManager::consumedPages()
 {
    u64 total_used_pages = 0, total_freed_pages = 0;
    for (u64 p_i = 0; p_i < partitions_count; p_i++) {
-      total_freed_pages += getPartition(p_i).freedPages();
-      total_used_pages += getPartition(p_i).allocatedPages();
+      total_freed_pages += partitions[p_i]->freedPages();
+      total_used_pages += partitions[p_i]->allocatedPages();
    }
    return total_used_pages - total_freed_pages;
 }
@@ -483,7 +598,7 @@ BufferFrame& BufferManager::getContainingBufferFrame(const u8* ptr)
 Partition& BufferManager::randomPartition()
 {
    auto rand_partition_i = utils::RandomGenerator::getRand<u64>(0, partitions_count);
-   return getPartition(rand_partition_i);
+   return *partitions[rand_partition_i];
 }
 // -------------------------------------------------------------------------------------
 BufferFrame& BufferManager::randomBufferFrame()
@@ -563,7 +678,8 @@ void BufferManager::evictLastPage()
          BMOptimisticGuard o_guard(last_read_bf->header.latch);
          const bool is_cooling_candidate = (!last_read_bf->header.keep_in_memory && !last_read_bf->header.is_being_written_back &&
                                             !(last_read_bf->header.latch.isExclusivelyLatched()) &&
-                                            !last_read_bf->isDirty()
+                                            !last_read_bf->isDirty() &&
+                                            (!FLAGS_compress_pages || cpid::onSSD(last_read_bf->header.pid))
                                             // && (partition_i) >= p_begin && (partition_i) <= p_end
                                             && last_read_bf->header.state == BufferFrame::STATE::HOT);
          if (!is_cooling_candidate) {
@@ -600,6 +716,7 @@ void BufferManager::evictLastPage()
          assert(!last_read_bf->header.is_being_written_back);
          assert(last_read_bf->header.state != BufferFrame::STATE::FREE);
          parent_handler.swip.evict(last_pid);
+         onEvictedPageSwip(*last_read_bf, *parent_handler.parent_bf);
          // -------------------------------------------------------------------------------------
          // Reclaim buffer frame
          last_read_bf->reset();
@@ -623,7 +740,19 @@ void BufferManager::reclaimPage(BufferFrame& bf)
 {
    if (FLAGS_enable_discarding) discard_state[bf.header.pid].free();
    Partition& partition = getPartition(bf.header.pid);
-   if (FLAGS_recycle_pages) {
+   if (FLAGS_compress_pages) {
+      // The page keeps its logical id in the magic debugging number, that is what gets recycled.
+      const PID logical_pid = bf.page.magic_debugging_number;
+      ensure(!cpid::onSSD(logical_pid));
+      if (FLAGS_recycle_pages) {
+         partitions[logical_pid & partitions_mask]->freePage(logical_pid, bf.page.ru_epoch, bf.page.ruh);
+      }
+      // A block must not be reused while a write to it is in flight, so the space of a page that is
+      // being written back is leaked.
+      if (!bf.header.is_being_written_back) {
+         compressed_space->free(bf.header.pid);
+      }
+   } else if (FLAGS_recycle_pages) {
       partition.freePage(bf.header.pid, bf.page.ru_epoch, bf.page.ruh);
    }
    // -------------------------------------------------------------------------------------
@@ -888,7 +1017,17 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // readPageSync(pid, bf.page);
       struct io_uring_sqe* sqe = io_uring_get_sqe(&cr::Worker::my().ring);
       ensure(sqe != nullptr);
-      io_uring_prep_read(sqe, 0 /*ssd_fd*/, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
+      // With compression, read the whole block holding the page, an uncompressed page fills its block.
+      u8* read_buffer = bf.page;
+      if (FLAGS_compress_pages) {
+         ensure(cpid::onSSD(pid));
+         if (cpid::length(pid) != PAGE_SIZE) {
+            read_buffer = compression::threadLocalBlockBuffer();
+         }
+         io_uring_prep_read(sqe, 0 /*ssd_fd*/, read_buffer, PAGE_SIZE, cpid::block(pid) * PAGE_SIZE);
+      } else {
+         io_uring_prep_read(sqe, 0 /*ssd_fd*/, bf.page, PAGE_SIZE, pid * PAGE_SIZE);
+      }
       io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
       io_uring_sqe_set_data64(sqe, pid | (1UL << 63));
       s32 s = io_uring_submit_and_wait(&cr::Worker::my().ring, wait_for_io);
@@ -932,6 +1071,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
          }
       }
       io_uring_cq_advance(&cr::Worker::my().ring, wait_for_io);
+      if (read_buffer != bf.page) {
+         compression::decompressPage(read_buffer + cpid::offsetInBlock(pid), cpid::length(pid), bf.page);
+      }
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
          ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).deleted.fetch_add(1);
@@ -951,7 +1093,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             utils::printBackTrace();
          }
       }
-      ensure_equal(bf.page.magic_debugging_number, pid);
+      if (!FLAGS_compress_pages) {
+         ensure_equal(bf.page.magic_debugging_number, pid);
+      }
       // -------------------------------------------------------------------------------------
       // ATTENTION: Fill the BF
       paranoid(!bf.header.is_being_written_back);
@@ -1143,6 +1287,11 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
       }
       ruh_pages[ruh].pages.fetch_add(1, std::memory_order_relaxed);
    }
+   ensure(tls_writer_thread_id != -1);
+   if (FLAGS_compress_pages) {
+      // The RU epochs are filled with blocks holding several pages, the writers count the blocks.
+      return;
+   }
    ru_discard_set[ruh][page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
    if (auto* t = ru_discard_set[ruh][page.ru_epoch].tableStats(page.dt_id)) {
@@ -1157,8 +1306,26 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
       }
 #endif
    }
-   ensure(tls_writer_thread_id != -1);
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(1, std::memory_order_relaxed);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::countWrittenBlocks(ruh_id_t ruh, u64 n)
+{
+   ensure(tls_writer_thread_id != -1);
+   ru_discard_set[ruh][ru_epoch[ruh].load(std::memory_order_acquire)].total.fetch_add(n, std::memory_order_relaxed);
+   writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(n, std::memory_order_relaxed);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::onEvictedPageSwip(BufferFrame& bf, BufferFrame& parent_bf)
+{
+   if (!FLAGS_compress_pages) {
+      return;
+   }
+   ensure(cpid::onSSD(bf.header.pid));
+   if (bf.header.pid_changed) {
+      // The parent on the SSD still points to the previous copy of the page.
+      parent_bf.page.PLSN++;
+   }
 }
 // -------------------------------------------------------------------------------------
 // SSD management
@@ -1166,6 +1333,18 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
 void BufferManager::readPageSync(u64 pid, u8* destination)
 {
    paranoid(u64(destination) % 512 == 0);
+   if (FLAGS_compress_pages) {
+      ensure(cpid::onSSD(pid));
+      u8* block = compression::threadLocalBlockBuffer();
+      const s64 ret = pread(ssd_fd, block, PAGE_SIZE, cpid::block(pid) * PAGE_SIZE);
+      ensure_equal(ret, s64(PAGE_SIZE));
+      compression::decompressPage(block + cpid::offsetInBlock(pid), cpid::length(pid), destination);
+      COUNTERS_BLOCK(read_operations_counter)
+      {
+         WorkerCounters::myCounters().read_operations_counter++;
+      }
+      return;
+   }
    s64 bytes_left = PAGE_SIZE;
    auto start = std::chrono::high_resolution_clock::now();
    do {
@@ -1196,6 +1375,10 @@ void BufferManager::fDataSync()
 // -------------------------------------------------------------------------------------
 u64 BufferManager::getPartitionID(PID pid)
 {
+   if (FLAGS_compress_pages) {
+      // Byte addresses, the low bits are not well distributed.
+      return ((pid * 0x9E3779B97F4A7C15ull) >> 32) & partitions_mask;
+   }
    return pid & partitions_mask;
 }
 // -------------------------------------------------------------------------------------

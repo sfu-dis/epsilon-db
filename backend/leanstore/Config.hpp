@@ -121,3 +121,8 @@ DECLARE_bool(log_fake_wrap_around);
 DECLARE_bool(enable_fdp);
 DECLARE_string(fdp_placement_policy);
 DECLARE_bool(fdp_count_gc_events);
+// -------------------------------------------------------------------------------------
+DECLARE_bool(compress_pages);
+DECLARE_int32(compression_level);
+DECLARE_bool(compression_zero_free_space);
+DECLARE_string(compression_space_map_file);

@@ -2,6 +2,7 @@
 #include <cstdint>
 
 #include "leanstore/Config.hpp"
+#include "leanstore/storage/buffer-manager/CompressedSpace.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/GCCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -50,6 +51,14 @@ void BMTable::open()
          col << (bm.ruh_pages[ruh].pages.load(std::memory_order_relaxed) * 100.0 / bm.max_pid);
       });
    }
+   // --compress_pages : cumulative compression ratio of the written pages, and the 4 KiB blocks in use.
+   columns.emplace("comp_ratio", [&](Column& col) {
+      const u64 bytes = bm.compressed_space ? bm.compressed_space->written_compressed_bytes.load() : 0;
+      col << (bytes ? bm.compressed_space->written_pages.load() * PAGE_SIZE * 1.0 / bytes : 0.0);
+   });
+   columns.emplace("comp_used_gib", [&](Column& col) {
+      col << (bm.compressed_space ? bm.compressed_space->usedBlocks() * PAGE_SIZE / 1024.0 / 1024.0 / 1024.0 : 0.0);
+   });
    columns.emplace("p1_pct", [&](Column& col) { col << (local_phase_1_ms * 100.0 / total); });
    columns.emplace("p2_pct", [&](Column& col) { col << (local_phase_2_ms * 100.0 / total); });
    columns.emplace("p3_pct", [&](Column& col) { col << (local_phase_3_ms * 100.0 / total); });
@@ -311,7 +320,7 @@ void BMTable::next()
    // -------------------------------------------------------------------------------------
    local_total_free = 0;
    for (u64 p_i = 0; p_i < bm.partitions_count; p_i++) {
-      local_total_free += bm.getPartition(p_i).dram_free_list.counter.load();
+      local_total_free += bm.partitions[p_i]->dram_free_list.counter.load();
    }
    total = local_phase_1_ms + local_phase_2_ms + local_phase_3_ms;
    // -------------------------------------------------------------------------------------

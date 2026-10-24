@@ -43,6 +43,7 @@ template <typename T> class CustomSlabAllocator;  // Forward declaration
 class RUEpochManager;  // Forward declaration
 class RUBackgroundPageFixer;  // Forward declaration
 class SSDLayout;  // Forward declaration
+class CompressedSpace;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -138,6 +139,10 @@ class BufferManager
    // -------------------------------------------------------------------------------------
    fdp::PlacementPolicy fdp_placement_policy;
    // -------------------------------------------------------------------------------------
+   // Only with FLAGS_compress_pages
+   std::unique_ptr<CompressedSpace> compressed_space;
+   void writeAllBufferFramesCompressed();
+   // -------------------------------------------------------------------------------------
 public:
    // One independent RU epoch stream per RUH. Only DEFAULT_RUH is persisted for now.
    std::array<atomic<ru_epoch_t>, MAX_RUHS> ru_epoch;
@@ -204,6 +209,11 @@ public:
     */
    // -------------------------------------------------------------------------------------
    void readPageSync(PID pid, u8* destination);
+   // FLAGS_compress_pages : the parent of an evicted page must be written again if it does not hold the latest PID.
+   // Pre: parent_bf is exclusively latched
+   static void onEvictedPageSwip(BufferFrame& bf, BufferFrame& parent_bf);
+   // Accounts device writes for the RU epochs, called by the writers.
+   void countWrittenBlocks(ruh_id_t ruh, u64 n);
    void readPageAsync(PID pid, u8* destination, std::function<void()> callback);
    void fDataSync();
    // Single choke point for updating header of a page before write back. Used by :

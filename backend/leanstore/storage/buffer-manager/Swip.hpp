@@ -3,6 +3,7 @@
 #include "BufferFrame.hpp"
 #include "Units.hpp"
 #include "Exceptions.hpp"
+#include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
 #include <atomic>
@@ -68,6 +69,10 @@ class Swip
    bool isDIRTY() { return pid & dirty_bit; }
    // -------------------------------------------------------------------------------------
    u64 asPageID() {
+      if (FLAGS_compress_pages) {
+         // The whole PID is a byte address with the compressed length, see CompressedSpace.hpp
+         return pid & evicted_mask;
+      }
       return pid2.page_id;
    }
    BufferFrame& asBufferFrame() { return *bf; }
@@ -79,7 +84,7 @@ class Swip
    }
    u8 pendingLSNCount()
    {
-      if (!isEVICTED()) {
+      if (!isEVICTED() || FLAGS_compress_pages) {
          return 0;
       }
       return (pid2.meta & pending_lsn_count_mask) >> pending_lsn_count_shift;
@@ -102,7 +107,11 @@ class Swip
    // -------------------------------------------------------------------------------------
    void evict(PID pid)
    {
-      // this->pid = pid | evicted_bit;
+      if (FLAGS_compress_pages) {
+         ensure_equal((pid & (~hot_mask | dirty_bit)), 0);
+         this->pid = pid | evicted_bit;
+         return;
+      }
       ensure_equal((pid & ~(0xFFFFFFFF)), 0);
       this->pid2.page_id = pid;
       this->pid2.meta = 0x80000000;

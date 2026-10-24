@@ -51,7 +51,7 @@ IF(SANI)
 ENDIF(SANI)
 
 add_dependencies(leanstore gen_header)
-target_link_libraries(leanstore PUBLIC gflags Threads::Threads tbb tabluate rapidjson yaml-cpp uring) #tbb
+target_link_libraries(leanstore PUBLIC gflags Threads::Threads tbb tabluate rapidjson yaml-cpp uring zstd) #tbb
 # ---------------------------------------------------------------------------
 OPTION(WITH_FDP "Compile with support for Flexible Data Placement(FDP)" ON)
 IF(WITH_FDP)

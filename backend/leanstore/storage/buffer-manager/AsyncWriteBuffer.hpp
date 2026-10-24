@@ -1,6 +1,7 @@
 #pragma once
 #include "../btree/core/BTreeNode.hpp"
 #include "BufferFrame.hpp"
+#include "CompressedSpace.hpp"
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------------
@@ -21,11 +22,18 @@ class AsyncWriteBuffer
    struct WriteCommand {
       BufferFrame* bf;
       PID pid;
+      LID plsn;
+      ru_epoch_t ru_epoch;
    };
    struct io_uring ring;
    int fd;
    u64 page_size, batch_max_size;
    u64 pending_requests = 0;
+   // -------------------------------------------------------------------------------------
+   // FLAGS_compress_pages : the pages are packed into the blocks of write_buffer, each write is a block.
+   std::unique_ptr<BlockPacker> packer;
+   u64 submitted_commands = 0;
+   u64 submitted_blocks = 0;
    // -------------------------------------------------------------------------------------
    struct IOTracing {
       struct IOTraceEvent {
@@ -51,7 +59,8 @@ class AsyncWriteBuffer
    AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size);
    // Caller takes care of sync
    bool full();
-   void add(BufferFrame& bf, PID pid);
+   // Returns the PID the page is written to, a new one with FLAGS_compress_pages.
+   PID add(BufferFrame& bf, PID pid);
    u64 submit();
    u64 pollEventsSync();
    void getWrittenBfs(std::function<bool(BufferFrame&, LID, ru_epoch_t)> callback, u64 n_events);
