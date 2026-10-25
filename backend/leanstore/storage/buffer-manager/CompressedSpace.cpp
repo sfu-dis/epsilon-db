@@ -2,6 +2,7 @@
 
 #include "BufferManager.hpp"
 #include "Exceptions.hpp"
+#include "LBAChain.hpp"
 #include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
 #include <zstd.h>
@@ -168,6 +169,30 @@ u64 CompressedSpace::allocateBlock()
    return block;
 }
 // -------------------------------------------------------------------------------------
+u64 CompressedSpace::allocateRawBlock()
+{
+   u64 block;
+   {
+      std::unique_lock guard(shared_free_list.mutex);
+      if (!shared_free_list.blocks.empty()) {
+         block = shared_free_list.blocks.back();
+         shared_free_list.blocks.pop_back();
+         free_blocks.fetch_sub(1, std::memory_order_relaxed);
+      } else {
+         block = next_unused_block.fetch_add(1);
+         if (block >= blocks_count) {
+            std::cerr << "[FATAL] No free compressed block left for an LBA chain block, " << free_blocks.load()
+                      << " free blocks in the free lists of the writers" << std::endl;
+            BMC::global_bf->outOfSpace();
+         }
+      }
+   }
+   ensure_equal(live_bytes[block].load(), 0);
+   transition(block, FREE, OPEN);
+   sealBlock(block, PAGE_SIZE);
+   return block;
+}
+// -------------------------------------------------------------------------------------
 void CompressedSpace::sealBlock(u64 block, u32 packed_bytes)
 {
    ensure(block < blocks_count);
@@ -236,7 +261,7 @@ void CompressedSpace::persist(const std::string& path, PID pids_end)
    ensure(file.good());
 }
 // -------------------------------------------------------------------------------------
-void CompressedSpace::recover(const std::string& path)
+void CompressedSpace::recover(const std::string& path, const std::vector<u64>& raw_blocks)
 {
    std::ifstream file(path, std::ios::binary);
    if (!file.is_open()) {
@@ -268,6 +293,14 @@ void CompressedSpace::recover(const std::string& path)
       const s32 live = live_bytes[block].fetch_add(cpid::length(loc), std::memory_order_relaxed) + cpid::length(loc);
       ensure(live <= static_cast<s32>(PAGE_SIZE));
    }
+   for (const u64 block : raw_blocks) {
+      ensure(block < next);
+      if (live_bytes[block].load(std::memory_order_relaxed) != 0) {
+         std::cerr << "[FATAL] The LBA chain block " << block << " also holds pages of the page map" << std::endl;
+         ensure(false);
+      }
+      live_bytes[block].store(PAGE_SIZE, std::memory_order_relaxed);
+   }
    std::unique_lock guard(shared_free_list.mutex);
    for (u64 b = 0; b < next; b++) {
       const bool free = live_bytes[b].load(std::memory_order_relaxed) == 0;
@@ -280,22 +313,32 @@ void CompressedSpace::recover(const std::string& path)
    next_unused_block.store(next);
 }
 // -------------------------------------------------------------------------------------
-BlockPacker::BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks)
+BlockPacker::BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks, LBAChain* lba_chain)
     : space(space),
+      lba_chain(lba_chain),
       blocks(blocks),
       max_blocks(max_blocks),
       block_ids(max_blocks),
       used(max_blocks),
       in_place(max_blocks),
+      block_ru_epochs(max_blocks),
       scratch(std::make_unique<u8[]>(PAGE_SIZE))
 {
    ensure(max_blocks > 0);
    ensure(reinterpret_cast<u64>(blocks) % 512 == 0);
 }
 // -------------------------------------------------------------------------------------
-PID BlockPacker::add(const u8* page, bool compress, PID current_location)
+void BlockPacker::recordBlock(u64 slot)
+{
+   if (lba_chain) {
+      block_ru_epochs[slot] = lba_chain->record(block_ids[slot]);
+   }
+}
+// -------------------------------------------------------------------------------------
+PID BlockPacker::add(const u8* page, bool compress, PID current_location, ru_epoch_t& ru_epoch)
 {
    ensure(!sealed);
+   ru_epoch = reinterpret_cast<const BufferFrame::Page*>(page)->ru_epoch;
    if (!compress && cpid::length(current_location) == PAGE_SIZE) {
       // Uncompressed pages own their block, rewrite it in place.
       ensure(!full());
@@ -303,7 +346,11 @@ PID BlockPacker::add(const u8* page, bool compress, PID current_location)
       block_ids[slot] = cpid::block(current_location);
       used[slot] = PAGE_SIZE;
       in_place[slot] = true;
+      recordBlock(slot);
       std::memcpy(block(slot), page, PAGE_SIZE);
+      if (lba_chain) {
+         ru_epoch = reinterpret_cast<BufferFrame::Page*>(block(slot))->ru_epoch = block_ru_epochs[slot];
+      }
       space.written_pages.fetch_add(1, std::memory_order_relaxed);
       space.written_compressed_bytes.fetch_add(PAGE_SIZE, std::memory_order_relaxed);
       return current_location;
@@ -325,7 +372,17 @@ PID BlockPacker::add(const u8* page, bool compress, PID current_location)
       block_ids[slot] = space.allocateBlock();
       used[slot] = 0;
       in_place[slot] = false;
+      recordBlock(slot);
       blocks_count++;
+   }
+   if (lba_chain) {
+      // The page is written to the RU epoch of its block, the header (or the uncompressed page) says so.
+      ru_epoch = block_ru_epochs[slot];
+      if (length == PAGE_SIZE) {
+         reinterpret_cast<BufferFrame::Page*>(scratch.get())->ru_epoch = ru_epoch;
+      } else {
+         compression::setRUEpoch(scratch.get(), ru_epoch);
+      }
    }
    std::memcpy(block(slot) + used[slot], scratch.get(), length);
    const PID pid = cpid::make(blockOffset(slot) + used[slot], length);

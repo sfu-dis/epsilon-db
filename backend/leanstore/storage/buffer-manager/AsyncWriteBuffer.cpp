@@ -36,7 +36,8 @@ AsyncWriteBuffer::AsyncWriteBuffer(int fd, u64 page_size, u64 batch_max_size) : 
    ensure_equal(rc, 0);
    if (FLAGS_compress_pages) {
       // A block holds at least one page, so batch_max_size blocks are enough.
-      packer = std::make_unique<BlockPacker>(*BMC::global_bf->compressed_space, reinterpret_cast<u8*>(write_buffer.get()), batch_max_size);
+      packer = std::make_unique<BlockPacker>(*BMC::global_bf->compressed_space, reinterpret_cast<u8*>(write_buffer.get()), batch_max_size,
+                                             BMC::global_bf->lba_chain.get());
    }
    // TODO(mfd) : consider registering the write buffer arrray.
 }
@@ -68,7 +69,10 @@ PID AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
       ++bf.page.write_back_count;
       // Only the leaves are compressed, the inner nodes are pinned (see --btree_pin_inner_nodes) and rewritten in place.
       const bool compress = !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->is_leaf;
-      const PID location = packer->add(bf.page, compress, BMC::global_bf->compressed_space->location(pid));
+      ru_epoch_t ru_epoch;
+      const PID location = packer->add(bf.page, compress, BMC::global_bf->compressed_space->location(pid), ru_epoch);
+      // With an LBA chain, the RU epoch of the block the page landed in.
+      bf.page.ru_epoch = ru_epoch;
       write_buffer_commands[slot].plsn = bf.page.PLSN;
       write_buffer_commands[slot].ru_epoch = bf.page.ru_epoch;
       if (FLAGS_io_trace) {
@@ -114,7 +118,7 @@ u64 AsyncWriteBuffer::submit()
       }
       submitted_commands = pending_requests;
       submitted_blocks = blocks;
-      BMC::global_bf->countWrittenBlocks(DEFAULT_RUH, blocks);
+      BMC::global_bf->countPackedBlocks(*packer);
       int ret_code = io_uring_submit(&ring);
       ensure(ret_code == s32(blocks));
       return pending_requests;

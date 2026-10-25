@@ -21,6 +21,24 @@ struct GCCounters {
    atomic<u64> tree_lookups;
    atomic<u64> tree_retries;
    atomic<u64> tree_other_ru_epoch;
+   // Outcome of the lookups: inner node (skipped), parent not found, swip cached (queued as hot), swip clean, IO frame
+   // already present (a worker loads it), claimed for fixing. tree_max_retries is the max retries of a single lookup.
+   atomic<u64> tree_inner;
+   atomic<u64> tree_parent_not_found;
+   atomic<u64> tree_swip_cached;
+   atomic<u64> tree_swip_clean;
+   atomic<u64> tree_io_frame_busy;
+   atomic<u64> tree_claimed;
+   atomic<u64> tree_max_retries;
+   // FLAGS_bg_page_fixer_tree_lookup_state_filter: pages not read because free, clean or discarded into another log,
+   // and the pages that went on to be read.
+   atomic<u64> filter_free;
+   atomic<u64> filter_clean;
+   atomic<u64> filter_other_log;
+   atomic<u64> filter_passed;
+   // Hot pages that could not be written back yet (frame latched, being written back...), rounds of the final drain.
+   atomic<u64> hot_deferred;
+   atomic<u64> drain_rounds;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
    // -------------------------------------------------------------------------------------

@@ -130,6 +130,14 @@ struct WorkerCounters {
    atomic<u64> failed_try_pop = 0;
    atomic<u64> yielded_cpu_no_frame = 0;
    // -------------------------------------------------------------------------------------
+   // Waits on an IO frame being read: all of them, those inserted by the bg page fixer (with the time spent and the
+   // longest wait), and the retries on a TO_DELETE frame.
+   atomic<u64> io_frame_reading_waits = 0;
+   atomic<u64> fixer_io_frame_waits = 0;
+   atomic<u64> fixer_io_frame_wait_ns = 0;
+   atomic<u64> fixer_io_frame_max_wait_ns = 0;
+   atomic<u64> io_frame_to_delete_retries = 0;
+   // -------------------------------------------------------------------------------------
    // Log records read from the log device by resolveSwip, and how many of those were still in the WAL buffer
    atomic<u64> log_reads_from_device = 0;
    atomic<u64> log_reads_in_wal_buffer = 0;

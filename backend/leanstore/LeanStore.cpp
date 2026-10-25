@@ -504,6 +504,10 @@ void LeanStore::verifyFlags()
    if (FLAGS_enable_discarding && !FLAGS_wal_pwrite) {
       SetupFailed("You have to enable wal_pwrite if you want to enable discarding.");
    }
+   if (FLAGS_compress_pages) {
+      // For simplicity, the inner nodes stay in memory and are stored uncompressed (only written by the shutdown flush).
+      FLAGS_btree_pin_inner_nodes = true;
+   }
    if (FLAGS_enable_discarding) {
       if (FLAGS_ru_gc_threads == 0) {
          SetupFailed("You have to create at least one RU GC thread to enable discarding");
@@ -524,6 +528,9 @@ void LeanStore::verifyFlags()
             SetupFailed("bg_page_fixer_tree_lookup requires btree_pin_inner_nodes");
          }
       }
+      if (FLAGS_bg_page_fixer_tree_lookup_state_filter && !FLAGS_bg_page_fixer_tree_lookup) {
+         SetupFailed("bg_page_fixer_tree_lookup_state_filter requires bg_page_fixer_tree_lookup");
+      }
    } else {
       if (FLAGS_discard_lsns_in_parent) {
          FLAGS_discard_lsns_in_parent = false;
@@ -531,13 +538,24 @@ void LeanStore::verifyFlags()
    }
    if (FLAGS_compress_pages) {
       if (FLAGS_enable_discarding) {
-         SetupFailed("compress_pages is not supported with discarding");
+         // The bg page fixer moves blocks: it walks the RU epoch's LBA chain of blocks, finds the discarded pages
+         // through their parent swip and the blocks are freed as a whole.
+         if (FLAGS_bg_page_fixer_variant != 2 || !FLAGS_bg_page_fixer_tree_lookup || !FLAGS_discard_lsns_in_parent || !FLAGS_btree_pin_inner_nodes) {
+            SetupFailed("compress_pages with discarding requires bg_page_fixer_variant 2, bg_page_fixer_tree_lookup, discard_lsns_in_parent "
+                        "and btree_pin_inner_nodes");
+         }
+         if (FLAGS_per_page_logging) {
+            SetupFailed("compress_pages does not support per_page_logging");
+         }
+         // TODO(mfd) : Step 4 of .docs/COMPRESSION_DISCARDING_PLAN_V2.md
+         SetupFailed("compress_pages with discarding: the compressed bg page fixer is not implemented yet");
       }
       if (FLAGS_fdp_placement_policy != "Default") {
          SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");
       }
-      // For simplicity, the inner nodes stay in memory and are stored uncompressed (only written by the shutdown flush).
-      FLAGS_btree_pin_inner_nodes = true;
+   }
+   if (FLAGS_lba_chain_verify && (!FLAGS_compress_pages || FLAGS_bg_page_fixer_variant != 2)) {
+      SetupFailed("lba_chain_verify requires compress_pages and bg_page_fixer_variant 2");
    }
    if (FLAGS_log_fake_wrap_around && FLAGS_enable_discarding) {
       SetupFailed("log_fake_wrap_around is only supported when discarding is disabled");

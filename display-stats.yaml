@@ -326,3 +326,280 @@ columns:
     enabled: false
     source: bm
 
+
+  # -------------------------------------------------------------------------------------
+  # BG page fixer debugging (bg_page_fixer_tree_lookup livelock / deadlock hunting)
+
+  # one letter per ru_gc thread: I idle, M map log, R read, L tree lookup, F fix, W wait write back, H hot pages, D drain deferred hot, B barrier (waits for the other GC threads), E finish
+  gc_phases:
+    field: "GC phase"
+    enabled: true
+    source: bm
+
+  # longest time a busy ru_gc thread spent in its current phase
+  gc_max_phase_ms:
+    field: "GCstk ms"
+    enabled: true
+    source: bm
+
+  gc_thr_idle:
+    field: "GC idle"
+    enabled: false
+    source: bm
+
+  gc_thr_map_log:
+    field: "GC map"
+    enabled: false
+    source: bm
+
+  gc_thr_read:
+    field: "GC read"
+    enabled: false
+    source: bm
+
+  gc_thr_lookup:
+    field: "GC lookup"
+    enabled: false
+    source: bm
+
+  gc_thr_fix:
+    field: "GC fix"
+    enabled: false
+    source: bm
+
+  gc_thr_write_back:
+    field: "GC wb"
+    enabled: false
+    source: bm
+
+  gc_thr_hot:
+    field: "GC hotph"
+    enabled: false
+    source: bm
+
+  gc_thr_drain:
+    field: "GC drain"
+    enabled: false
+    source: bm
+
+  gc_thr_barrier:
+    field: "GC barr"
+    enabled: false
+    source: bm
+
+  gc_thr_finish:
+    field: "GC finish"
+    enabled: false
+    source: bm
+
+  # RU epoch being collected, -1 when none
+  gc_epoch:
+    field: "GC epoch"
+    enabled: true
+    source: bm
+
+  # seconds since its collection started
+  gc_epoch_age_s:
+    field: "GCep s"
+    enabled: true
+    source: bm
+
+  # entries of its LBA chain
+  gc_chain_entries:
+    field: "GC chain"
+    enabled: false
+    source: bm
+
+  # of its LBA chain walked
+  gc_chain_done_pct:
+    field: "GCchn %"
+    enabled: true
+    source: bm
+
+  # IO frames held by the fixers, workers wanting these pages wait
+  gc_io_frames_held:
+    field: "GC IOF"
+    enabled: true
+    source: bm
+
+  # hot pages waiting to be written back before the log is reset
+  gc_deferred_hot_now:
+    field: "GC defer"
+    enabled: true
+    source: bm
+
+  # total RU epochs handed to the GC
+  gc_jobs_enqueued:
+    field: "GC jobs"
+    enabled: false
+    source: bm
+
+  # handovers that failed on a contended queue, per second
+  gc_enqueue_fail:
+    field: "GCenq fail"
+    enabled: false
+    source: bm
+
+  # per second, from here on
+  gc_tree_lookups:
+    field: "GC lkup"
+    enabled: true
+    source: bm
+
+  gc_tree_retries:
+    field: "GC retry"
+    enabled: true
+    source: bm
+
+  # of a single lookup
+  gc_tree_max_retries:
+    field: "GCmax retry"
+    enabled: true
+    source: bm
+
+  # copy written to another RU epoch
+  gc_tree_other_epoch:
+    field: "GCoth ep"
+    enabled: false
+    source: bm
+
+  gc_tree_inner:
+    field: "GC inner"
+    enabled: false
+    source: bm
+
+  # parent not found
+  gc_tree_parent_nf:
+    field: "GCno par"
+    enabled: false
+    source: bm
+
+  gc_tree_swip_cached:
+    field: "GCsw hot"
+    enabled: false
+    source: bm
+
+  gc_tree_swip_clean:
+    field: "GCsw cln"
+    enabled: false
+    source: bm
+
+  # a worker already loads the page
+  gc_tree_io_busy:
+    field: "GCio busy"
+    enabled: false
+    source: bm
+
+  # discarded pages claimed for fixing
+  gc_tree_claimed:
+    field: "GC claim"
+    enabled: true
+    source: bm
+
+  # bg_page_fixer_tree_lookup_state_filter: pages not read
+  gc_filter_free:
+    field: "GCf free"
+    enabled: false
+    source: bm
+
+  gc_filter_clean:
+    field: "GCf clean"
+    enabled: false
+    source: bm
+
+  gc_filter_other_log:
+    field: "GCf oth"
+    enabled: false
+    source: bm
+
+  # pages that went on to be read
+  gc_filter_passed:
+    field: "GCf pass"
+    enabled: false
+    source: bm
+
+  # hot pages deferred, per second
+  gc_hot_deferred:
+    field: "GChot def"
+    enabled: false
+    source: bm
+
+  gc_drain_rounds:
+    field: "GCdrn rnd"
+    enabled: false
+    source: bm
+
+  # RU epochs of the DEFAULT_RUH
+  ru_open:
+    field: "RU open"
+    enabled: true
+    source: bm
+
+  ru_reclaiming:
+    field: "RU rcling"
+    enabled: false
+    source: bm
+
+  ru_reclaimed:
+    field: "RU rcld"
+    enabled: true
+    source: bm
+
+  ru_oldest_uncollected:
+    field: "RU oldest"
+    enabled: false
+    source: bm
+
+  # 1: opening the next RU epoch is deferred, the GC is behind
+  ru_next_slot_busy:
+    field: "RUslot busy"
+    enabled: true
+    source: bm
+
+  # writers stalled on a full LBA chain ring, per second
+  lba_stalls:
+    field: "LBA stalls"
+    enabled: false
+    source: bm
+
+  # writers waiting on the ring right now
+  lba_stalled_now:
+    field: "LBA stall"
+    enabled: true
+    source: bm
+
+  # workers blocked on an IO frame of the fixer right now
+  wk_fixer_wait_now:
+    field: "WKfix wait"
+    enabled: true
+    source: bm
+
+  # per second
+  wk_fixer_waits:
+    field: "WKfix waits"
+    enabled: false
+    source: bm
+
+  # summed over the workers, per second
+  wk_fixer_wait_ms:
+    field: "WKfix ms"
+    enabled: false
+    source: bm
+
+  # longest single wait in the last second
+  wk_fixer_max_wait_ms:
+    field: "WKfix max"
+    enabled: true
+    source: bm
+
+  # waits on any IO frame being read, per second
+  wk_io_reading_waits:
+    field: "WKio waits"
+    enabled: false
+    source: bm
+
+  # retries on a TO_DELETE IO frame, per second
+  wk_io_to_delete_retries:
+    field: "WKio del"
+    enabled: false
+    source: bm

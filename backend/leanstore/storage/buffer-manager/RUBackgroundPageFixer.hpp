@@ -3,6 +3,7 @@
 // -------------------------------------------------------------------------------------
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <vector>
 // -------------------------------------------------------------------------------------
@@ -41,6 +42,30 @@ class RUBackgroundPageFixer
    // Wakes up all the sleeping ru_gc threads, used on shutdown so that they could exit.
    void wakeUpAll();
    u64 runningThreads() const { return running_threads.load(); }
+   // -------------------------------------------------------------------------------------
+   // Debugging stats, read by the profiling thread (BMTable). Gauges, never reset.
+   enum class Phase : u8 { IDLE, MAP_LOG, READ, LOOKUP, FIX, WRITE_BACK, HOT, DRAIN, BARRIER, FINISH, COUNT };
+   static constexpr const char* phase_names[] = {"idle", "map_log", "read", "lookup", "fix", "write_back", "hot", "drain", "barrier", "finish"};
+   // One letter per phase, for the per thread phase string.
+   static constexpr char phase_letters[] = "IMRLFWHDBE";
+   struct alignas(64) ThreadStats {
+      std::atomic<u8> phase{static_cast<u8>(Phase::IDLE)};
+      std::atomic<u64> phase_since_ns{0};  // steady clock
+      std::atomic<u64> deferred_hot{0};  // hot pages waiting in deferred_hot_pids
+   };
+   struct Stats {
+      std::unique_ptr<ThreadStats[]> threads;  // FLAGS_ru_gc_threads
+      // IO frames inserted by the fixers and not yet released, the workers wanting these pages wait on them.
+      std::atomic<s64> io_frames_held{0};
+      std::atomic<u64> jobs_enqueued{0};
+      std::atomic<u64> enqueue_failures{0};
+      // The RU epoch being collected (-1 when none), since when, and how far the LBA chain walk got.
+      std::atomic<s64> cur_epoch{-1};
+      std::atomic<u64> cur_epoch_start_ns{0};
+      std::atomic<u64> chain_entries{0};
+      std::atomic<u64> chain_done{0};
+   } stats;
+   static u64 nowNs();
 
   private:
    struct ThreadContext;  // Per ru_gc thread state, defined in the .cpp
@@ -77,6 +102,7 @@ class RUBackgroundPageFixer
    // their parent swip, fixes them and waits for their write back.
    void fixLBAChainBatchInTree(ThreadContext& ctx, const PID* pids, u64 count);
    bool lookUpPageInTree(ThreadContext& ctx, u64 idx);
+   bool mayBeDiscardedInLog(ThreadContext& ctx, PID pid);
    bool needsFix(ThreadContext& ctx, PID pid);
    bool registerPageToFix(ThreadContext& ctx, LID first_lsn, PID pid, u64 idx);
    void issueFixRead(ThreadContext& ctx, PID pid, u64& pages_to_fix, u64& submitted);
@@ -94,6 +120,7 @@ class RUBackgroundPageFixer
    void writeBackHotPages(ThreadContext& ctx);
    void ackHotPage(ThreadContext& ctx, io_uring_cqe* cqe);
    void drainDeferredHotPages(ThreadContext& ctx);
+   void setPhase(ThreadContext& ctx, Phase phase);
    // Removes the IO frame inserted by registerPageToFix() and lets the waiting workers retry.
    // This method could probably be part of the BufferManager itself not this class.
    void releaseIOFrame(PID pid);

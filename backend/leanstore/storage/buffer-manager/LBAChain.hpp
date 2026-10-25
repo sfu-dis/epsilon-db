@@ -15,7 +15,9 @@ namespace storage
 {
 class BufferManager;  // Forward declaration
 // -------------------------------------------------------------------------------------
-// On disk block of an LBA chain: a list of the PIDs written to an RU epoch, linked to the previous block of the same RU epoch.
+// On disk block of an LBA chain: a list of the LBAs written to an RU epoch, linked to the previous block of the same RU epoch.
+// The LBAs are PIDs, or with compress_pages the (4 KiB) blocks the pages are packed into. The chain block itself is
+// stored at the LBA pid.
 struct alignas(PAGE_SIZE) LBAChainBlock {
    static constexpr u64 MAGIC = 0x6E69616843414C42;  // "LBAChain"
    static constexpr u64 HEADER_SIZE = 48;
@@ -52,7 +54,8 @@ class LBAChain
    DO_NOT_COPY_AND_MOVE(LBAChain);
    ~LBAChain();
    // -------------------------------------------------------------------------------------
-   // Writers: records the PID of a page about to be written to the DEFAULT_RUH and returns the RU epoch it belongs to.
+   // Writers: records the PID of a page (the block with compression) about to be written to the DEFAULT_RUH and returns the
+   // RU epoch it belongs to.
    ru_epoch_t record(PID pid);
    // -------------------------------------------------------------------------------------
    // ru_epoch_mgr only. Each returns the number of blocks it wrote, they are accounted to the open RU epoch by the caller.
@@ -63,10 +66,14 @@ class LBAChain
    // Makes the LBAs recorded so far for the RU epochs <= ru_epoch durable.
    u64 sealUpTo(ru_epoch_t ru_epoch);
    u64 stalls() const { return stalls_counter.load(std::memory_order_relaxed); }
+   // Writers currently waiting for a free slot of the ring.
+   s64 stalledWriters() const { return stalled_writers.load(std::memory_order_relaxed); }
    // -------------------------------------------------------------------------------------
    // Bg page fixers: reads the chain of the RU epoch. Appends its entries to entries (when not null) and its blocks
    // (PID, RU epoch it was written to) to blocks.
    static void readChain(int fd, PID head, ru_epoch_t ru_epoch, std::vector<PID>* entries, std::vector<std::pair<PID, ru_epoch_t>>& blocks);
+   // Bg page fixers: frees a block of a reclaimed chain, as listed by readChain().
+   static void recycleBlock(BufferManager& bm, PID pid, ru_epoch_t written_ru_epoch);
 
   private:
    // Not part of the block, so that the block is written as is.
@@ -93,6 +100,7 @@ class LBAChain
    // Sequence number of the active block, the block seq lives in the slot seq % n_blocks.
    alignas(CACHE_LINE_SIZE) std::atomic<u64> active_seq{0};
    alignas(CACHE_LINE_SIZE) std::atomic<u64> stalls_counter{0};
+   std::atomic<s64> stalled_writers{0};
    // ru_epoch_mgr only: the blocks in [sealed_seq, active_seq) are closed but not sealed yet.
    u64 sealed_seq = 0;
    std::vector<ru_epoch_t> dirty_heads;
@@ -105,6 +113,8 @@ class LBAChain
    void activateNext(u64 seq, u32 reserved, ru_epoch_t ru_epoch);
    // Returns true if the block got written, an empty block is only recycled.
    bool seal(u64 seq);
+   // Where a block gets written to: a fresh PID, or a raw block with compression.
+   PID allocateBlock();
    void persistDirtyHeads();
 };
 // -------------------------------------------------------------------------------------

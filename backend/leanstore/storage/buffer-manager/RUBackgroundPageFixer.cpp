@@ -109,8 +109,9 @@ struct RUBackgroundPageFixer::ThreadContext {
 // -------------------------------------------------------------------------------------
 // Inserts the IO frame of a page about to be fixed, the workers that want to load the page wait on it until
 // releaseIOFrame(). Pre: partition.ht_mutex is held and the page has no IO frame.
-static void insertFixerIOFrame(Partition& partition, PID pid)
+static void insertFixerIOFrame(Partition& partition, PID pid, std::atomic<s64>& io_frames_held)
 {
+   io_frames_held.fetch_add(1, std::memory_order_relaxed);
    IOFrame& io_frame = partition.io_ht.insert(pid);
    io_frame.readers_counter = 1;
    io_frame.state = IOFrame::STATE::READING;
@@ -119,7 +120,22 @@ static void insertFixerIOFrame(Partition& partition, PID pid)
    ensure(ok);
 }
 // -------------------------------------------------------------------------------------
-RUBackgroundPageFixer::RUBackgroundPageFixer(BufferManager& bm) : bm(bm) {}
+RUBackgroundPageFixer::RUBackgroundPageFixer(BufferManager& bm) : bm(bm)
+{
+   stats.threads = std::make_unique<ThreadStats[]>(std::max<s32>(FLAGS_ru_gc_threads, 1));
+}
+// -------------------------------------------------------------------------------------
+u64 RUBackgroundPageFixer::nowNs()
+{
+   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::setPhase(ThreadContext& ctx, Phase phase)
+{
+   ThreadStats& t = stats.threads[ctx.gc_id];
+   t.phase_since_ns.store(nowNs(), std::memory_order_relaxed);
+   t.phase.store(static_cast<u8>(phase), std::memory_order_relaxed);
+}
 // -------------------------------------------------------------------------------------
 void RUBackgroundPageFixer::start()
 {
@@ -132,9 +148,11 @@ bool RUBackgroundPageFixer::tryEnqueueRUEpoch(ru_epoch_t ru_epoch, bool log_only
 {
    // Give priority to the bg page fixer thread, No need to contend with them.
    if (!queue_m.try_lock()) {
+      stats.enqueue_failures.fetch_add(1, std::memory_order_relaxed);
       return false;
    }
    to_gc_epochs.push_back({ru_epoch, log_only});
+   stats.jobs_enqueued.fetch_add(1, std::memory_order_relaxed);
    if (sleeping_threads > 0) {
       queue_m.unlock();
       queue_cv.notify_all();
@@ -161,6 +179,7 @@ void RUBackgroundPageFixer::run(u32 gc_id)
 
    ThreadContext ctx(gc_id);
    while (bm.bg_threads_keep_running) {
+      setPhase(ctx, Phase::IDLE);
       waitForRUEpochsToCollect(ctx);
       for (const GCJob& job : ctx.jobs) {
          if (!bm.bg_threads_keep_running) break;
@@ -194,6 +213,7 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
    // The log of an RU epoch is reclaimed only once. When it was reclaimed early, by a log_only
    // job (which always precedes in the queue), its pages are already fixed and its log is empty.
    const bool scan_log = job.log_only || !set.log_reclaimed.load(std::memory_order_acquire);
+   setPhase(ctx, Phase::MAP_LOG);
    mapRUEpochLog(ctx, logging, scan_log);
    auto start = std::chrono::system_clock::now();
 
@@ -215,28 +235,37 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
          if (FLAGS_bg_page_fixer_tree_lookup) {
             fixLBAChainBatchInTree(ctx, pids, count);
          } else {
+            setPhase(ctx, Phase::READ);
             const u64 pages_to_fix = scanLBAChainBatch(ctx, pids, count);
+            setPhase(ctx, Phase::FIX);
             fixPages(ctx, pages_to_fix);
          }
+         setPhase(ctx, Phase::HOT);
          fixHotPages(ctx);
+         stats.chain_done.fetch_add(count, std::memory_order_relaxed);
       }
    } else {
       // The GC threads split the log in batches of 4 KiB.
       while (offset + sizeof(cr::WALEntry) < ctx.cur_log_segment_size) {
          ctx.actually_fixed = 0;
          offset = set.offset_batch.fetch_add(4096);
+         setPhase(ctx, Phase::READ);
          const u64 pages_to_fix = scanLogBatch(ctx, offset);
+         setPhase(ctx, Phase::FIX);
          fixPages(ctx, pages_to_fix);
          // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
+         setPhase(ctx, Phase::HOT);
          fixHotPages(ctx);
       }
    }
+   setPhase(ctx, Phase::DRAIN);
    drainDeferredHotPages(ctx);
    // -------------------------------------------------------------------------------------
    auto end = std::chrono::system_clock::now();
    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
    set.total_fixed.fetch_add(ctx.total_fixed);
    if (set.done_gc.fetch_sub(1) == 1) {
+      setPhase(ctx, Phase::FINISH);
       if (ctx.log_only) {
          finishRUEpochLogReclaim(ctx, duration.count());
       } else {
@@ -244,6 +273,7 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
       }
    }
    ctx.total_fixed = 0;
+   setPhase(ctx, Phase::BARRIER);
    while (set.done_gc.load() != FLAGS_ru_gc_threads) {
    }
 }
@@ -259,6 +289,10 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
       set.m.unlock();
       return;
    }
+   stats.cur_epoch.store(gc_ru_epoch, std::memory_order_relaxed);
+   stats.cur_epoch_start_ns.store(nowNs(), std::memory_order_relaxed);
+   stats.chain_entries.store(0, std::memory_order_relaxed);
+   stats.chain_done.store(0, std::memory_order_relaxed);
    logging.mutex.lock();
    if (ctx.log_only) {
       // A full log is already redirected to the sink logs (see Logging::reserveLSN()), which
@@ -307,6 +341,7 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
    logging.mutex.unlock();
    if (FLAGS_bg_page_fixer_variant == 2) {
       loadLBAChain(set, gc_ru_epoch, /* with_entries */ true);
+      stats.chain_entries.store(set.lba_chain_entries.size(), std::memory_order_relaxed);
    }
 
    ensure_equal(set.offset_batch.load(), 0);
@@ -349,11 +384,12 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
       // The chain lives as long as the RU epoch. Its head slot is reused by the RU epoch opened in this slot, which
       // only happens once the set is reset.
       for (const auto& [pid, written_ru_epoch] : set.lba_chain_blocks) {
-         bm.recyclePID(pid, written_ru_epoch, DEFAULT_RUH);
+         LBAChain::recycleBlock(bm, pid, written_ru_epoch);
       }
       bm.persistant_ru_state->chainHead(ctx.current_gc_epoch) = INVALID_PID;
    }
    set.reset();
+   stats.cur_epoch.store(-1, std::memory_order_relaxed);
    bm.reclaimed_ru_epoch[DEFAULT_RUH].fetch_add(1);
    // Also stops redirecting an early reclaimed log, so that the next RU epoch mapped to it can use it.
    logging.reset();
@@ -377,6 +413,7 @@ void RUBackgroundPageFixer::finishRUEpochLogReclaim(ThreadContext& ctx, u64 seco
    ensure_equal(rc, 0);
    set.mmaped_log = nullptr;
    set.afterLogReclaim();
+   stats.cur_epoch.store(-1, std::memory_order_relaxed);
    logging.reset(/* keep_redirecting */ true);
    set.m.unlock();
    if (FLAGS_wal && FLAGS_wal_pwrite) {
@@ -483,6 +520,9 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
          continue;
       }
       ensure_lt(pid, bm.max_pid);
+      if (FLAGS_bg_page_fixer_tree_lookup_state_filter && !mayBeDiscardedInLog(ctx, pid)) {
+         continue;
+      }
       const u64 idx = ctx.to_fix_pids.size();
       ctx.to_fix_pids.emplace_back(pid, nullptr, INVALID_LSN, INVALID_LSN, 0);
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.r_ring);
@@ -494,6 +534,7 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
    if (to_read == 0) {
       return;
    }
+   setPhase(ctx, Phase::READ);
    int s = io_uring_submit_and_wait(&ctx.r_ring, to_read);
    ensure_equal(s, static_cast<int>(to_read));
    struct io_uring_cqe* cqe;
@@ -508,6 +549,7 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
    io_uring_cq_advance(&ctx.r_ring, to_read);
    COUNTERS_BLOCK(gc) { GCCounters::myCounters().pages_read += to_read; }
    // -------------------------------------------------------------------------------------
+   setPhase(ctx, Phase::LOOKUP);
    for (u64 idx = 0; idx < to_read; ++idx) {
       if (lookUpPageInTree(ctx, idx)) {
          redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
@@ -543,28 +585,58 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
    }
    if (!reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf) {
       // Inner and meta nodes are pinned, they are never discarded.
-      COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+      COUNTERS_BLOCK(gc)
+      {
+         GCCounters::myCounters().clean++;
+         GCCounters::myCounters().tree_inner++;
+      }
       return false;
    }
+   u64 retries = 0;
+   // Records the retries of this lookup on every exit.
+   auto record_retries = [&retries]() {
+      COUNTERS_BLOCK(gc)
+      {
+         auto& max_retries = GCCounters::myCounters().tree_max_retries;
+         if (retries > max_retries.load(std::memory_order_relaxed)) {
+            max_retries.store(retries, std::memory_order_relaxed);
+         }
+      }
+   };
    while (true) {
       jumpmuTry()
       {
          auto parent_handler = DTRegistry::global_dt_registry.findParentOfPage(page.dt_id, page, pid);
          if (!parent_handler) {
             // Deleted or merged away since, or its pid got reused.
-            COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+            COUNTERS_BLOCK(gc)
+            {
+               GCCounters::myCounters().clean++;
+               GCCounters::myCounters().tree_parent_not_found++;
+            }
+            record_retries();
             jumpmu_return false;
          }
          Swip<BufferFrame>& swip = parent_handler->swip;
          if (!swip.isEVICTED()) {
             parent_handler->parent_guard.recheck();
-            COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_fixed++; }
+            COUNTERS_BLOCK(gc)
+            {
+               GCCounters::myCounters().hot_fixed++;
+               GCCounters::myCounters().tree_swip_cached++;
+            }
             ctx.hot_pids.emplace_back(pid);
+            record_retries();
             jumpmu_return false;
          }
          if (!swip.isDIRTY()) {
             parent_handler->parent_guard.recheck();
-            COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+            COUNTERS_BLOCK(gc)
+            {
+               GCCounters::myCounters().clean++;
+               GCCounters::myCounters().tree_swip_clean++;
+            }
+            record_retries();
             jumpmu_return false;
          }
          // Jumps if the parent changed since the swip was read.
@@ -577,11 +649,16 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
             std::lock_guard<instrumented_mutex> _m(partition.ht_mutex);
             if (partition.io_ht.lookup(pid)) {
                // A worker is loading the page and applies its log records, the page is cached afterwards.
-               COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_fixed++; }
+               COUNTERS_BLOCK(gc)
+               {
+                  GCCounters::myCounters().hot_fixed++;
+                  GCCounters::myCounters().tree_io_frame_busy++;
+               }
                ctx.hot_pids.emplace_back(pid);
+               record_retries();
                jumpmu_return false;
             }
-            insertFixerIOFrame(partition, pid);
+            insertFixerIOFrame(partition, pid, stats.io_frames_held);
          }
          LID* lsn_list = ctx.parent_lsns[idx];
          std::memcpy(lsn_list, swip.pendingLSNs(), nb_log_records * sizeof(LID));
@@ -601,13 +678,44 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
          info.lsn_list = lsn_list;
          info.last_lsn = lsn_list[nb_log_records - 1];
          info.nb_log_records = nb_log_records;
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_claimed++; }
+         record_retries();
          jumpmu_return true;
       }
       jumpmuCatch()
       {
          COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_retries++; }
+         if ((++retries % (u64(1) << 20)) == 0) {
+            LOG_WARN(bm.logger, "ru_gc_%u: %lu retries looking up pid %lu (dt %u) of RU epoch %lu in its tree, holding %ld IO frames", ctx.gc_id,
+                     retries, pid, static_cast<u32>(page.dt_id), ctx.current_gc_epoch, stats.io_frames_held.load());
+         }
       }
    }
+}
+// -------------------------------------------------------------------------------------
+// FLAGS_bg_page_fixer_tree_lookup_state_filter: returns false if the page state rules out a discard into the log being
+// reclaimed, so the page is not read. Same reasoning as needsFix(): a clean page only moves to cached, a page
+// discarded into another log was written back to another RU epoch. Cached and NOT_SURE pages are still read and looked
+// up. The state is loaded once, it may change under us (unlike getLogID() this does not assert the state).
+bool RUBackgroundPageFixer::mayBeDiscardedInLog(ThreadContext& ctx, PID pid)
+{
+   const u64 v = bm.discard_state[pid].raw.load(std::memory_order_acquire);
+   if (v == 0) {
+      // Free
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().filter_free++; }
+      return false;
+   }
+   const u64 state = (v & PageState::state_mask) >> PageState::state_shift;
+   if (state == PageState::CLEAN) {
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().filter_clean++; }
+      return false;
+   }
+   if (state == PageState::DISCARDED && ((v & PageState::log_id_mask) >> PageState::log_id_shift) != ctx.currently_reclaiming_log_id) {
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().filter_other_log++; }
+      return false;
+   }
+   COUNTERS_BLOCK(gc) { GCCounters::myCounters().filter_passed++; }
+   return true;
 }
 // -------------------------------------------------------------------------------------
 // Returns true if the page may be discarded with log records in the log being reclaimed. A cached page is queued in
@@ -705,7 +813,7 @@ bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, LID first_lsn,
    if (bm.discard_state[pid].getLogID() != ctx.currently_reclaiming_log_id) {
       return false;
    }
-   insertFixerIOFrame(partition, pid);
+   insertFixerIOFrame(partition, pid, stats.io_frames_held);
 
    auto p = bm.discard_state[pid].getLocked();
    ensure(bm.discard_state[pid].isDiscarded());
@@ -763,6 +871,7 @@ void RUBackgroundPageFixer::fixPages(ThreadContext& ctx, u64 pages_to_fix)
 // Waits for the write backs issued by redoAndWriteBack() (ctx.actually_fixed of them) and acknowledges them.
 void RUBackgroundPageFixer::waitForFixedPagesWriteBack(ThreadContext& ctx)
 {
+   setPhase(ctx, Phase::WRITE_BACK);
    // TODO(mfd) : Submit and wait.
    u32 ready = io_uring_peek_batch_cqe(&ctx.w_ring, ctx.cqes.get(), ctx.actually_fixed);
 
@@ -974,6 +1083,7 @@ void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
             break;
          case HotPage::RETRY:
             ctx.deferred_hot_pids.push_back(pid);
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_deferred++; }
             break;
          case HotPage::WRITING:
             if (ctx.hot_bfs.size() == ThreadContext::batch_size) {
@@ -984,6 +1094,7 @@ void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
    }
    writeBackHotPages(ctx);
    ctx.hot_pids.clear();
+   stats.threads[ctx.gc_id].deferred_hot.store(ctx.deferred_hot_pids.size(), std::memory_order_relaxed);
 }
 // -------------------------------------------------------------------------------------
 // Never blocks: the guards jump when the frame is latched, and the page is retried later.
@@ -1130,6 +1241,7 @@ void RUBackgroundPageFixer::drainDeferredHotPages(ThreadContext& ctx)
       ensure(ctx.hot_pids.empty());
       ctx.hot_pids.swap(ctx.deferred_hot_pids);
       fixHotPages(ctx);
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().drain_rounds++; }
       if (!ctx.deferred_hot_pids.empty()) {
          if (++rounds % 65536 == 0) {
             LOG_INFO(bm.logger, "ru_gc_%u still waiting for %lu hot pages of RU epoch %lu", ctx.gc_id, ctx.deferred_hot_pids.size(), ctx.current_gc_epoch);
@@ -1178,6 +1290,7 @@ void RUBackgroundPageFixer::releaseIOFrame(PID pid)
    // jump and retry, When they acquire the partition lock, they won't
    // see the frame.
    frame.mutex.unlock();
+   stats.io_frames_held.fetch_sub(1, std::memory_order_relaxed);
    // -------------------------------------------------------------------------------------
    if (frame.readers_counter.fetch_add(-1) == 1) {
       partition.io_ht.remove(pid);

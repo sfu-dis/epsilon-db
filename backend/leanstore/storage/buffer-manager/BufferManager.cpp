@@ -32,12 +32,14 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <set>
+#include <tuple>
 // -------------------------------------------------------------------------------------
 namespace leanstore
 {
@@ -64,9 +66,6 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
    ensure(ssd_layout.db_start == 0);
    if (FLAGS_bg_page_fixer_variant != 1 && FLAGS_bg_page_fixer_variant != 2) {
       SetupFailed("bg_page_fixer_variant must be 1 or 2");
-   }
-   if (FLAGS_bg_page_fixer_variant == 2 && FLAGS_compress_pages) {
-      SetupFailed("bg_page_fixer_variant 2 does not support compress_pages");
    }
    // -------------------------------------------------------------------------------------
    // Init DRAM pool
@@ -239,7 +238,18 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          LOG_INFO(logger, "Compression: %lu blocks, %lu logical pages, page map of %.1f MiB reserved", max_pid, pid_space,
                   pid_space * sizeof(PID) / 1024.0 / 1024.0);
          if (!FLAGS_initialize_leanstore) {
-            compressed_space->recover(FLAGS_compression_space_map_file);
+            // The LBA chain blocks are raw blocks that no PID maps to, they are found by walking the chains.
+            std::vector<u64> chain_blocks;
+            if (FLAGS_bg_page_fixer_variant == 2) {
+               std::vector<std::pair<PID, ru_epoch_t>> blocks;
+               for (ru_epoch_t e = oldest_uncollected_ru_epoch[DEFAULT_RUH].load(); e <= ru_epoch[DEFAULT_RUH].load(); ++e) {
+                  LBAChain::readChain(ssd_fd, persistant_ru_state->chainHead(e), e, nullptr, blocks);
+               }
+               for (const auto& [block, written_ru_epoch] : blocks) {
+                  chain_blocks.push_back(block);
+               }
+            }
+            compressed_space->recover(FLAGS_compression_space_map_file, chain_blocks);
             LOG_INFO(logger, "Recovered the compression space map from %s, %lu blocks in use", FLAGS_compression_space_map_file.c_str(),
                      compressed_space->usedBlocks());
          }
@@ -248,6 +258,9 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       if (FLAGS_bg_page_fixer_variant == 2) {
          // Continues the chain of the recovered open RU epoch, if any.
          lba_chain = std::make_unique<LBAChain>(*this, ru_epoch[DEFAULT_RUH].load());
+         if (FLAGS_lba_chain_verify && !FLAGS_initialize_leanstore) {
+            verifyLBAChains("after recovery");
+         }
       }
       ru_epoch_mgr = std::make_unique<RUEpochManager>(*this);
       ru_bg_page_fixer = std::make_unique<RUBackgroundPageFixer>(*this);
@@ -382,6 +395,15 @@ void BufferManager::writeAllBufferFrames()
       });
    }
    stopRUEpochManagerThread();
+   if (FLAGS_compress_pages) {
+      // After the ru_epoch_mgr sealed the last LBA chain blocks, which take free blocks.
+      compressed_space->persist(FLAGS_compression_space_map_file, allocatedPIDsEnd());
+      LOG_INFO(logger, "Persisted the compression space map to %s, %lu blocks in use", FLAGS_compression_space_map_file.c_str(),
+               compressed_space->usedBlocks());
+      if (FLAGS_lba_chain_verify) {
+         verifyLBAChains("at shutdown");
+      }
+   }
    // TODO(mfd) : Move this as the responsability of the RU Epoch Manager.
    for (ruh_id_t ruh = 0; ruh < MAX_RUHS; ++ruh) {
       if (ruh >= fdp::num_ruhs) {
@@ -420,14 +442,14 @@ void BufferManager::writeAllBufferFramesCompressed()
       tls_writer_thread_id = ephemeral_write_id.fetch_add(1) % io_writer_threads_count;
       std::unique_ptr<u8, decltype(&std::free)> blocks(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, PACKER_BLOCKS * PAGE_SIZE)), &std::free);
       ensure(blocks != nullptr);
-      BlockPacker packer(*compressed_space, blocks.get(), PACKER_BLOCKS);
+      BlockPacker packer(*compressed_space, blocks.get(), PACKER_BLOCKS, lba_chain.get());
       auto flush = [&]() {
          packer.seal();
          for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
             s64 ret = nvme_pwrite(ssd_fd, packer.block(b_i), PAGE_SIZE, packer.blockOffset(b_i), DEFAULT_RUH);
             ensure_equal(ret, PAGE_SIZE);
          }
-         countWrittenBlocks(DEFAULT_RUH, packer.blocksCount());
+         countPackedBlocks(packer);
          packer.reset();
       };
       BufferFrame::Page page;
@@ -452,7 +474,9 @@ void BufferManager::writeAllBufferFramesCompressed()
             // The meta nodes (kept in memory) are stored uncompressed, recovery reads them without zstd.
             // The inner nodes (pinned) too, only the leaves are compressed.
             const bool compress = !bf.header.keep_in_memory && reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf;
-            const PID new_location = packer.add(page, compress, compressed_space->location(pid));
+            ru_epoch_t written_ru_epoch;
+            const PID new_location = packer.add(page, compress, compressed_space->location(pid), written_ru_epoch);
+            bf.page.ru_epoch = written_ru_epoch;
             const PID previous = compressed_space->exchangeLocation(pid, new_location);
             if (previous != new_location) {
                compressed_space->free(previous);
@@ -486,9 +510,7 @@ void BufferManager::writeAllBufferFramesCompressed()
       }
       LOG_INFO(logger, "Read back %lu meta nodes after the compressed shutdown flush", meta_nodes);
    }
-   compressed_space->persist(FLAGS_compression_space_map_file, allocatedPIDsEnd());
-   LOG_INFO(logger, "Compressed shutdown flush: %lu frames written, %lu blocks in use. Persisted the space map to %s", written_frames.load(),
-            compressed_space->usedBlocks(), FLAGS_compression_space_map_file.c_str());
+   LOG_INFO(logger, "Compressed shutdown flush: %lu frames written, %lu blocks in use", written_frames.load(), compressed_space->usedBlocks());
    const u64 written_pages = compressed_space->written_pages.load();
    if (written_pages) {
       LOG_INFO(logger, "Compression: %lu pages written into %lu blocks, %.2f compression ratio, %.2f pages per block", written_pages,
@@ -1208,8 +1230,27 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
    // -------------------------------------------------------------------------------------
    if (io_frame.state == IOFrame::STATE::READING) {
       io_frame.readers_counter++;  // incremented while holding partition lock
+      const bool fixer_frame = io_frame.inserted_by_bg_page_fixer;
       g_guard->unlock();
-      io_frame.mutex.lock();
+      COUNTERS_BLOCK(gc) { WorkerCounters::myCounters().io_frame_reading_waits++; }
+      if (fixer_frame) {
+         bm_stats.workers_waiting_fixer_io.fetch_add(1, std::memory_order_relaxed);
+         const auto wait_start = std::chrono::steady_clock::now();
+         io_frame.mutex.lock();
+         const u64 wait_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - wait_start).count();
+         bm_stats.workers_waiting_fixer_io.fetch_sub(1, std::memory_order_relaxed);
+         COUNTERS_BLOCK(gc)
+         {
+            auto& counters = WorkerCounters::myCounters();
+            counters.fixer_io_frame_waits++;
+            counters.fixer_io_frame_wait_ns += wait_ns;
+            if (wait_ns > counters.fixer_io_frame_max_wait_ns.load(std::memory_order_relaxed)) {
+               counters.fixer_io_frame_max_wait_ns.store(wait_ns, std::memory_order_relaxed);
+            }
+         }
+      } else {
+         io_frame.mutex.lock();
+      }
       io_frame.mutex.unlock();
       if (io_frame.readers_counter.fetch_add(-1) == 1) {
          g_guard->lock();
@@ -1266,6 +1307,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       {
          WorkerCounters::myCounters().to_delete_retry_debug_counter++;
       }
+      COUNTERS_BLOCK(gc) { WorkerCounters::myCounters().io_frame_to_delete_retries++; }
       jumpmu::jump(JumpMURetryCause::IO_FRAME_TO_DELETE);
    }
    ensure(false);
@@ -1302,7 +1344,8 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
    page.prev_ruh = prev_ruh;
    ensure(bf.header.next_ruh != UNMAPPED_RUH);
    const ruh_id_t ruh = page.ruh = bf.header.next_ruh;
-   if (lba_chain && ruh == DEFAULT_RUH) {
+   if (lba_chain && ruh == DEFAULT_RUH && !FLAGS_compress_pages) {
+      // With compression, the BlockPacker records the blocks instead and sets the RU epoch of the page.
       // The RU epoch is the one of the LBA chain block the PID got recorded into. The writers keep
       // magic_debugging_number equal to the PID of the page being written back.
       page.ru_epoch = lba_chain->record(page.magic_debugging_number);
@@ -1344,6 +1387,95 @@ void BufferManager::countWrittenBlocks(ruh_id_t ruh, u64 n)
    ensure(tls_writer_thread_id != -1);
    ru_discard_set[ruh][ru_epoch[ruh].load(std::memory_order_acquire)].total.fetch_add(n, std::memory_order_relaxed);
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(n, std::memory_order_relaxed);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::countPackedBlocks(const BlockPacker& packer)
+{
+   if (!lba_chain) {
+      countWrittenBlocks(DEFAULT_RUH, packer.blocksCount());
+      return;
+   }
+   ensure(tls_writer_thread_id != -1);
+   for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
+      ru_discard_set[DEFAULT_RUH][packer.blockRUEpoch(b_i)].total.fetch_add(1, std::memory_order_relaxed);
+   }
+   writers_iostat[tls_writer_thread_id].io_counter[DEFAULT_RUH].fetch_add(packer.blocksCount(), std::memory_order_relaxed);
+}
+// -------------------------------------------------------------------------------------
+// The pages are grouped by block so that each block is read once. A page is in a block of its RU epoch's chain unless it
+// is stored uncompressed (inner and meta nodes): it is then rewritten in place, its block is in the chain of every
+// RU epoch it got written to.
+void BufferManager::verifyLBAChains(const char* when)
+{
+   ensure(FLAGS_compress_pages && lba_chain);
+   const ru_epoch_t oldest = oldest_uncollected_ru_epoch[DEFAULT_RUH].load();
+   const ru_epoch_t newest = ru_epoch[DEFAULT_RUH].load();
+   std::set<std::pair<u64, ru_epoch_t>> listed;  // (block, RU epoch whose chain lists it)
+   std::vector<std::pair<PID, ru_epoch_t>> chain_blocks;
+   u64 entries_count = 0;
+   for (ru_epoch_t e = oldest; e <= newest; ++e) {
+      std::vector<PID> entries;
+      LBAChain::readChain(ssd_fd, persistant_ru_state->chainHead(e), e, &entries, chain_blocks);
+      for (const PID block : entries) {
+         if (block != INVALID_PID) {
+            ensure_lt(block, max_pid);
+            listed.emplace(block, e);
+            entries_count++;
+         }
+      }
+   }
+   u64 bad_chain_blocks = 0;
+   for (const auto& [block, written_ru_epoch] : chain_blocks) {
+      if (!compressed_space->isRawBlock(block)) {
+         std::cerr << "[LBA chain verify] The chain block " << block << " is not reserved" << std::endl;
+         bad_chain_blocks++;
+      }
+   }
+   // (block, offset, pid)
+   std::vector<std::tuple<u64, u64, PID>> pages;
+   for (PID pid = 0; pid < pid_space; pid++) {
+      const PID location = compressed_space->location(pid);
+      if (cpid::onSSD(location)) {
+         pages.emplace_back(cpid::block(location), cpid::offsetInBlock(location), pid);
+      }
+   }
+   std::sort(pages.begin(), pages.end());
+   u8* buffer = compression::threadLocalBlockBuffer();
+   // stale : pages of an already reclaimed RU epoch, left in a block the bg page fixer did not move.
+   u64 read_block = ~u64(0), unlisted = 0, out_of_range = 0, stale = 0, blocks_count = 0;
+   for (const auto& [block, offset, pid] : pages) {
+      if (block != read_block) {
+         const s64 ret = pread(ssd_fd, buffer, PAGE_SIZE, block * PAGE_SIZE);
+         ensure_equal(ret, s64(PAGE_SIZE));
+         read_block = block;
+         blocks_count++;
+      }
+      const PID location = compressed_space->location(pid);
+      ru_epoch_t e;
+      if (cpid::length(location) == PAGE_SIZE) {
+         const auto& page = *reinterpret_cast<const BufferFrame::Page*>(buffer);
+         ensure_equal(page.magic_debugging_number, pid);
+         e = page.ru_epoch;
+      } else {
+         e = compression::ruEpoch(buffer + offset);
+      }
+      if (e >= 0 && e < oldest) {
+         stale++;
+      } else if (e < oldest || e > newest) {
+         if (out_of_range++ < 10) {
+            std::cerr << "[LBA chain verify] Page " << pid << " in block " << block << " has the RU epoch " << e << ", not in [" << oldest
+                      << ", " << newest << "]" << std::endl;
+         }
+      } else if (!listed.count({block, e})) {
+         if (unlisted++ < 10) {
+            std::cerr << "[LBA chain verify] Page " << pid << " in block " << block << " of RU epoch " << e << " is not in its chain" << std::endl;
+         }
+      }
+   }
+   LOG_INFO(logger, "LBA chain verify %s: RU epochs [%ld, %ld], %lu chain blocks, %lu entries, %lu pages in %lu blocks, %lu unlisted, "
+            "%lu out of range, %lu stale, %lu chain blocks not reserved", when, oldest, newest, chain_blocks.size(), entries_count,
+            pages.size(), blocks_count, unlisted, out_of_range, stale, bad_chain_blocks);
+   ensure(unlisted == 0 && out_of_range == 0 && bad_chain_blocks == 0);
 }
 // -------------------------------------------------------------------------------------
 // SSD management

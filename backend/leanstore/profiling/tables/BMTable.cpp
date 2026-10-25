@@ -3,6 +3,8 @@
 
 #include "leanstore/Config.hpp"
 #include "leanstore/storage/buffer-manager/CompressedSpace.hpp"
+#include "leanstore/storage/buffer-manager/LBAChain.hpp"
+#include "leanstore/storage/buffer-manager/RUBackgroundPageFixer.hpp"
 #include "leanstore/profiling/counters/PPCounters.hpp"
 #include "leanstore/profiling/counters/GCCounters.hpp"
 #include "leanstore/profiling/counters/WorkerCounters.hpp"
@@ -243,6 +245,149 @@ void BMTable::open()
    });
    columns.emplace("gc_tree_other_epoch", [&](Column& col) {
       col << sum(GCCounters::gc_counters, &GCCounters::tree_other_ru_epoch);
+   });
+   // -------------------------------------------------------------------------------------
+   // BG PAGE FIXER DEBUGGING (livelock / deadlock hunting). Counters are per second, gauges are sampled.
+   const auto gc_counter = [this](const std::string& name, atomic<u64> GCCounters::*c) {
+      columns.emplace(name, [c](Column& col) { col << sum(GCCounters::gc_counters, c); });
+   };
+   gc_counter("gc_tree_inner", &GCCounters::tree_inner);
+   gc_counter("gc_tree_parent_nf", &GCCounters::tree_parent_not_found);
+   gc_counter("gc_tree_swip_cached", &GCCounters::tree_swip_cached);
+   gc_counter("gc_tree_swip_clean", &GCCounters::tree_swip_clean);
+   gc_counter("gc_tree_io_busy", &GCCounters::tree_io_frame_busy);
+   gc_counter("gc_tree_claimed", &GCCounters::tree_claimed);
+   gc_counter("gc_filter_free", &GCCounters::filter_free);
+   gc_counter("gc_filter_clean", &GCCounters::filter_clean);
+   gc_counter("gc_filter_other_log", &GCCounters::filter_other_log);
+   gc_counter("gc_filter_passed", &GCCounters::filter_passed);
+   gc_counter("gc_hot_deferred", &GCCounters::hot_deferred);
+   gc_counter("gc_drain_rounds", &GCCounters::drain_rounds);
+   columns.emplace("gc_tree_max_retries", [](Column& col) {
+      u64 m = 0;
+      for (auto& c : GCCounters::gc_counters) {
+         m = std::max<u64>(m, c.tree_max_retries.exchange(0));
+      }
+      col << m;
+   });
+   // One letter per ru_gc thread, see RUBackgroundPageFixer::phase_letters.
+   columns.emplace("gc_phases", [this](Column& col) {
+      std::string phases;
+      if (bm.ru_bg_page_fixer) {
+         for (s32 t = 0; t < FLAGS_ru_gc_threads; ++t) {
+            phases += RUBackgroundPageFixer::phase_letters[bm.ru_bg_page_fixer->stats.threads[t].phase.load(std::memory_order_relaxed)];
+         }
+      }
+      col << (phases.empty() ? std::string("-") : phases);
+   });
+   for (u8 p = 0; p < static_cast<u8>(RUBackgroundPageFixer::Phase::COUNT); ++p) {
+      columns.emplace(std::string("gc_thr_") + RUBackgroundPageFixer::phase_names[p], [p, this](Column& col) {
+         u64 n = 0;
+         if (bm.ru_bg_page_fixer) {
+            for (s32 t = 0; t < FLAGS_ru_gc_threads; ++t) {
+               n += bm.ru_bg_page_fixer->stats.threads[t].phase.load(std::memory_order_relaxed) == p;
+            }
+         }
+         col << n;
+      });
+   }
+   // The longest time a busy (not idle) ru_gc thread has spent in its current phase, a stuck thread keeps growing it.
+   columns.emplace("gc_max_phase_ms", [this](Column& col) {
+      u64 max_ns = 0;
+      if (bm.ru_bg_page_fixer) {
+         const u64 now = RUBackgroundPageFixer::nowNs();
+         for (s32 t = 0; t < FLAGS_ru_gc_threads; ++t) {
+            auto& ts = bm.ru_bg_page_fixer->stats.threads[t];
+            if (ts.phase.load(std::memory_order_relaxed) == static_cast<u8>(RUBackgroundPageFixer::Phase::IDLE)) {
+               continue;
+            }
+            const u64 since = ts.phase_since_ns.load(std::memory_order_relaxed);
+            max_ns = std::max<u64>(max_ns, now > since ? now - since : 0);
+         }
+      }
+      col << max_ns / 1000000;
+   });
+   columns.emplace("gc_deferred_hot_now", [this](Column& col) {
+      u64 n = 0;
+      if (bm.ru_bg_page_fixer) {
+         for (s32 t = 0; t < FLAGS_ru_gc_threads; ++t) {
+            n += bm.ru_bg_page_fixer->stats.threads[t].deferred_hot.load(std::memory_order_relaxed);
+         }
+      }
+      col << n;
+   });
+   columns.emplace("gc_io_frames_held", [this](Column& col) {
+      col << (bm.ru_bg_page_fixer ? bm.ru_bg_page_fixer->stats.io_frames_held.load(std::memory_order_relaxed) : s64(0));
+   });
+   columns.emplace("gc_epoch", [this](Column& col) {
+      col << (bm.ru_bg_page_fixer ? bm.ru_bg_page_fixer->stats.cur_epoch.load(std::memory_order_relaxed) : s64(-1));
+   });
+   columns.emplace("gc_epoch_age_s", [this](Column& col) {
+      u64 age_s = 0;
+      if (bm.ru_bg_page_fixer && bm.ru_bg_page_fixer->stats.cur_epoch.load(std::memory_order_relaxed) >= 0) {
+         age_s = (RUBackgroundPageFixer::nowNs() - bm.ru_bg_page_fixer->stats.cur_epoch_start_ns.load(std::memory_order_relaxed)) / 1000000000;
+      }
+      col << age_s;
+   });
+   columns.emplace("gc_chain_entries", [this](Column& col) {
+      col << (bm.ru_bg_page_fixer ? bm.ru_bg_page_fixer->stats.chain_entries.load(std::memory_order_relaxed) : u64(0));
+   });
+   columns.emplace("gc_chain_done_pct", [this](Column& col) {
+      double pct = 0;
+      if (bm.ru_bg_page_fixer) {
+         const u64 entries = bm.ru_bg_page_fixer->stats.chain_entries.load(std::memory_order_relaxed);
+         pct = entries ? bm.ru_bg_page_fixer->stats.chain_done.load(std::memory_order_relaxed) * 100.0 / entries : 0.0;
+      }
+      col << pct;
+   });
+   columns.emplace("gc_jobs_enqueued", [this](Column& col) {
+      col << (bm.ru_bg_page_fixer ? bm.ru_bg_page_fixer->stats.jobs_enqueued.load(std::memory_order_relaxed) : u64(0));
+   });
+   columns.emplace("gc_enqueue_fail", [this](Column& col) {
+      col << (bm.ru_bg_page_fixer ? bm.ru_bg_page_fixer->stats.enqueue_failures.exchange(0, std::memory_order_relaxed) : u64(0));
+   });
+   // RU epochs of the DEFAULT_RUH: open, being reclaimed, reclaimed, the oldest not handed to the GC yet.
+   columns.emplace("ru_open", [this](Column& col) { col << bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed); });
+   columns.emplace("ru_reclaiming", [this](Column& col) { col << bm.reclaiming_ru_epoch.load(std::memory_order_relaxed); });
+   columns.emplace("ru_reclaimed", [this](Column& col) { col << bm.reclaimed_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed); });
+   columns.emplace("ru_oldest_uncollected", [this](Column& col) {
+      col << bm.oldest_uncollected_ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed);
+   });
+   // 1 when the slot of the next RU epoch is still in use: the ru_epoch_mgr defers opening it (the GC is behind).
+   columns.emplace("ru_next_slot_busy", [this](Column& col) {
+      if (!FLAGS_enable_discarding) {
+         col << 0;
+         return;
+      }
+      const ru_epoch_t next = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_relaxed) + 1;
+      col << static_cast<u32>(bm.ru_discard_set[DEFAULT_RUH].at(next).active.load(std::memory_order_relaxed));
+   });
+   columns.emplace("lba_stalls", [this](Column& col) {
+      u64 delta = 0;
+      if (bm.lba_chain) {
+         const u64 stalls = bm.lba_chain->stalls();
+         delta = stalls - prev_lba_chain_stalls;
+         prev_lba_chain_stalls = stalls;
+      }
+      col << delta;
+   });
+   columns.emplace("lba_stalled_now", [this](Column& col) { col << (bm.lba_chain ? bm.lba_chain->stalledWriters() : s64(0)); });
+   // Workers
+   columns.emplace("wk_fixer_wait_now", [this](Column& col) { col << bm.bm_stats.workers_waiting_fixer_io.load(std::memory_order_relaxed); });
+   columns.emplace("wk_fixer_waits", [](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::fixer_io_frame_waits); });
+   columns.emplace("wk_fixer_wait_ms", [](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::fixer_io_frame_wait_ns) / 1000000.0;
+   });
+   columns.emplace("wk_fixer_max_wait_ms", [](Column& col) {
+      u64 m = 0;
+      for (auto& c : WorkerCounters::worker_counters) {
+         m = std::max<u64>(m, c.fixer_io_frame_max_wait_ns.exchange(0));
+      }
+      col << m / 1000000.0;
+   });
+   columns.emplace("wk_io_reading_waits", [](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::io_frame_reading_waits); });
+   columns.emplace("wk_io_to_delete_retries", [](Column& col) {
+      col << sum(WorkerCounters::worker_counters, &WorkerCounters::io_frame_to_delete_retries);
    });
    // -------------------------------------------------------------------------------------
    columns.emplace("discard_state_peak_mem_usage", [this](Column& col) {

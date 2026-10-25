@@ -25,6 +25,7 @@ class BMTable : public ProfilingTable
    u64 local_undiscardable_wb_total = 0;
    u64 local_io_phase_us[1+MAX_PENDING_LSN_COUNT] = {0};
    u64 local_agg_io_phase_us = 0;
+   u64 prev_lba_chain_stalls = 0;
    Hist<int, uint64_t> ioReadHist;
    Hist<int, uint64_t> redoHist;
    Hist<int, uint64_t> ioWriteHist;

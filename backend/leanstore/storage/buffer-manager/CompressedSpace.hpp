@@ -119,12 +119,19 @@ class CompressedSpace
    u64 allocateBlock();
    // Called by the writer once it is done packing pages into the block, before writing it.
    void sealBlock(u64 block, u32 packed_bytes);
+   // A sealed block that holds no page, for the LBA chain blocks (bg_page_fixer_variant 2), any thread. It is freed
+   // with free(rawBlockLocation(block)).
+   u64 allocateRawBlock();
+   static PID rawBlockLocation(u64 block) { return cpid::make(block * PAGE_SIZE, PAGE_SIZE); }
+   // A sealed block whose live bytes are exactly its raw block (no page maps to it).
+   bool isRawBlock(u64 block) const { return block_states[block].load() == SEALED && live_bytes[block].load() == static_cast<s32>(PAGE_SIZE); }
    // Frees the copy of a page that got rewritten elsewhere or deleted, no-op if the page is not on the SSD.
    void free(PID pid);
    // -------------------------------------------------------------------------------------
    // Persists the page map of the PIDs [0, pids_end) and the bump pointer, the live bytes are recomputed on recovery.
    void persist(const std::string& path, PID pids_end);
-   void recover(const std::string& path);
+   // raw_blocks : the blocks allocated by allocateRawBlock() that are still in use, the page map does not know them.
+   void recover(const std::string& path, const std::vector<u64>& raw_blocks);
    // -------------------------------------------------------------------------------------
    // Stats, written blocks are counted by the writers.
    std::atomic<u64> written_pages = 0;
@@ -163,15 +170,20 @@ class CompressedSpace
 // -------------------------------------------------------------------------------------
 // Packs the compressed pages of a writer into blocks, the caller writes them out after seal().
 // All the blocks of a batch stay open until seal(), a page goes to the fullest block it fits in (best fit).
+class LBAChain;  // Forward declaration
 class BlockPacker
 {
   public:
    // blocks: max_blocks * PAGE_SIZE bytes, aligned for O_DIRECT.
-   BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks);
+   // lba_chain (bg_page_fixer_variant 2): every block the packer takes is recorded in it, its RU epoch is the one of
+   // all the pages added to the block.
+   BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks, LBAChain* lba_chain);
    // Returns the new location of the page. Pre: !full()
    // compress = false stores the page as is in a block of its own, for the special nodes (inner and meta nodes).
    // Such a page is rewritten in place when its current location is already an uncompressed block.
-   PID add(const u8* page, bool compress, PID current_location);
+   // ru_epoch: the RU epoch the page is written to, as stored in its copy, the caller sets it in the frame.
+   // Without an LBA chain, it is the page's own ru_epoch.
+   PID add(const u8* page, bool compress, PID current_location, ru_epoch_t& ru_epoch);
    // There may be no room left for another page.
    bool full() const { return blocks_count >= max_blocks; }
    // Pre: the batch is sealed and written.
@@ -182,10 +194,13 @@ class BlockPacker
    u8* block(u64 slot) { return blocks + slot * PAGE_SIZE; }
    u64 blockOffset(u64 slot) const { return block_ids[slot] * PAGE_SIZE; }
    u64 slotOf(const void* block_ptr) const { return (reinterpret_cast<const u8*>(block_ptr) - blocks) / PAGE_SIZE; }
+   // Only with an LBA chain: the RU epoch the block got recorded to.
+   ru_epoch_t blockRUEpoch(u64 slot) const { return block_ru_epochs[slot]; }
 
   private:
    // Allocates the blocks and seals them, owns the page map.
    CompressedSpace& space;
+   LBAChain* const lba_chain;
    // Write buffer of the batch, slot i holds the content of block_ids[i].
    u8* const blocks;
    // Capacity of the batch in blocks.
@@ -200,6 +215,10 @@ class BlockPacker
    std::vector<u32> used;
    // Per slot: the block is rewritten in place, it is already sealed.
    std::vector<bool> in_place;
+   // Per slot, with an LBA chain: the RU epoch returned when the block got recorded.
+   std::vector<ru_epoch_t> block_ru_epochs;
+   // Records the block of the slot in the LBA chain, if any.
+   void recordBlock(u64 slot);
    // PAGE_SIZE buffer the page is compressed into before being copied to its block.
    std::unique_ptr<u8[]> scratch;
 };

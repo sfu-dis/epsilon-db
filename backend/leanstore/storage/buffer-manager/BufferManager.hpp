@@ -45,6 +45,7 @@ class RUBackgroundPageFixer;  // Forward declaration
 class SSDLayout;  // Forward declaration
 class CompressedSpace;  // Forward declaration
 class LBAChain;  // Forward declaration
+class BlockPacker;  // Forward declaration
 // -------------------------------------------------------------------------------------
 extern thread_local s32 tls_writer_thread_id;
 // -------------------------------------------------------------------------------------
@@ -222,6 +223,10 @@ public:
    void readPageSync(PID pid, u8* destination);
    // Accounts device writes for the RU epochs, called by the writers.
    void countWrittenBlocks(ruh_id_t ruh, u64 n);
+   // Same for the sealed blocks of a packer (DEFAULT_RUH), with an LBA chain each block counts to its own RU epoch.
+   void countPackedBlocks(const BlockPacker& packer);
+   // FLAGS_lba_chain_verify: every page on the SSD is listed in the LBA chain of its RU epoch. when is logged.
+   void verifyLBAChains(const char* when);
    void readPageAsync(PID pid, u8* destination, std::function<void()> callback);
    void fDataSync();
    // Single choke point for updating header of a page before write back. Used by :
@@ -261,6 +266,7 @@ public:
       atomic<u64> estimated_gc_writes = 0;
       atomic<u64> forced_gc_count = 0;
       atomic<u64> device_gc_events = 0;  // FDP Media Reallocated events, with fdp_count_gc_events
+      atomic<s64> workers_waiting_fixer_io = 0;  // gauge: workers blocked on an IO frame of the bg page fixer
    } bm_stats;
 };
 // -------------------------------------------------------------------------------------

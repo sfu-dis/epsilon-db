@@ -1,6 +1,7 @@
 #include "LBAChain.hpp"
 
 #include "BufferManager.hpp"
+#include "CompressedSpace.hpp"
 #include "Exceptions.hpp"
 #include "leanstore/Config.hpp"
 // -------------------------------------------------------------------------------------
@@ -77,9 +78,11 @@ void LBAChain::activateNext(u64 seq, u32 reserved, ru_epoch_t ru_epoch)
    // The ring is full, wait for the ru_epoch_mgr to seal the block occupying the slot.
    if (wordSeq(control(next).word.load(std::memory_order_acquire)) != static_cast<u32>(next)) {
       stalls_counter.fetch_add(1, std::memory_order_relaxed);
+      stalled_writers.fetch_add(1, std::memory_order_relaxed);
       while (wordSeq(control(next).word.load(std::memory_order_acquire)) != static_cast<u32>(next)) {
          _mm_pause();
       }
+      stalled_writers.fetch_sub(1, std::memory_order_relaxed);
    }
    block(next).ru_epoch = ru_epoch;
    // Publishes reserved and the RU epoch of the next block.
@@ -155,17 +158,7 @@ bool LBAChain::seal(u64 seq)
    bool written = false;
    if (reserved > 0) {
       std::fill(b.entries + reserved, b.entries + LBAChainBlock::CAPACITY, INVALID_PID);
-      const auto [pid, prev_ru_epoch, prev_ruh] = bm.randomPartition().nextPID();
-      if (pid == INVALID_PID) {
-         bm.outOfSpace();
-      }
-      if (FLAGS_enable_discarding) {
-         ensure(bm.discard_state[pid].isFree());
-      }
-      // A recycled PID, its previous copy gets invalidated, like in pageWriteBackPrologue().
-      if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > bm.reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
-         bm.ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
-      }
+      const PID pid = allocateBlock();
       PID& head = bm.persistant_ru_state->chainHead(b.ru_epoch);
       b.magic = LBAChainBlock::MAGIC;
       b.pid = pid;
@@ -188,6 +181,35 @@ bool LBAChain::seal(u64 seq)
    c.reserved = 0;
    c.word.store(makeWord(seq + n_blocks), std::memory_order_release);
    return written;
+}
+// -------------------------------------------------------------------------------------
+PID LBAChain::allocateBlock()
+{
+   if (FLAGS_compress_pages) {
+      // The PIDs are logical, the block is stored raw at its own LBA.
+      return bm.compressed_space->allocateRawBlock();
+   }
+   const auto [pid, prev_ru_epoch, prev_ruh] = bm.randomPartition().nextPID();
+   if (pid == INVALID_PID) {
+      bm.outOfSpace();
+   }
+   if (FLAGS_enable_discarding) {
+      ensure(bm.discard_state[pid].isFree());
+   }
+   // A recycled PID, its previous copy gets invalidated, like in pageWriteBackPrologue().
+   if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > bm.reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
+      bm.ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
+   }
+   return pid;
+}
+// -------------------------------------------------------------------------------------
+void LBAChain::recycleBlock(BufferManager& bm, PID pid, ru_epoch_t written_ru_epoch)
+{
+   if (FLAGS_compress_pages) {
+      bm.compressed_space->free(CompressedSpace::rawBlockLocation(pid));
+   } else {
+      bm.recyclePID(pid, written_ru_epoch, DEFAULT_RUH);
+   }
 }
 // -------------------------------------------------------------------------------------
 void LBAChain::persistDirtyHeads()
