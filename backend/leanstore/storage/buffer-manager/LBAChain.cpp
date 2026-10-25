@@ -193,7 +193,7 @@ PID LBAChain::allocateBlock()
    if (pid == INVALID_PID) {
       bm.outOfSpace();
    }
-   if (FLAGS_enable_discarding) {
+   if (bm.track_discard_state) {
       ensure(bm.discard_state[pid].isFree());
    }
    // A recycled PID, its previous copy gets invalidated, like in pageWriteBackPrologue().

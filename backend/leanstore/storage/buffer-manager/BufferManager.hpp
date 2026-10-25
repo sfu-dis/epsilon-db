@@ -163,7 +163,12 @@ public:
    atomic<ru_epoch_t> reclaiming_ru_epoch = -1; // persistant
    u64 pad1[7];
    static u64 RU_SIZE;
+   // nullptr unless track_discard_state.
    PageState *discard_state;
+   // With FLAGS_bg_page_fixer_tree_lookup the parent swips alone tell whether a page is discarded and its pending LSNs.
+   // The page state is then only maintained for the state filter or the paranoid checks (FLAGS_discard_state_paranoid).
+   // The discard count is not tracked without it, bf.header.discard_count stays 0.
+   bool track_discard_state = false;
    u32 max_open_ru_epochs;
    u32 max_pending_lsn = 0;
    u64 persistant_ru_state_offset;

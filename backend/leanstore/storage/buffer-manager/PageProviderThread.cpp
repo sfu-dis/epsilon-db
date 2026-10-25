@@ -281,8 +281,10 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                      jumpmu::jump();
                   }
                }
-               success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
-               ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
+               if (track_discard_state) {
+                  success = discard_state[evicted_pid].tryDiscard(pending_lsn, bf.header.pending_lsn_count, log_id, discard_count);
+                  ensure(success); // because still I haven't implemeneted the HOT page reclaiming.
+               }
                // The RU discard set identity may change meanwhile.
                // I simply allow this, this is a very rare event, and these are
                // stats just to approximate thresolhold of GC in RU epoch.
@@ -299,7 +301,7 @@ void BufferManager::pageProviderThread(u64 pp_id, u64 p_begin, u64 p_end)  // [p
                COUNTERS_BLOCK(discarded_pages_per_dtid) { PPCounters::myCounters().discarded_pages_per_dtid[bf.page.dt_id]++; }
             } else {
                parent_handler.swip.evict(evicted_pid);
-               if (FLAGS_enable_discarding) {
+               if (track_discard_state) {
                   const u32 log_id = cr::LogManager::getLogID(bf.page.ru_epoch);
                   discard_state[evicted_pid].getLocked();
                   ensure(discard_state[evicted_pid].isHot());

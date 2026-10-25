@@ -662,14 +662,16 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
          }
          LID* lsn_list = ctx.parent_lsns[idx];
          std::memcpy(lsn_list, swip.pendingLSNs(), nb_log_records * sizeof(LID));
-         // The page providers still maintain the page state, it must agree with the parent. It is latched as
-         // registerPageToFix() does, ackFixedPage() unlocks it clean.
-         PageState& page_state = bm.discard_state[pid];
-         ensure(page_state.isDiscarded());
-         ensure_equal(page_state.getLogID(), ctx.currently_reclaiming_log_id);
-         const auto [state_last_lsn, state_nb_log_records] = page_state.getLocked();
-         ensure_equal(state_nb_log_records, nb_log_records);
-         ensure_equal(state_last_lsn, lsn_list[nb_log_records - 1]);
+         if (bm.track_discard_state) {
+            // The page providers still maintain the page state, it must agree with the parent. It is latched as
+            // registerPageToFix() does, ackFixedPage() unlocks it clean.
+            PageState& page_state = bm.discard_state[pid];
+            ensure(page_state.isDiscarded());
+            ensure_equal(page_state.getLogID(), ctx.currently_reclaiming_log_id);
+            const auto [state_last_lsn, state_nb_log_records] = page_state.getLocked();
+            ensure_equal(state_nb_log_records, nb_log_records);
+            ensure_equal(state_last_lsn, lsn_list[nb_log_records - 1]);
+         }
          // From now on the workers find a clean swip, they read the fixed page once the IO frame is released.
          // The persisted parent holds the stale dirty swip, as on a discard (see the page provider).
          swip.evict(pid);
@@ -960,7 +962,7 @@ void RUBackgroundPageFixer::redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 da
             reinterpret_cast<cr::WALDTEntry*>(e)->dump();
          }
          page.dump();
-         bm.discard_state[fixed_pid].dump();
+         if (bm.track_discard_state) bm.discard_state[fixed_pid].dump();
          printf("[ERR] Total Fixed %lu \n", ctx.total_fixed);
       }
 
@@ -1048,7 +1050,7 @@ fail:
       reinterpret_cast<cr::WALDTEntry*>(e)->dump();
    }
    page.dump();
-   bm.discard_state[fixed_pid].dump();
+   if (bm.track_discard_state) bm.discard_state[fixed_pid].dump();
    printf("[ERR] Total Fixed %lu \n", ctx.total_fixed);
    page_to_fix_info.dump();
    __asm__ volatile("int3");
@@ -1267,7 +1269,9 @@ void RUBackgroundPageFixer::ackFixedPage(ThreadContext& ctx, struct io_uring_cqe
    ensure_equal(page.magic_debugging_number, pid);
 
    // The fixed page got written back, reset its discard count.
-   bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch), 0);
+   if (bm.track_discard_state) {
+      bm.discard_state[pid].unlockClean(ctx.to_fix_pids[idx].last_lsn, cr::LogManager::getLogID(page.ru_epoch), 0);
+   }
 
    releaseIOFrame(pid);
    COUNTERS_BLOCK(gc)

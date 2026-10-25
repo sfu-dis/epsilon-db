@@ -93,7 +93,10 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
       // -------------------------------------------------------------------------------------
       logger = std::make_unique<utils::Logger>("buffer_manager_journal.txt");
       // -------------------------------------------------------------------------------------
-      if (FLAGS_enable_discarding) {
+      track_discard_state = FLAGS_enable_discarding && (!FLAGS_bg_page_fixer_tree_lookup || FLAGS_bg_page_fixer_tree_lookup_state_filter ||
+                                                        FLAGS_discard_state_paranoid);
+      discard_state = nullptr;
+      if (track_discard_state) {
          void *entries_p = mmap(nullptr, ssd_layout.dbPages() * sizeof(PageState), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
          if (entries_p == MAP_FAILED) {
             perror("Failed to allocated memory for the Discard Set\n");
@@ -111,6 +114,8 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          {
             bm_stats.discard_state_peak_mem_usage.store(ssd_layout.dbPages() * sizeof(PageState));
          }
+      }
+      if (FLAGS_enable_discarding) {
          max_pending_lsn = FLAGS_per_page_logging ? FLAGS_ppl_merge_threshold : FLAGS_max_log_records_to_discard;
          if (max_pending_lsn > MAX_PENDING_LSN_COUNT) {
             SetupFailed("");
@@ -126,8 +131,6 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             // TODO(mfd) : Get all workers to reconstruct the discard state.
             // For now we just assume we recover from a clean state.
          }
-      } else {
-         discard_state = nullptr;
       }
       // -------------------------------------------------------------------------------------
       // Initialize partitions
@@ -666,7 +669,7 @@ BufferFrame& BufferManager::allocatePage()
    if (free_pid == INVALID_PID) {
       outOfSpace();
    }
-   if (FLAGS_enable_discarding) discard_state[free_pid].unlockBF(&free_bf);
+   if (track_discard_state) discard_state[free_pid].unlockBF(&free_bf);
    if (FLAGS_compress_pages) {
       // Cleared when the previous page with this PID got reclaimed.
       ensure_equal(compressed_space->location(free_pid), 0);
@@ -783,7 +786,7 @@ void BufferManager::evictLastPage()
 // -------------------------------------------------------------------------------------
 void BufferManager::reclaimPage(BufferFrame& bf)
 {
-   if (FLAGS_enable_discarding) discard_state[bf.header.pid].free();
+   if (track_discard_state) discard_state[bf.header.pid].free();
    Partition& partition = getPartition(bf.header.pid);
    if (FLAGS_compress_pages && bf.header.is_being_written_back) {
       // A block must not be reused while a write to it is in flight. The frame is marked free, so that it
@@ -821,7 +824,7 @@ BufferFrame& BufferManager::resolveMetaSwip(Swip<BufferFrame>& meta_swip)
    BufferFrame& bf = randomPartition().dram_free_list.tryPop(false);
    readPageSync(meta_pid, bf.page);
    ensure_equal(bf.page.magic_debugging_number, meta_pid);
-   if (FLAGS_enable_discarding) discard_state[meta_pid].unlockBF(&bf);
+   if (track_discard_state) discard_state[meta_pid].unlockBF(&bf);
    bf.header.last_written_plsn = bf.page.PLSN;
    bf.header.pid = meta_pid;
    bf.header.discardable = false;
@@ -997,7 +1000,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       u8 nb_log_records = 0;
       LID* lsn_list = nullptr;
       u8 discard_count = 0;
-      if (FLAGS_enable_discarding) {
+      if (track_discard_state) {
          // Since I already locked the partition and there is no IO frame.
          // Then the garbage collection is not able to concurrently fix the page.
          // Therefore, I expect the page state to be unlocked.
@@ -1011,9 +1014,15 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
             ensure_equal(lsn, parent_lsn[parent_lsn_count - 1]);
             lsn_list = parent_lsn;
          }
-      }
-      if (page_need_fixing) {
-         gc_fixed = discard_state[pid].isClean();
+         if (page_need_fixing) {
+            gc_fixed = discard_state[pid].isClean();
+         }
+      } else if (page_need_fixing) {
+         // FLAGS_bg_page_fixer_tree_lookup: the dirty swip, rechecked under the partition lock, is not fixed yet. The
+         // fixer inserts its IO frame under this lock before it makes the swip clean, both under the parent latch.
+         ensure(FLAGS_bg_page_fixer_tree_lookup);
+         nb_log_records = parent_lsn_count;
+         lsn_list = parent_lsn;
       }
       if (page_need_fixing && !gc_fixed) {
          ensure_lt(0, nb_log_records);
@@ -1033,7 +1042,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       COUNTERS_BLOCK(buffer_miss_io_latency) { start_io = std::chrono::high_resolution_clock::now(); }
       if (page_need_fixing && !gc_fixed) {
          // issue the asynchronus log record read.
-         ensure(discard_state[pid].isDiscarded());
+         ensure(!track_discard_state || discard_state[pid].isDiscarded());
          for (u8 i = 0; i < nb_log_records; ++i) {
             // Try to get the log record from the WAL buffer first.
             // fix_dirty_page expects the record at the same in-block offset as a device read.
@@ -1191,7 +1200,7 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       } else {
          ensure(bf.header.logging == nullptr);
       }
-      if (FLAGS_enable_discarding) {
+      if (track_discard_state) {
          discard_state[pid].unlockBF(&bf);
       }
       // -------------------------------------------------------------------------------------

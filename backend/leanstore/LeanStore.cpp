@@ -531,6 +531,14 @@ void LeanStore::verifyFlags()
       if (FLAGS_bg_page_fixer_tree_lookup_state_filter && !FLAGS_bg_page_fixer_tree_lookup) {
          SetupFailed("bg_page_fixer_tree_lookup_state_filter requires bg_page_fixer_tree_lookup");
       }
+      if (FLAGS_discard_state_paranoid && !FLAGS_bg_page_fixer_tree_lookup) {
+         SetupFailed("discard_state_paranoid requires bg_page_fixer_tree_lookup");
+      }
+      if (FLAGS_bg_page_fixer_tree_lookup && !FLAGS_bg_page_fixer_tree_lookup_state_filter && !FLAGS_discard_state_paranoid &&
+          FLAGS_bg_fixer_write_back_hot_pages) {
+         // The hot pages are found through their page state, which is not maintained in this setting.
+         SetupFailed("bg_fixer_write_back_hot_pages requires the page state: bg_page_fixer_tree_lookup_state_filter or discard_state_paranoid");
+      }
    } else {
       if (FLAGS_discard_lsns_in_parent) {
          FLAGS_discard_lsns_in_parent = false;
