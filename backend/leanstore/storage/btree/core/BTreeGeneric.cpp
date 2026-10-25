@@ -229,6 +229,66 @@ struct ParentSwipHandler BTreeGeneric::findParentEager(BTreeGeneric& btree, Buff
    return findParent<false>(btree, to_find);
 }
 // -------------------------------------------------------------------------------------
+std::optional<ParentSwipHandler> BTreeGeneric::findParentOfPage(BTreeGeneric& btree, BufferFrame::Page& copy, PID pid)
+{
+   auto& c_node = *reinterpret_cast<BTreeNode*>(copy.dt);
+   ensure(c_node.is_leaf);
+   ensure_equal(copy.dt_id, btree.dt_id);
+   const bool infinity = c_node.upper_fence.offset == 0;
+   const u16 key_length = c_node.upper_fence.length;
+   u8* key = c_node.getUpperFenceKey();
+   // -------------------------------------------------------------------------------------
+   // Plain optimistic guards and no HybridPageGuard: a swip that changes under us must never get resolved (read
+   // from the SSD or warmed up) by the caller.
+   BufferFrame* p_bf = &btree.meta_node_bf.asBufferFrame();
+   Guard p_guard(p_bf->header.latch);
+   p_guard.toOptimisticOrJump();
+   Swip<BTreeNode>* c_swip = &reinterpret_cast<BTreeNode*>(p_bf->page.dt)->upper;
+   s64 pos = -2;  // The upper swip of the meta node references the root
+   while (true) {
+      Swip<BTreeNode> c_swip_value = *c_swip;
+      p_guard.recheck();
+      if (c_swip_value.isEVICTED()) {
+         // Only a leaf can be evicted.
+         if (c_swip_value.asPageID() != pid) {
+            return std::nullopt;
+         }
+         break;
+      }
+      // Only a leaf can be cool.
+      BufferFrame* c_bf = &c_swip_value.asBufferFrameMasked();
+      const bool found = c_bf->header.pid == pid;
+      p_guard.recheck();
+      if (found) {
+         break;
+      }
+      if (c_swip_value.isCOOL()) {
+         return std::nullopt;
+      }
+      // The frame holds this node as long as the parent references it, so is_leaf is stable under the parent's version.
+      auto& node = *reinterpret_cast<BTreeNode*>(c_bf->page.dt);
+      const bool is_leaf = node.is_leaf;
+      p_guard.recheck();
+      if (is_leaf) {
+         return std::nullopt;
+      }
+      Guard c_guard(c_bf->header.latch);
+      c_guard.toOptimisticOrJump();
+      p_guard.recheck();
+      if (infinity) {
+         c_swip = &node.upper;
+         pos = node.count;
+      } else {
+         pos = node.lowerBound<false>(key, key_length);
+         c_swip = (pos == node.count) ? &node.upper : &node.getChild(pos);
+      }
+      c_guard.recheck();
+      p_guard = std::move(c_guard);
+      p_bf = c_bf;
+   }
+   return ParentSwipHandler{.swip = c_swip->cast<BufferFrame>(), .parent_guard = std::move(p_guard), .parent_bf = p_bf, .pos = pos};
+}
+// -------------------------------------------------------------------------------------
 bool BTreeGeneric::tryMerge(BufferFrame& to_merge, bool swizzle_sibling)
 {
    // pos == p_guard->count means that the current node is the upper swip in parent

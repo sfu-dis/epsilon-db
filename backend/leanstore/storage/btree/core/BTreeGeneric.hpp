@@ -102,6 +102,13 @@ class BTreeGeneric
    // -------------------------------------------------------------------------------------
    static struct ParentSwipHandler findParentJump(BTreeGeneric& btree, BufferFrame& to_find);
    static struct ParentSwipHandler findParentEager(BTreeGeneric& btree, BufferFrame& to_find);
+   // Used by the bg page fixer, which only has a copy of the leaf `pid` read from the SSD (the page may be evicted).
+   // Traverses with the upper fence of the copy, as findParent() does, down to the swip that references pid, either
+   // evicted (the swip holds pid) or cached (its frame holds pid). Returns the parent optimistically latched.
+   // Returns nullopt when no swip on the path references pid: the page got deleted or merged away, or pid got reused.
+   // Pre: the inner nodes are pinned (FLAGS_btree_pin_inner_nodes), so the path never crosses an evicted or cool
+   // inner node. Never blocks, jumps when a node on the path is latched.
+   static std::optional<ParentSwipHandler> findParentOfPage(BTreeGeneric& btree, BufferFrame::Page& copy, PID pid);
    // -------------------------------------------------------------------------------------
    // Note on Synchronization: findParent is called by the page provide thread which are not allowed to block
    // Therefore, we jump whenever we encounter a latched node on our way

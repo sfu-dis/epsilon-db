@@ -24,6 +24,15 @@ ParentSwipHandler DTRegistry::findParent(DTID dtid, BufferFrame& bf)
    return dt_types_ht[std::get<0>(dt_meta)].find_parent(std::get<1>(dt_meta), bf);
 }
 // -------------------------------------------------------------------------------------
+std::optional<ParentSwipHandler> DTRegistry::findParentOfPage(DTID dtid, BufferFrame::Page& copy, PID pid)
+{
+   // find() and not [], the page may come from the SSD: an unknown dt_id must not insert an instance.
+   auto it = dt_instances_ht.find(dtid);
+   ensure(it != dt_instances_ht.end());
+   auto& dt_meta = it->second;
+   return dt_types_ht[std::get<0>(dt_meta)].find_parent_of_page(std::get<1>(dt_meta), copy, pid);
+}
+// -------------------------------------------------------------------------------------
 SpaceCheckResult DTRegistry::checkSpaceUtilization(DTID dtid, BufferFrame& bf)
 {
    auto dt_meta = dt_instances_ht[dtid];

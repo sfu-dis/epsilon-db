@@ -7,6 +7,7 @@
 #include "leanstore/concurrency-recovery/LogManager.hpp"
 #include "leanstore/concurrency-recovery/Logging.hpp"
 #include "leanstore/storage/NvmeDevice.hpp"
+#include "leanstore/storage/btree/core/BTreeNode.hpp"
 // -------------------------------------------------------------------------------------
 #include "leanstore/profiling/counters/GCCounters.hpp"
 // -------------------------------------------------------------------------------------
@@ -70,6 +71,8 @@ struct RUBackgroundPageFixer::ThreadContext {
    std::vector<PID> deferred_hot_pids;
    // Frames whose copy is in buf_pages, indexed like buf_pages.
    std::vector<BufferFrame*> hot_bfs;
+   // FLAGS_bg_page_fixer_tree_lookup: pending LSNs copied from the parent swips, indexed like buf_pages.
+   LID parent_lsns[batch_size][btree::BTreeNode::max_pending_lsn];
    // -------------------------------------------------------------------------------------
    // Jobs of to_gc_epochs already picked up, and those left to collect.
    u64 picked_up_jobs = 0;
@@ -103,6 +106,18 @@ struct RUBackgroundPageFixer::ThreadContext {
       hot_bfs.reserve(batch_size);
    }
 };
+// -------------------------------------------------------------------------------------
+// Inserts the IO frame of a page about to be fixed, the workers that want to load the page wait on it until
+// releaseIOFrame(). Pre: partition.ht_mutex is held and the page has no IO frame.
+static void insertFixerIOFrame(Partition& partition, PID pid)
+{
+   IOFrame& io_frame = partition.io_ht.insert(pid);
+   io_frame.readers_counter = 1;
+   io_frame.state = IOFrame::STATE::READING;
+   io_frame.inserted_by_bg_page_fixer = true;
+   bool ok = io_frame.mutex.try_lock();
+   ensure(ok);
+}
 // -------------------------------------------------------------------------------------
 RUBackgroundPageFixer::RUBackgroundPageFixer(BufferManager& bm) : bm(bm) {}
 // -------------------------------------------------------------------------------------
@@ -195,8 +210,14 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
             break;
          }
          ctx.actually_fixed = 0;
-         const u64 pages_to_fix = scanLBAChainBatch(ctx, set.lba_chain_entries.data() + begin, std::min<u64>(entries - begin, ThreadContext::batch_size));
-         fixPages(ctx, pages_to_fix);
+         const PID* pids = set.lba_chain_entries.data() + begin;
+         const u64 count = std::min<u64>(entries - begin, ThreadContext::batch_size);
+         if (FLAGS_bg_page_fixer_tree_lookup) {
+            fixLBAChainBatchInTree(ctx, pids, count);
+         } else {
+            const u64 pages_to_fix = scanLBAChainBatch(ctx, pids, count);
+            fixPages(ctx, pages_to_fix);
+         }
          fixHotPages(ctx);
       }
    } else {
@@ -448,6 +469,147 @@ u64 RUBackgroundPageFixer::scanLBAChainBatch(ThreadContext& ctx, const PID* pids
    return pages_to_fix;
 }
 // -------------------------------------------------------------------------------------
+// FLAGS_bg_page_fixer_tree_lookup: the page state is not used to find the pages to fix. Every page of the batch is
+// read, then looked up in its B-Tree (lookUpPageInTree()), the discarded ones are fixed and written back.
+// Every read page gets an entry in to_fix_pids, so that to_fix_pids, buf_pages and the IO user data share the index.
+void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID* pids, u64 count)
+{
+   ensure_lte(count, ThreadContext::batch_size);
+   ensure(ctx.to_fix_pids.empty());
+   for (u64 i = 0; i < count; ++i) {
+      const PID pid = pids[i];
+      // A tombstone, see LBAChain::record().
+      if (pid == INVALID_PID) {
+         continue;
+      }
+      ensure_lt(pid, bm.max_pid);
+      const u64 idx = ctx.to_fix_pids.size();
+      ctx.to_fix_pids.emplace_back(pid, nullptr, INVALID_LSN, INVALID_LSN, 0);
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.r_ring);
+      ensure(sqe != nullptr);
+      io_uring_prep_read(sqe, bm.ssd_fd, ctx.buf_pages[idx].page, PAGE_SIZE, pid * PAGE_SIZE);
+      io_uring_sqe_set_data64(sqe, idx);
+   }
+   const u32 to_read = ctx.to_fix_pids.size();
+   if (to_read == 0) {
+      return;
+   }
+   int s = io_uring_submit_and_wait(&ctx.r_ring, to_read);
+   ensure_equal(s, static_cast<int>(to_read));
+   struct io_uring_cqe* cqe;
+   u32 head;
+   u32 completed = 0;
+   io_uring_for_each_cqe(&ctx.r_ring, head, cqe)
+   {
+      ensure_equal(cqe->res, PAGE_SIZE);
+      ++completed;
+   }
+   ensure_equal(completed, to_read);
+   io_uring_cq_advance(&ctx.r_ring, to_read);
+   COUNTERS_BLOCK(gc) { GCCounters::myCounters().pages_read += to_read; }
+   // -------------------------------------------------------------------------------------
+   for (u64 idx = 0; idx < to_read; ++idx) {
+      if (lookUpPageInTree(ctx, idx)) {
+         redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
+      }
+   }
+   waitForFixedPagesWriteBack(ctx);
+   ctx.to_fix_pids.clear();
+}
+// -------------------------------------------------------------------------------------
+// FLAGS_bg_page_fixer_tree_lookup. Pre: buf_pages[idx] holds the copy of the page read from the SSD.
+// Returns true if the page is discarded into the log being reclaimed. It is then registered as registerPageToFix()
+// does: IO frame inserted, page state latched, and its pending LSNs copied from the parent into to_fix_pids[idx].
+// The parent swip is made clean right away: the IO frame keeps the workers away until the fixed page is written.
+// A cached page is queued in hot_pids, like needsFix() does.
+//
+// Why the copy, read without an IO frame, is the one to fix: a page is only discarded into the log of its RU epoch
+// once its write back to that RU epoch has completed, and it is not written again while its swip stays dirty (any
+// later write back maps it to a newer RU epoch). So a dirty swip of the reclaimed RU epoch, seen after the read, means
+// the copy is that write back. Since mapRUEpochLog() set reclaiming_ru_epoch, the pages of the RU epoch are no longer
+// discarded, except for the reclaiming_ru_epoch race of the page providers (TODO.md B4).
+bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
+{
+   page_info& info = ctx.to_fix_pids[idx];
+   const PID pid = info.pid;
+   BufferFrame::Page& page = ctx.buf_pages[idx].page;
+   ensure_equal(page.magic_debugging_number, pid);
+   COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_lookups++; }
+   if (page.ru_epoch != ctx.current_gc_epoch) {
+      // Newer: written back again since. Older: the write back to this RU epoch is still in flight, the page is cached
+      // and not discarded. Either way not discarded into this log.
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_other_ru_epoch++; }
+      return false;
+   }
+   if (!reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf) {
+      // Inner and meta nodes are pinned, they are never discarded.
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+      return false;
+   }
+   while (true) {
+      jumpmuTry()
+      {
+         auto parent_handler = DTRegistry::global_dt_registry.findParentOfPage(page.dt_id, page, pid);
+         if (!parent_handler) {
+            // Deleted or merged away since, or its pid got reused.
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+            jumpmu_return false;
+         }
+         Swip<BufferFrame>& swip = parent_handler->swip;
+         if (!swip.isEVICTED()) {
+            parent_handler->parent_guard.recheck();
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_fixed++; }
+            ctx.hot_pids.emplace_back(pid);
+            jumpmu_return false;
+         }
+         if (!swip.isDIRTY()) {
+            parent_handler->parent_guard.recheck();
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().clean++; }
+            jumpmu_return false;
+         }
+         // Jumps if the parent changed since the swip was read.
+         BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler->parent_guard);
+         ensure_equal(static_cast<ru_epoch_t>(swip.ru_epoch()), ctx.current_gc_epoch);
+         const u8 nb_log_records = swip.pendingLSNCount();
+         ensure(nb_log_records > 0 && nb_log_records <= btree::BTreeNode::max_pending_lsn);
+         Partition& partition = bm.getPartition(pid);
+         {
+            std::lock_guard<instrumented_mutex> _m(partition.ht_mutex);
+            if (partition.io_ht.lookup(pid)) {
+               // A worker is loading the page and applies its log records, the page is cached afterwards.
+               COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_fixed++; }
+               ctx.hot_pids.emplace_back(pid);
+               jumpmu_return false;
+            }
+            insertFixerIOFrame(partition, pid);
+         }
+         LID* lsn_list = ctx.parent_lsns[idx];
+         std::memcpy(lsn_list, swip.pendingLSNs(), nb_log_records * sizeof(LID));
+         // The page providers still maintain the page state, it must agree with the parent. It is latched as
+         // registerPageToFix() does, ackFixedPage() unlocks it clean.
+         PageState& page_state = bm.discard_state[pid];
+         ensure(page_state.isDiscarded());
+         ensure_equal(page_state.getLogID(), ctx.currently_reclaiming_log_id);
+         const auto [state_last_lsn, state_nb_log_records] = page_state.getLocked();
+         ensure_equal(state_nb_log_records, nb_log_records);
+         ensure_equal(state_last_lsn, lsn_list[nb_log_records - 1]);
+         // From now on the workers find a clean swip, they read the fixed page once the IO frame is released.
+         // The persisted parent holds the stale dirty swip, as on a discard (see the page provider).
+         swip.evict(pid);
+         parent_handler->parent_bf->markUnDiscardable(INNER_NODE);
+         parent_handler->parent_bf->page.PLSN++;
+         info.lsn_list = lsn_list;
+         info.last_lsn = lsn_list[nb_log_records - 1];
+         info.nb_log_records = nb_log_records;
+         jumpmu_return true;
+      }
+      jumpmuCatch()
+      {
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_retries++; }
+      }
+   }
+}
+// -------------------------------------------------------------------------------------
 // Returns true if the page may be discarded with log records in the log being reclaimed. A cached page is queued in
 // hot_pids instead.
 bool RUBackgroundPageFixer::needsFix(ThreadContext& ctx, PID pid)
@@ -543,13 +705,7 @@ bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, LID first_lsn,
    if (bm.discard_state[pid].getLogID() != ctx.currently_reclaiming_log_id) {
       return false;
    }
-   IOFrame& io_frame = partition.io_ht.insert(pid);
-   io_frame.readers_counter = 1;
-   io_frame.state = IOFrame::STATE::READING;
-   io_frame.inserted_by_bg_page_fixer = true;
-
-   bool ok = io_frame.mutex.try_lock();
-   ensure(ok);
+   insertFixerIOFrame(partition, pid);
 
    auto p = bm.discard_state[pid].getLocked();
    ensure(bm.discard_state[pid].isDiscarded());
@@ -599,34 +755,40 @@ void RUBackgroundPageFixer::fixPages(ThreadContext& ctx, u64 pages_to_fix)
          ensure_equal(i, remaining);
          io_uring_cq_advance(&ctx.r_ring, remaining);
       }
-      // TODO(mfd) : Submit and wait.
-      ready = io_uring_peek_batch_cqe(&ctx.w_ring, ctx.cqes.get(), ctx.actually_fixed);
-
-      for (u32 i = 0; i < ready; ++i) {
-         ackFixedPage(ctx, ctx.cqes[i]);
-      }
-      if (ready > 0)
-         io_uring_cq_advance(&ctx.w_ring, ready);
-      // Wait for the remaining part, and do the same thing.
-      remaining = ctx.actually_fixed - ready;
-      if (remaining > 0) {
-         int rc = io_uring_wait_cqe_nr(&ctx.w_ring, ctx.cqes.get(), remaining);
-         // Temporly check that this did not fail
-         posix_check(rc == 0);
-
-         struct io_uring_cqe* cqe;
-         u32 head;
-         u32 i = 0;
-         io_uring_for_each_cqe(&ctx.w_ring, head, cqe)
-         {
-            ackFixedPage(ctx, cqe);
-            ++i;
-         }
-         ensure_equal(i, remaining);
-         io_uring_cq_advance(&ctx.w_ring, remaining);
-      }
+      waitForFixedPagesWriteBack(ctx);
    }
    ctx.to_fix_pids.clear();
+}
+// -------------------------------------------------------------------------------------
+// Waits for the write backs issued by redoAndWriteBack() (ctx.actually_fixed of them) and acknowledges them.
+void RUBackgroundPageFixer::waitForFixedPagesWriteBack(ThreadContext& ctx)
+{
+   // TODO(mfd) : Submit and wait.
+   u32 ready = io_uring_peek_batch_cqe(&ctx.w_ring, ctx.cqes.get(), ctx.actually_fixed);
+
+   for (u32 i = 0; i < ready; ++i) {
+      ackFixedPage(ctx, ctx.cqes[i]);
+   }
+   if (ready > 0)
+      io_uring_cq_advance(&ctx.w_ring, ready);
+   // Wait for the remaining part, and do the same thing.
+   u32 remaining = ctx.actually_fixed - ready;
+   if (remaining > 0) {
+      int rc = io_uring_wait_cqe_nr(&ctx.w_ring, ctx.cqes.get(), remaining);
+      // Temporly check that this did not fail
+      posix_check(rc == 0);
+
+      struct io_uring_cqe* cqe;
+      u32 head;
+      u32 i = 0;
+      io_uring_for_each_cqe(&ctx.w_ring, head, cqe)
+      {
+         ackFixedPage(ctx, cqe);
+         ++i;
+      }
+      ensure_equal(i, remaining);
+      io_uring_cq_advance(&ctx.w_ring, remaining);
+   }
 }
 // -------------------------------------------------------------------------------------
 // A discarded page got read: apply its log records and issue its write back.
@@ -638,9 +800,7 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
    u64 idx = data >> 48;
    assert(idx < ctx.to_fix_pids.size());
    ensure_equal(ctx.to_fix_pids[idx].pid, fixed_pid);
-   const LID last_lsn = ctx.to_fix_pids[idx].last_lsn;
-   auto& bf = ctx.buf_pages[idx];
-   auto& page = bf.page;
+   auto& page = ctx.buf_pages[idx].page;
    ensure_equal(page.magic_debugging_number, fixed_pid);
    if (page.ru_epoch != ctx.current_gc_epoch) {
       // This means that the page was written back in a new RU epoch
@@ -655,6 +815,16 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
       }
       return;
    }
+   redoAndWriteBack(ctx, idx, data);
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 data)
+{
+   const PID fixed_pid = data & 0x0000FFFFFFFFFFFF;
+   ensure_equal(ctx.to_fix_pids[idx].pid, fixed_pid);
+   const LID last_lsn = ctx.to_fix_pids[idx].last_lsn;
+   auto& bf = ctx.buf_pages[idx];
+   auto& page = bf.page;
 
    LID lsn = last_lsn;
    std::vector<cr::WALEntry*> to_apply_log_records;

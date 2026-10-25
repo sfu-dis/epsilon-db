@@ -511,6 +511,19 @@ void LeanStore::verifyFlags()
       if (FLAGS_wal_partition_by != "ru_epoch") {
          SetupFailed("You have to partition the log by ru_epoch to enable discarding");
       }
+      if (FLAGS_bg_page_fixer_tree_lookup) {
+         // The pages to fix come from the LBA chain, their pending LSNs from the parent. The traversal relies on every
+         // inner node being in memory, so an evicted swip always references a leaf.
+         if (FLAGS_bg_page_fixer_variant != 2) {
+            SetupFailed("bg_page_fixer_tree_lookup requires bg_page_fixer_variant 2");
+         }
+         if (!FLAGS_discard_lsns_in_parent) {
+            SetupFailed("bg_page_fixer_tree_lookup requires discard_lsns_in_parent");
+         }
+         if (!FLAGS_btree_pin_inner_nodes) {
+            SetupFailed("bg_page_fixer_tree_lookup requires btree_pin_inner_nodes");
+         }
+      }
    } else {
       if (FLAGS_discard_lsns_in_parent) {
          FLAGS_discard_lsns_in_parent = false;

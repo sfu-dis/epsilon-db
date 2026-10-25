@@ -16,6 +16,11 @@ struct GCCounters {
    atomic<u64> clean;
    atomic<u64> dirty_in_other_ru_epoch;
    atomic<u64> pages_read;
+   // FLAGS_bg_page_fixer_tree_lookup: pages looked up in their B-Tree, retries of the lookup (latched or changed
+   // node on the path), pages whose copy was written to another RU epoch.
+   atomic<u64> tree_lookups;
+   atomic<u64> tree_retries;
+   atomic<u64> tree_other_ru_epoch;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
    // -------------------------------------------------------------------------------------

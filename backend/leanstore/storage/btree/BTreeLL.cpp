@@ -695,6 +695,7 @@ struct DTRegistry::DTMeta BTreeLL::getMeta()
 {
    DTRegistry::DTMeta btree_meta = {.iterate_children = iterateChildrenSwips,
                                     .find_parent = findParent,
+                                    .find_parent_of_page = findParentOfPage,
                                     .check_space_utilization = checkSpaceUtilization,
                                     .checkpoint = checkpoint,
                                     .undo = undo,
@@ -714,6 +715,11 @@ SpaceCheckResult BTreeLL::checkSpaceUtilization(void*, BufferFrame&)
 struct ParentSwipHandler BTreeLL::findParent(void* btree_object, BufferFrame& to_find)
 {
    return BTreeGeneric::findParentJump(*static_cast<BTreeGeneric*>(reinterpret_cast<BTreeLL*>(btree_object)), to_find);
+}
+// -------------------------------------------------------------------------------------
+std::optional<ParentSwipHandler> BTreeLL::findParentOfPage(void* btree_object, BufferFrame::Page& copy, PID pid)
+{
+   return BTreeGeneric::findParentOfPage(*static_cast<BTreeGeneric*>(reinterpret_cast<BTreeLL*>(btree_object)), copy, pid);
 }
 // -------------------------------------------------------------------------------------
 void BTreeLL::checkpoint(void* btree_object, BufferFrame& bf, u8* dest)

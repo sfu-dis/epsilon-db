@@ -73,12 +73,19 @@ class RUBackgroundPageFixer
    u64 scanLogBatch(ThreadContext& ctx, u64& offset);
    // FLAGS_bg_page_fixer_variant 2: same for a batch of the PIDs listed in the LBA chain.
    u64 scanLBAChainBatch(ThreadContext& ctx, const PID* pids, u64 count);
+   // FLAGS_bg_page_fixer_tree_lookup: reads every page of a batch of the LBA chain, finds the discarded ones through
+   // their parent swip, fixes them and waits for their write back.
+   void fixLBAChainBatchInTree(ThreadContext& ctx, const PID* pids, u64 count);
+   bool lookUpPageInTree(ThreadContext& ctx, u64 idx);
    bool needsFix(ThreadContext& ctx, PID pid);
    bool registerPageToFix(ThreadContext& ctx, LID first_lsn, PID pid, u64 idx);
    void issueFixRead(ThreadContext& ctx, PID pid, u64& pages_to_fix, u64& submitted);
    void fixPages(ThreadContext& ctx, u64 pages_to_fix);
+   void waitForFixedPagesWriteBack(ThreadContext& ctx);
    // Completion handlers of the read, resp. write, ring.
    void fixPage(ThreadContext& ctx, io_uring_cqe* cqe);
+   // Applies the log records of the registered page at idx (read into buf_pages[idx]) and issues its write back.
+   void redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 data);
    void ackFixedPage(ThreadContext& ctx, io_uring_cqe* cqe);
    // Write back of the pages of the reclaimed log that are cached (hot).
    enum class HotPage { DONE, WRITING, RETRY };

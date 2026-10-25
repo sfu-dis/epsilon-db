@@ -6,6 +6,7 @@
 // -------------------------------------------------------------------------------------
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 // -------------------------------------------------------------------------------------
@@ -35,6 +36,8 @@ struct DTRegistry {
    struct DTMeta {
       std::function<void(void*, BufferFrame&, std::function<bool(Swip<BufferFrame>&)>)> iterate_children;
       std::function<ParentSwipHandler(void*, BufferFrame&)> find_parent;
+      // Parent of a page known only by a copy of it (read from the SSD), see BTreeGeneric::findParentOfPage().
+      std::function<std::optional<ParentSwipHandler>(void*, BufferFrame::Page&, PID)> find_parent_of_page;
       std::function<SpaceCheckResult(void*, BufferFrame&)> check_space_utilization;
       std::function<void(void* dt_object, BufferFrame& bf, u8* dest)> checkpoint;
       // -------------------------------------------------------------------------------------
@@ -62,6 +65,7 @@ struct DTRegistry {
    // -------------------------------------------------------------------------------------
    void iterateChildrenSwips(DTID dtid, BufferFrame&, std::function<bool(Swip<BufferFrame>&)>);
    ParentSwipHandler findParent(DTID dtid, BufferFrame&);
+   std::optional<ParentSwipHandler> findParentOfPage(DTID dtid, BufferFrame::Page& copy, PID pid);
    SpaceCheckResult checkSpaceUtilization(DTID dtid, BufferFrame&);
    // Pre: bf is shared/exclusive latched
    void checkpoint(DTID dt_id, BufferFrame& bf, u8*);

@@ -105,6 +105,8 @@ DEFINE_bool(bg_fixer_write_back_hot_pages, false, "The RU bg page fixer writes b
 DEFINE_int32(ru_gc_threads, 4, "Number of threads that will fix pages in RU epochs");
 DEFINE_uint32(bg_page_fixer_variant, 1, "1: the bg page fixer scans the log of the RU epoch for the pages to fix. "
               "2: it walks the chain of the LBAs written to the RU epoch (DEFAULT_RUH only, no compress_pages)");
+DEFINE_bool(bg_page_fixer_tree_lookup, false, "bg_page_fixer_variant 2: the bg page fixer reads every page of the LBA chain and looks for its "
+            "parent with the page's fence. Whether the page is discarded, and its pending LSNs, come from the parent swip instead of the page state");
 DEFINE_uint32(lba_chain_buffer_blocks, 1024, "bg_page_fixer_variant 2: 4 KiB blocks of the in memory ring the writers record their LBAs into");
 DEFINE_uint32(max_log_records_to_discard, 7, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
