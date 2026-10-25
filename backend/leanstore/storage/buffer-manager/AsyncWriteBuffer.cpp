@@ -73,6 +73,7 @@ PID AsyncWriteBuffer::add(BufferFrame& bf, PID pid)
       const PID location = packer->add(bf.page, compress, BMC::global_bf->compressed_space->location(pid), ru_epoch);
       // With an LBA chain, the RU epoch of the block the page landed in.
       bf.page.ru_epoch = ru_epoch;
+      BMC::global_bf->countPackedPage(bf.page);
       write_buffer_commands[slot].plsn = bf.page.PLSN;
       write_buffer_commands[slot].ru_epoch = bf.page.ru_epoch;
       if (FLAGS_io_trace) {

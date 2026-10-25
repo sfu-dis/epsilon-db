@@ -33,11 +33,21 @@ struct RUEpochDiscardSet {
    std::vector<std::pair<PID, ru_epoch_t>> lba_chain_blocks;
    alignas(CACHE_LINE_SIZE) atomic<u64> offset_batch{0};
    // -------------------------------------------------------------------------------------
+   // Logical page level: the pages written to the RU epoch (total), their copies that got rewritten elsewhere (invalid)
+   // and the ones currently discarded (inserted - deleted), independent of the block they reside in.
+   // They drive the bg page fixing (ReclaimUnitUsage, shouldGC).
    alignas(CACHE_LINE_SIZE) atomic<s32> inserted{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> deleted{0};
    alignas(CACHE_LINE_SIZE) atomic<bool> is_currently_being_garbage_collected{false};
    alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
+   // SSD block level, the same as the page level ones unless FLAGS_compress_pages. With compression, block_total
+   // counts the 4 KiB blocks written to the RU epoch (the LBA chain blocks included), it is the one that fills the RU.
+   // TODO(mfd) : with compression, block_invalid, block_inserted and block_deleted are not maintained yet, they stay 0.
+   alignas(CACHE_LINE_SIZE) atomic<s32> block_inserted{0};
+   alignas(CACHE_LINE_SIZE) atomic<s32> block_deleted{0};
+   alignas(CACHE_LINE_SIZE) atomic<s32> block_total{0};
+   alignas(CACHE_LINE_SIZE) atomic<s32> block_invalid{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
    alignas(CACHE_LINE_SIZE) atomic<s32> total_fixed{0}; // used just as a stat
    // -------------------------------------------------------------------------------------
@@ -116,7 +126,8 @@ struct alignas(4096) PersistantRUState {
    // XXX(mfd) : Persisting only totals is enough for now, we assume
    //  invalid count is always 0. In other words, we assume we're
    //   recovering from a load only workload.
-   // Laid out RUH major, max_open_ru_epochs slots per RUH, see total().
+   // The block totals then the page totals, each laid out RUH major, max_open_ru_epochs slots per RUH,
+   // see blockTotal() and total().
    u32 totals[0];
 
    // With FLAGS_bg_page_fixer_variant 2, the totals are followed by the head of the LBA chain of each RU
@@ -127,10 +138,15 @@ struct alignas(4096) PersistantRUState {
       return with_lba_chain_heads ? size + max_open_ru_epochs * sizeof(PID) : size;
    }
    u64 getSize() const { return sizeFor(max_open_ru_epochs, FLAGS_bg_page_fixer_variant == 2); }
-   // Total of the i-th RU epoch of ruh, counted from its oldest active RU epoch.
-   u32& total(ruh_id_t ruh, u64 i) {
+   // Block total of the i-th RU epoch of ruh, counted from its oldest active RU epoch.
+   u32& blockTotal(ruh_id_t ruh, u64 i) {
       ensure_lt(i, max_open_ru_epochs);
       return totals[ruh * max_open_ru_epochs + i];
+   }
+   // Page total, same indexing.
+   u32& total(ruh_id_t ruh, u64 i) {
+      ensure_lt(i, max_open_ru_epochs);
+      return totals[(MAX_RUHS + ruh) * max_open_ru_epochs + i];
    }
    // Head of the LBA chain of the RU epoch, INVALID_PID if none of its blocks is sealed yet.
    PID& chainHead(ru_epoch_t ru_epoch) {
@@ -149,7 +165,7 @@ struct alignas(4096) PersistantRUState {
 
   private:
    static u64 chainHeadsOffset(u64 max_open_ru_epochs) {
-      return utils::upAlign(sizeof(PersistantRUState) + max_open_ru_epochs * MAX_RUHS * sizeof(u32), sizeof(PID));
+      return utils::upAlign(sizeof(PersistantRUState) + 2 * max_open_ru_epochs * MAX_RUHS * sizeof(u32), sizeof(PID));
    }
 };
 // -------------------------------------------------------------------------------------

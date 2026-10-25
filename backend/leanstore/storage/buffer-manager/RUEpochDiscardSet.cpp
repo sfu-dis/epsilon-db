@@ -80,6 +80,10 @@ void RUEpochDiscardSet::clear()
    deleted = 0;
    total = 0;
    invalid = 0;
+   block_inserted = 0;
+   block_deleted = 0;
+   block_total = 0;
+   block_invalid = 0;
    total_fixed = 0;
    log_reclaimed = false;
    clearGCState();
@@ -118,6 +122,10 @@ void RUEpochDiscardSet::dump()
 
    cout << "total: " << total.load() << endl;
    cout << "invalid: " << invalid.load() << endl;
+   cout << "block_inserted: " << block_inserted.load() << endl;
+   cout << "block_deleted: " << block_deleted.load() << endl;
+   cout << "block_total: " << block_total.load() << endl;
+   cout << "block_invalid: " << block_invalid.load() << endl;
    cout << "done_gc: " << done_gc.load() << endl;
    cout << "total_fixed: " << total_fixed.load() << endl;
 

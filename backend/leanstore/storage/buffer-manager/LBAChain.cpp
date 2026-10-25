@@ -168,7 +168,12 @@ bool LBAChain::seal(u64 seq)
       b.pad = 0;
       const s64 ret = nvme_pwrite(bm.ssd_fd, &b, PAGE_SIZE, pid * PAGE_SIZE, DEFAULT_RUH);
       ensure_equal(ret, s64(PAGE_SIZE));
-      bm.ru_discard_set[DEFAULT_RUH][b.written_ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
+      auto& set = bm.ru_discard_set[DEFAULT_RUH][b.written_ru_epoch];
+      set.block_total.fetch_add(1, std::memory_order_relaxed);
+      if (!FLAGS_compress_pages) {
+         // A chain block takes a PID, it counts as a page too.
+         set.total.fetch_add(1, std::memory_order_relaxed);
+      }
       head = pid;
       if (dirty_heads.empty() || dirty_heads.back() != b.ru_epoch) {
          dirty_heads.push_back(b.ru_epoch);
@@ -199,6 +204,7 @@ PID LBAChain::allocateBlock()
    // A recycled PID, its previous copy gets invalidated, like in pageWriteBackPrologue().
    if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > bm.reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
       bm.ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
+      bm.ru_discard_set[prev_ruh].at(prev_ru_epoch).block_invalid.fetch_add(1);
    }
    return pid;
 }

@@ -178,7 +178,7 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
          ensure_equal(persistant_ru_state->max_open_ru_epochs, max_open_ru_epochs);
          u64 used_ru_epochs = 0;
          for (ruh_id_t ruh = fdp::num_ruhs; ruh < MAX_RUHS; ++ruh) {
-            if (persistant_ru_state->ru_epoch[ruh] != 0 || persistant_ru_state->total(ruh, 0) != 0) {
+            if (persistant_ru_state->ru_epoch[ruh] != 0 || persistant_ru_state->blockTotal(ruh, 0) != 0) {
                LOG_WARN(logger, "RUH %u is not used by the %s placement policy but holds persisted pages, ignoring its RU state", ruh,
                         FLAGS_fdp_placement_policy.c_str());
             }
@@ -196,15 +196,17 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             oldest_uncollected_ru_epoch[ruh].store(persistant_ru_state->oldest_active_ru_epoch[ruh]);
             reclaimed_ru_epoch[ruh].store(persistant_ru_state->reclaimed_ru_epoch[ruh]);
             const ru_epoch_t oldest = oldest_uncollected_ru_epoch[ruh].load(std::memory_order_relaxed);
-            const u32 last_total = persistant_ru_state->total(ruh, newest_active_ru_epoch - oldest);
+            const u32 last_total = persistant_ru_state->blockTotal(ruh, newest_active_ru_epoch - oldest);
             ensure_lt(last_total, RU_SIZE);
             writers_iostat[0].io_counter[ruh] = last_total;
             LOG_INFO(logger, "Recovering RUH %u, pages used in the newest RU %u", ruh, last_total);
             for (ru_epoch_t e = oldest; e <= newest_active_ru_epoch; ++e) {
                auto& set = ru_discard_set[ruh].at(e);
+               set.block_total.store(persistant_ru_state->blockTotal(ruh, e - oldest));
                set.total.store(persistant_ru_state->total(ruh, e - oldest));
                // FIXME(mfd) : recover real invalid counter
                set.invalid.store(0);
+               set.block_invalid.store(0);
                set.cur_ru_epoch = e;
                set.active.store(true);
             }
@@ -370,7 +372,7 @@ void BufferManager::writeAllBufferFrames()
    ensure(shutdown_flush_in_progress.load(std::memory_order_acquire));
 
    for (ruh_id_t ruh = 0; ruh < fdp::num_ruhs; ++ruh) {
-      ensure_lt(ru_discard_set[ruh][ru_epoch[ruh].load()].total.load(), static_cast<s32>(RU_SIZE));
+      ensure_lt(ru_discard_set[ruh][ru_epoch[ruh].load()].block_total.load(), static_cast<s32>(RU_SIZE));
    }
 
    if (FLAGS_compress_pages) {
@@ -414,17 +416,19 @@ void BufferManager::writeAllBufferFrames()
          persistant_ru_state->ru_epoch[ruh] = 0;
          persistant_ru_state->oldest_active_ru_epoch[ruh] = 0;
          persistant_ru_state->reclaimed_ru_epoch[ruh] = -1;
+         persistant_ru_state->blockTotal(ruh, 0) = 0;
          persistant_ru_state->total(ruh, 0) = 0;
          continue;
       }
       ensure_equal(oldest_uncollected_ru_epoch[ruh].load(), 0);
       ensure_equal(reclaimed_ru_epoch[ruh].load(), -1);
       const ru_epoch_t newest_ru_epoch = ru_epoch[ruh].load(std::memory_order_acquire);
-      LOG_INFO(logger, "RUH %u newest RU epoch %ld is left with %d", ruh, newest_ru_epoch, ru_discard_set[ruh][newest_ru_epoch].total.load());
+      LOG_INFO(logger, "RUH %u newest RU epoch %ld is left with %d", ruh, newest_ru_epoch, ru_discard_set[ruh][newest_ru_epoch].block_total.load());
       persistant_ru_state->ru_epoch[ruh] = newest_ru_epoch;
       persistant_ru_state->oldest_active_ru_epoch[ruh] = 0;
       persistant_ru_state->reclaimed_ru_epoch[ruh] = -1;
       for (ru_epoch_t e = 0; e <= newest_ru_epoch; ++e) {
+         persistant_ru_state->blockTotal(ruh, e) = ru_discard_set[ruh][e].block_total.load();
          persistant_ru_state->total(ruh, e) = ru_discard_set[ruh][e].total.load();
       }
    }
@@ -480,6 +484,7 @@ void BufferManager::writeAllBufferFramesCompressed()
             ru_epoch_t written_ru_epoch;
             const PID new_location = packer.add(page, compress, compressed_space->location(pid), written_ru_epoch);
             bf.page.ru_epoch = written_ru_epoch;
+            countPackedPage(bf.page);
             const PID previous = compressed_space->exchangeLocation(pid, new_location);
             if (previous != new_location) {
                compressed_space->free(previous);
@@ -1134,6 +1139,9 @@ BufferFrame& BufferManager::resolveSwip(Guard& swip_guard, Swip<BufferFrame>& sw
       // -------------------------------------------------------------------------------------
       if (page_need_fixing && !gc_fixed) {
          ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).deleted.fetch_add(1);
+         if (!FLAGS_compress_pages) {
+            ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).block_deleted.fetch_add(1);
+         }
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
          if (auto* t = ru_discard_set[DEFAULT_RUH].at(bf.page.ru_epoch).tableStats(bf.page.dt_id)) {
             t->deleted.fetch_add(1, std::memory_order_relaxed);
@@ -1370,31 +1378,48 @@ void BufferManager::pageWriteBackPrologue(BufferFrame& bf)
       ruh_pages[ruh].pages.fetch_add(1, std::memory_order_relaxed);
    }
    ensure(tls_writer_thread_id != -1);
-   if (FLAGS_compress_pages) {
-      // The RU epochs are filled with blocks holding several pages, the writers count the blocks.
-      return;
-   }
-   ru_discard_set[ruh][page.ru_epoch].total.fetch_add(1, std::memory_order_relaxed);
-#ifdef PER_TPCC_TABLE_STATS_DEBUG
-   if (auto* t = ru_discard_set[ruh][page.ru_epoch].tableStats(page.dt_id)) {
-      t->total.fetch_add(1, std::memory_order_relaxed);
-   }
-#endif
    if (prev_ru_epoch != UNMAPPED_RU_EPOCH && prev_ru_epoch > reclaimed_ru_epoch[prev_ruh].load(std::memory_order_acquire)) {
-      ru_discard_set[prev_ruh].at(prev_ru_epoch).invalid.fetch_add(1);
+      auto& prev_set = ru_discard_set[prev_ruh].at(prev_ru_epoch);
+      prev_set.invalid.fetch_add(1);
+      if (!FLAGS_compress_pages) {
+         prev_set.block_invalid.fetch_add(1);
+      }
 #ifdef PER_TPCC_TABLE_STATS_DEBUG
-      if (auto* t = ru_discard_set[prev_ruh].at(prev_ru_epoch).tableStats(page.dt_id)) {
+      if (auto* t = prev_set.tableStats(page.dt_id)) {
          t->invalid.fetch_add(1, std::memory_order_relaxed);
       }
 #endif
    }
+   if (FLAGS_compress_pages) {
+      // The RU epoch of the page is known once it is packed (countPackedPage), the writers count the blocks.
+      return;
+   }
+   auto& set = ru_discard_set[ruh][page.ru_epoch];
+   set.total.fetch_add(1, std::memory_order_relaxed);
+   set.block_total.fetch_add(1, std::memory_order_relaxed);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   if (auto* t = set.tableStats(page.dt_id)) {
+      t->total.fetch_add(1, std::memory_order_relaxed);
+   }
+#endif
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(1, std::memory_order_relaxed);
+}
+// -------------------------------------------------------------------------------------
+void BufferManager::countPackedPage(const BufferFrame::Page& page)
+{
+   auto& set = ru_discard_set[DEFAULT_RUH][page.ru_epoch];
+   set.total.fetch_add(1, std::memory_order_relaxed);
+#ifdef PER_TPCC_TABLE_STATS_DEBUG
+   if (auto* t = set.tableStats(page.dt_id)) {
+      t->total.fetch_add(1, std::memory_order_relaxed);
+   }
+#endif
 }
 // -------------------------------------------------------------------------------------
 void BufferManager::countWrittenBlocks(ruh_id_t ruh, u64 n)
 {
    ensure(tls_writer_thread_id != -1);
-   ru_discard_set[ruh][ru_epoch[ruh].load(std::memory_order_acquire)].total.fetch_add(n, std::memory_order_relaxed);
+   ru_discard_set[ruh][ru_epoch[ruh].load(std::memory_order_acquire)].block_total.fetch_add(n, std::memory_order_relaxed);
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(n, std::memory_order_relaxed);
 }
 // -------------------------------------------------------------------------------------
@@ -1406,7 +1431,7 @@ void BufferManager::countPackedBlocks(const BlockPacker& packer)
    }
    ensure(tls_writer_thread_id != -1);
    for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
-      ru_discard_set[DEFAULT_RUH][packer.blockRUEpoch(b_i)].total.fetch_add(1, std::memory_order_relaxed);
+      ru_discard_set[DEFAULT_RUH][packer.blockRUEpoch(b_i)].block_total.fetch_add(1, std::memory_order_relaxed);
    }
    writers_iostat[tls_writer_thread_id].io_counter[DEFAULT_RUH].fetch_add(packer.blocksCount(), std::memory_order_relaxed);
 }

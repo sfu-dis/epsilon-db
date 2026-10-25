@@ -230,6 +230,8 @@ public:
    void countWrittenBlocks(ruh_id_t ruh, u64 n);
    // Same for the sealed blocks of a packer (DEFAULT_RUH), with an LBA chain each block counts to its own RU epoch.
    void countPackedBlocks(const BlockPacker& packer);
+   // With compression, counts a page written to its RU epoch (page.ru_epoch, set by the BlockPacker) of the DEFAULT_RUH.
+   void countPackedPage(const BufferFrame::Page& page);
    // FLAGS_lba_chain_verify: every page on the SSD is listed in the LBA chain of its RU epoch. when is logged.
    void verifyLBAChains(const char* when);
    void readPageAsync(PID pid, u8* destination, std::function<void()> callback);

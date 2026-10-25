@@ -189,7 +189,7 @@ void RUEpochManager::checkForNewRUEpoch(ruh_id_t ruh)
    }
    bm.ru_epoch[ruh].store(new_ru_epoch, std::memory_order_release);
    LOG_INFO(bm.logger, "RUH %u : Opened up a new RU Epoch %lu, closed previous ru epoch with %lu pages!!!", ruh, new_ru_epoch,
-            bm.ru_discard_set[ruh][new_ru_epoch - 1].total.load());
+            bm.ru_discard_set[ruh][new_ru_epoch - 1].block_total.load());
 }
 // -------------------------------------------------------------------------------------
 // The LBA chain blocks are written to the DEFAULT_RUH and fill its open RU epoch like the pages.
