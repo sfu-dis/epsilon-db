@@ -3,6 +3,7 @@
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -60,10 +61,31 @@ inline u64 offsetInBlock(PID pid)
 // -------------------------------------------------------------------------------------
 namespace compression
 {
-// Compresses a PAGE_SIZE page into dst (PAGE_SIZE bytes), returns the length.
+// A compressed page is stored as a CompressedPageHeader followed by its zstd frame, the length in its cpid covers both.
+// The header is not compressed so that the page can be copied to another block (of a newer RU epoch) as is, only
+// its header gets updated. The RU epoch inside the compressed page may then be stale, decompressPage() brings it
+// up to date from the header. An uncompressed page (length PAGE_SIZE) has no header, its RU epoch is in the page.
+struct CompressedPageHeader {
+   ru_epoch_t ru_epoch;
+};
+// The compressed pages are packed at any byte offset of a block, so the header is accessed through memcpy.
+// Pre: src points to a compressed page (length < PAGE_SIZE).
+inline ru_epoch_t ruEpoch(const u8* src)
+{
+   CompressedPageHeader header;
+   std::memcpy(&header, src, sizeof(header));
+   return header.ru_epoch;
+}
+inline void setRUEpoch(u8* src, ru_epoch_t ru_epoch)
+{
+   CompressedPageHeader header{ru_epoch};
+   std::memcpy(src, &header, sizeof(header));
+}
+// Compresses a PAGE_SIZE page into dst (PAGE_SIZE bytes), header included, returns the length.
 // A page that does not compress is copied as is and PAGE_SIZE is returned.
 u32 compressPage(const u8* page, u8* dst);
 // Inverse of compressPage, ensures the page decompresses to exactly PAGE_SIZE bytes.
+// The RU epoch of a compressed page is taken from its header.
 void decompressPage(const u8* src, u32 length, u8* page);
 // PAGE_SIZE aligned buffer of the calling thread to read a block into.
 u8* threadLocalBlockBuffer();

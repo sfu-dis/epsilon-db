@@ -56,13 +56,15 @@ ZSTD_DCtx* threadLocalDCtx()
 u32 compressPage(const u8* page, u8* dst)
 {
    // A compressed page must be strictly smaller than PAGE_SIZE, the length PAGE_SIZE means uncompressed.
-   const size_t ret = ZSTD_compress2(threadLocalCCtx(), dst, PAGE_SIZE - 1, page, PAGE_SIZE);
+   constexpr u32 header_size = sizeof(CompressedPageHeader);
+   const size_t ret = ZSTD_compress2(threadLocalCCtx(), dst + header_size, PAGE_SIZE - 1 - header_size, page, PAGE_SIZE);
    if (ZSTD_isError(ret)) {
       ensure(ZSTD_getErrorCode(ret) == ZSTD_error_dstSize_tooSmall);
       std::memcpy(dst, page, PAGE_SIZE);
       return PAGE_SIZE;
    }
-   return ret;
+   setRUEpoch(dst, reinterpret_cast<const BufferFrame::Page*>(page)->ru_epoch);
+   return header_size + ret;
 }
 // -------------------------------------------------------------------------------------
 void decompressPage(const u8* src, u32 length, u8* page)
@@ -72,12 +74,16 @@ void decompressPage(const u8* src, u32 length, u8* page)
       std::memcpy(page, src, PAGE_SIZE);
       return;
    }
-   const size_t ret = ZSTD_decompressDCtx(threadLocalDCtx(), page, PAGE_SIZE, src, length);
+   constexpr u32 header_size = sizeof(CompressedPageHeader);
+   ensure(length > header_size);
+   const size_t ret = ZSTD_decompressDCtx(threadLocalDCtx(), page, PAGE_SIZE, src + header_size, length - header_size);
    if (ZSTD_isError(ret) || ret != PAGE_SIZE) {
       std::cerr << "Failed to decompress a page of " << length << " bytes : " << (ZSTD_isError(ret) ? ZSTD_getErrorName(ret) : "wrong size")
                 << std::endl;
       ensure(false);
    }
+   // The page may have been copied to a block of a newer RU epoch without being recompressed.
+   reinterpret_cast<BufferFrame::Page*>(page)->ru_epoch = ruEpoch(src);
 }
 // -------------------------------------------------------------------------------------
 u8* threadLocalBlockBuffer()
@@ -214,7 +220,8 @@ u64 CompressedSpace::usedBlocks()
 namespace
 {
 // 0002: the page map replaced the live bytes, the PIDs are logical.
-constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0002;
+// 0003: the compressed pages start with a CompressedPageHeader.
+constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0003;
 }
 // Format: magic, blocks_count, logical_pages, next_unused_block, pids_end, page_map[0, pids_end)
 void CompressedSpace::persist(const std::string& path, PID pids_end)
