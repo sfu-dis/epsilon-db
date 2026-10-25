@@ -145,6 +145,8 @@ class CompressedSpace
    const u32 writers_count;
    // mmap'ed without prefaulting, the pages of the map get backed on first touch.
    std::atomic<u64>* page_map;
+   // TODO(mfd): Pack the live_bytes and the block states in the same array.
+   // The array just needs 16 bits (up to 14 bits for 16KiB pages and 2 bits for the state)
    std::unique_ptr<std::atomic<s32>[]> live_bytes;
    // Life cycle of a block, checked on every transition to catch a double free before it corrupts data:
    // FREE -allocateBlock-> OPEN (being packed) -sealBlock-> SEALED -last free-> FREE
@@ -182,15 +184,23 @@ class BlockPacker
    u64 slotOf(const void* block_ptr) const { return (reinterpret_cast<const u8*>(block_ptr) - blocks) / PAGE_SIZE; }
 
   private:
+   // Allocates the blocks and seals them, owns the page map.
    CompressedSpace& space;
+   // Write buffer of the batch, slot i holds the content of block_ids[i].
    u8* const blocks;
+   // Capacity of the batch in blocks.
    const u64 max_blocks;
+   // Number of slots in use in the current batch.
    u64 blocks_count = 0;
+   // seal() has been called on the current batch, no page can be added until reset().
    bool sealed = false;
+   // Per slot: block id on the SSD.
    std::vector<u64> block_ids;
+   // Per slot: bytes packed so far, the next page goes at this offset.
    std::vector<u32> used;
-   // The block is rewritten in place, it is already sealed.
+   // Per slot: the block is rewritten in place, it is already sealed.
    std::vector<bool> in_place;
+   // PAGE_SIZE buffer the page is compressed into before being copied to its block.
    std::unique_ptr<u8[]> scratch;
 };
 // -------------------------------------------------------------------------------------
