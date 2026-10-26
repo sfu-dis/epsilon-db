@@ -150,25 +150,29 @@ void LeanStore::profilingThread()
          table.column(2).format().width(10);
          // table.column(13).format().width(22);
          // -------------------------------------------------------------------------------------
-         auto print_table = [](tabulate::Table& table, std::function<bool(u64)> predicate) {
-            std::stringstream ss;
-            table.print(ss);
-            string str = ss.str();
-            u64 line_n = 0;
-            for (u64 i = 0; i < str.size(); i++) {
-               if (str[i] == '\n') {
-                  line_n++;
-               }
-               if (predicate(line_n)) {
-                  cout << str[i];
+         // Header cells wrap when a label is wider than its column, so locate the rows by their borders instead of fixed line numbers
+         std::stringstream ss;
+         table.print(ss);
+         std::vector<std::string> lines;
+         std::vector<u64> borders;
+         for (std::string line; std::getline(ss, line);) {
+            if (!line.empty() && line[0] == '+') {
+               borders.push_back(lines.size());
+            } else if (line.find_first_not_of("| ") == std::string::npos) {
+               continue;  // padding line
+            }
+            lines.push_back(line);
+         }
+         if (borders.size() >= 3) {
+            if ((seconds % 30) == 0) {
+               cout << endl;
+               for (u64 l_i = 0; l_i < borders[1]; l_i++) {
+                  cout << lines[l_i] << endl;
                }
             }
-         };
-         if ((seconds % 30) == 0) {
-            cout << endl;
-            print_table(table, [](u64 line_n) { return (line_n < 3) || (line_n == 4); });
-         } else {
-            print_table(table, [](u64 line_n) { return line_n == 4; });
+            for (u64 l_i = borders[1] + 1; l_i < borders[2]; l_i++) {
+               cout << lines[l_i] << endl;
+            }
          }
          stats_row.clear();
       }
