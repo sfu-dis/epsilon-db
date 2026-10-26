@@ -593,6 +593,18 @@ columns:
     enabled: true
     source: bm
 
+  # writers spinning on a full or closed LBA chain block right now
+  lba_closed_wait_now:
+    field: "LBA closed"
+    enabled: false
+    source: bm
+
+  # 1: the ru_epoch_mgr is closing the active LBA chain block
+  lba_closer_waiting:
+    field: "LBA closer"
+    enabled: false
+    source: bm
+
   # workers blocked on an IO frame of the fixer right now
   wk_fixer_wait_now:
     field: "WKfix wait"

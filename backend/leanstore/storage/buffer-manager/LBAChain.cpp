@@ -41,6 +41,8 @@ LBAChain::~LBAChain()
 ru_epoch_t LBAChain::record(PID pid)
 {
    ensure(pid != INVALID_PID);
+   // Counted in closed_waiters from the first spin on a full or closed block until we get an entry.
+   bool waiting = false;
    while (true) {
       const u64 seq = active_seq.load(std::memory_order_acquire);
       Control& c = control(seq);
@@ -53,6 +55,9 @@ ru_epoch_t LBAChain::record(PID pid)
             b.entries[slot] = pid;
             const ru_epoch_t ru_epoch = b.ru_epoch;
             c.filled.fetch_add(1, std::memory_order_release);
+            if (waiting) {
+               closed_waiters.fetch_sub(1, std::memory_order_relaxed);
+            }
             return ru_epoch;
          }
          // The slot got recycled for a newer block since we read active_seq, the entry we reserved there becomes a
@@ -67,6 +72,10 @@ ru_epoch_t LBAChain::record(PID pid)
          continue;
       }
       // Full or closed, the next block is about to get activated.
+      if (!waiting) {
+         waiting = true;
+         closed_waiters.fetch_add(1, std::memory_order_relaxed);
+      }
       _mm_pause();
    }
 }
@@ -106,19 +115,25 @@ u64 LBAChain::closeActiveBlock(ru_epoch_t next_ru_epoch)
       const u64 word = control(seq).word.fetch_add(CLOSED, std::memory_order_acq_rel);
       ensure_equal(wordSeq(word), static_cast<u32>(seq));
       const u64 reserved = wordCount(word);
-      if (reserved >= LBAChainBlock::CAPACITY) {
+      // Only the writer that reserved the entry just past the end (count CAPACITY + 1) activates the next block. With
+      // exactly CAPACITY reserved the block is full, but no writer got that entry: the writers now reserve past
+      // CLOSED, so we activate it ourselves.
+      if (reserved > LBAChainBlock::CAPACITY) {
          // A writer filled it up and activates the next block (of the old RU epoch), close that one instead. The writer
          // may wait for a free slot, which only we free.
+         closer_waiting.store(true, std::memory_order_relaxed);
          while (active_seq.load(std::memory_order_acquire) == seq) {
             written += sealClosedBlocks();
             _mm_pause();
          }
          continue;
       }
+      closer_waiting.store(true, std::memory_order_relaxed);
       while (wordSeq(control(seq + 1).word.load(std::memory_order_acquire)) != static_cast<u32>(seq + 1)) {
          written += sealClosedBlocks();
       }
       activateNext(seq, reserved, next_ru_epoch);
+      closer_waiting.store(false, std::memory_order_relaxed);
       return written;
    }
 }

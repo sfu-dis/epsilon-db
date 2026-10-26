@@ -68,6 +68,10 @@ class LBAChain
    u64 stalls() const { return stalls_counter.load(std::memory_order_relaxed); }
    // Writers currently waiting for a free slot of the ring.
    s64 stalledWriters() const { return stalled_writers.load(std::memory_order_relaxed); }
+   // Writers currently spinning on a full or closed block, waiting for the next one to get activated.
+   s64 closedWaiters() const { return closed_waiters.load(std::memory_order_relaxed); }
+   // True while the ru_epoch_mgr is closing the active block (waiting for its activation or a free slot).
+   bool closerWaiting() const { return closer_waiting.load(std::memory_order_relaxed); }
    // -------------------------------------------------------------------------------------
    // Bg page fixers: reads the chain of the RU epoch. Appends its entries to entries (when not null) and its blocks
    // (PID, RU epoch it was written to) to blocks.
@@ -101,6 +105,8 @@ class LBAChain
    alignas(CACHE_LINE_SIZE) std::atomic<u64> active_seq{0};
    alignas(CACHE_LINE_SIZE) std::atomic<u64> stalls_counter{0};
    std::atomic<s64> stalled_writers{0};
+   std::atomic<s64> closed_waiters{0};
+   std::atomic<bool> closer_waiting{false};
    // ru_epoch_mgr only: the blocks in [sealed_seq, active_seq) are closed but not sealed yet.
    u64 sealed_seq = 0;
    std::vector<ru_epoch_t> dirty_heads;

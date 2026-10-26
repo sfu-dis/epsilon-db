@@ -383,6 +383,8 @@ void BMTable::open()
       col << delta;
    });
    columns.emplace("lba_stalled_now", [this](Column& col) { col << (bm.lba_chain ? bm.lba_chain->stalledWriters() : s64(0)); });
+   columns.emplace("lba_closed_wait_now", [this](Column& col) { col << (bm.lba_chain ? bm.lba_chain->closedWaiters() : s64(0)); });
+   columns.emplace("lba_closer_waiting", [this](Column& col) { col << (bm.lba_chain ? u32(bm.lba_chain->closerWaiting()) : u32(0)); });
    // Workers
    columns.emplace("wk_fixer_wait_now", [this](Column& col) { col << bm.bm_stats.workers_waiting_fixer_io.load(std::memory_order_relaxed); });
    columns.emplace("wk_fixer_waits", [](Column& col) { col << sum(WorkerCounters::worker_counters, &WorkerCounters::fixer_io_frame_waits); });
