@@ -45,10 +45,10 @@ class RUBackgroundPageFixer
    u64 runningThreads() const { return running_threads.load(); }
    // -------------------------------------------------------------------------------------
    // Debugging stats, read by the profiling thread (BMTable). Gauges, never reset.
-   enum class Phase : u8 { IDLE, MAP_LOG, READ, LOOKUP, FIX, WRITE_BACK, HOT, DRAIN, BARRIER, FINISH, COUNT };
-   static constexpr const char* phase_names[] = {"idle", "map_log", "read", "lookup", "fix", "write_back", "hot", "drain", "barrier", "finish"};
+   enum class Phase : u8 { IDLE, MAP_LOG, READ, LOOKUP, FIX, WRITE_BACK, HOT, DRAIN, BARRIER, FINISH, RETRY, COUNT };
+   static constexpr const char* phase_names[] = {"idle", "map_log", "read", "lookup", "fix", "write_back", "hot", "drain", "barrier", "finish", "retry"};
    // One letter per phase, for the per thread phase string.
-   static constexpr char phase_letters[] = "IMRLFWHDBE";
+   static constexpr char phase_letters[] = "IMRLFWHDBEY";
    struct alignas(64) ThreadStats {
       std::atomic<u8> phase{static_cast<u8>(Phase::IDLE)};
       std::atomic<u64> phase_since_ns{0};  // steady clock
@@ -82,7 +82,11 @@ class RUBackgroundPageFixer
    };
    // Outcome of lookUpPageInTree(). FIX: discarded into the log being reclaimed, MOVE: clean and not cached, to be
    // copied as is (FLAGS_compress_pages). Both are claimed: their IO frame is inserted.
-   enum class TreeLookup : u8 { SKIP, FIX, MOVE };
+   // FLAGS_compress_pages only: HOT: cached, its frame is in ThreadContext::lookup_hot_bf. RETRY: a worker is loading
+   // it, the lookup is to be retried once the page is cached.
+   enum class TreeLookup : u8 { SKIP, FIX, MOVE, HOT, RETRY };
+   // Outcome of writing back (or moving) a cached page.
+   enum class HotPage { DONE, WRITING, RETRY };
    // -------------------------------------------------------------------------------------
    BufferManager& bm;
    // -------------------------------------------------------------------------------------
@@ -115,9 +119,17 @@ class RUBackgroundPageFixer
    // claim_clean: also claim the clean pages that are not cached (MOVE), requires the location.
    TreeLookup lookUpPageInTree(ThreadContext& ctx, u64 idx, PID location = 0, bool claim_clean = false);
    // FLAGS_compress_pages: reads a batch of the blocks listed in the LBA chain and moves their live pages to blocks of the
-   // open RU epoch, the discarded pages fixed and the clean ones copied as is. The cached pages are left in place.
+   // open RU epoch, the discarded pages fixed, the clean ones copied as is, and the cached ones moved from their frame.
    void moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count);
    void movePage(ThreadContext& ctx, PID pid, PID location, const u8* src, ru_epoch_t ru_epoch);
+   // Moves a cached page found in a block of the batch: the clean ones are copied as is, the dirty ones written back
+   // from their frame. RETRY when the frame is latched, being written back, or no longer holds the page.
+   HotPage tryMoveHotPage(ThreadContext& ctx, BufferFrame& bf, PID pid, PID location, const u8* src);
+   // Retries the pages of the batch movePage() deferred until none is left, blocking if it must, so that every
+   // block of the batch is freed before the next batch.
+   void retryDeferredPages(ThreadContext& ctx);
+   // Waits for the read of a worker loading pid, if any. Pre: the caller holds no IO frame.
+   void waitForWorkerIOFrame(PID pid);
    // Writes the blocks of the packer, then publishes the new locations of the moved pages and acknowledges the hot ones.
    void flushPacker(ThreadContext& ctx);
    // Logs how many blocks of the RU epoch got invalidated on the SSD. Pre: the caller holds set.m.
@@ -136,7 +148,6 @@ class RUBackgroundPageFixer
    void redoPage(ThreadContext& ctx, u64 idx);
    void ackFixedPage(ThreadContext& ctx, io_uring_cqe* cqe);
    // Write back of the pages of the reclaimed log that are cached (hot).
-   enum class HotPage { DONE, WRITING, RETRY };
    void fixHotPages(ThreadContext& ctx);
    HotPage tryWriteBackHotPage(ThreadContext& ctx, const HotPageRef& hot);
    void writeBackHotPages(ThreadContext& ctx);

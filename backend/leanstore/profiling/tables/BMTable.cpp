@@ -267,6 +267,10 @@ void BMTable::open()
    gc_counter("gc_blocks_overwritten", &GCCounters::blocks_overwritten);
    gc_counter("gc_dead_pages", &GCCounters::dead_pages);
    gc_counter("gc_clean_copied", &GCCounters::clean_copied);
+   gc_counter("gc_hot_moved", &GCCounters::hot_moved);
+   gc_counter("gc_hot_written", &GCCounters::hot_written);
+   gc_counter("gc_batch_deferred", &GCCounters::batch_deferred);
+   gc_counter("gc_batch_retry_rounds", &GCCounters::batch_retry_rounds);
    // --compress_pages, cumulative: pages written in total over the ones the database had to write, the clean copies of
    // the bg page fixer being the extra ones.
    columns.emplace("db_waf", [this](Column& col) {

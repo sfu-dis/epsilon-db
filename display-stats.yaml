@@ -335,7 +335,7 @@ columns:
   # -------------------------------------------------------------------------------------
   # BG page fixer debugging (bg_page_fixer_tree_lookup livelock / deadlock hunting)
 
-  # one letter per ru_gc thread: I idle, M map log, R read, L tree lookup, F fix, W wait write back, H hot pages, D drain deferred hot, B barrier (waits for the other GC threads), E finish
+  # one letter per ru_gc thread: I idle, M map log, R read, L tree lookup, F fix, W wait write back, H hot pages, D drain deferred hot, B barrier (waits for the other GC threads), E finish, Y retry the deferred pages of a batch
   gc_phases:
     field: "GC phase"
     enabled: true
@@ -394,6 +394,11 @@ columns:
 
   gc_thr_finish:
     field: "GC finish"
+    enabled: false
+    source: bm
+
+  gc_thr_retry:
+    field: "GC retry"
     enabled: false
     source: bm
 
@@ -519,6 +524,28 @@ columns:
   gc_clean_copied:
     field: "GC clean cp"
     enabled: true
+    source: bm
+
+  # cached pages moved within their batch: clean ones copied as is (part of GC clean cp), dirty ones written back
+  gc_hot_moved:
+    field: "GChot mv"
+    enabled: false
+    source: bm
+
+  gc_hot_written:
+    field: "GChot wr"
+    enabled: false
+    source: bm
+
+  # pages of a batch deferred to its retry phase, and the rounds of the retry phases
+  gc_batch_deferred:
+    field: "GCb def"
+    enabled: false
+    source: bm
+
+  gc_batch_retry_rounds:
+    field: "GCb rnd"
+    enabled: false
     source: bm
 
   # bg_page_fixer_tree_lookup_state_filter: pages not read

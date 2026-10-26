@@ -232,15 +232,20 @@ struct ParentSwipHandler BTreeGeneric::findParentEager(BTreeGeneric& btree, Buff
 std::optional<ParentSwipHandler> BTreeGeneric::findParentOfPage(BTreeGeneric& btree, BufferFrame::Page& copy, PID pid)
 {
    auto& c_node = *reinterpret_cast<BTreeNode*>(copy.dt);
-   ensure(c_node.is_leaf);
    ensure_equal(copy.dt_id, btree.dt_id);
+   // The meta node is pinned and has no parent node, the swip is the one the BTree keeps.
+   BufferFrame* p_bf = &btree.meta_node_bf.asBufferFrame();
+   if (p_bf->header.pid == pid) {
+      Guard m_guard(p_bf->header.latch);
+      m_guard.toOptimisticOrJump();
+      return ParentSwipHandler{.swip = btree.meta_node_bf, .parent_guard = std::move(m_guard), .parent_bf = nullptr, .pos = -1};
+   }
    const bool infinity = c_node.upper_fence.offset == 0;
    const u16 key_length = c_node.upper_fence.length;
    u8* key = c_node.getUpperFenceKey();
    // -------------------------------------------------------------------------------------
    // Plain optimistic guards and no HybridPageGuard: a swip that changes under us must never get resolved (read
    // from the SSD or warmed up) by the caller.
-   BufferFrame* p_bf = &btree.meta_node_bf.asBufferFrame();
    Guard p_guard(p_bf->header.latch);
    p_guard.toOptimisticOrJump();
    Swip<BTreeNode>* c_swip = &reinterpret_cast<BTreeNode*>(p_bf->page.dt)->upper;

@@ -47,6 +47,13 @@ struct GCCounters {
    atomic<u64> dead_pages;
    atomic<u64> clean_copied;
    atomic<u64> clean_copied_bytes;
+   // FLAGS_compress_pages: cached pages found in the blocks of a batch, moved within the batch: the clean ones copied as
+   // is (also counted in clean_copied), the dirty ones written back. The pages a batch deferred (frame latched, being
+   // written back or loaded by a worker) and the rounds of its retry phase.
+   atomic<u64> hot_moved;
+   atomic<u64> hot_written;
+   atomic<u64> batch_deferred;
+   atomic<u64> batch_retry_rounds;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
    // -------------------------------------------------------------------------------------

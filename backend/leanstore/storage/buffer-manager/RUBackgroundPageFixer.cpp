@@ -94,6 +94,17 @@ struct RUBackgroundPageFixer::ThreadContext {
    std::unique_ptr<BlockPacker> packer;
    // Pages added to the packer, their IO frame is held until the packer is flushed.
    std::vector<MovedPage> moved;
+   // Set by lookUpPageInTree() when it returns HOT.
+   BufferFrame* lookup_hot_bf = nullptr;
+   // Pages of the current batch movePage() could not move yet, src points into read_blocks.
+   struct DeferredPage {
+      PID pid;
+      PID location;
+      const u8* src;
+      ru_epoch_t ru_epoch;
+   };
+   std::vector<DeferredPage> deferred_pages;
+   std::vector<DeferredPage> retried_pages;
    u64 total_clean_copied = 0;  // in the current RU epoch
    // -------------------------------------------------------------------------------------
    // Jobs of to_gc_epochs already picked up, and those left to collect.
@@ -639,8 +650,9 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
 // moves a page on the SSD holds its IO frame (see the read path), and the page map only changes for a cached page or
 // under an IO frame. So once the IO frame is inserted, with the parent latched exclusively so that the swip stays
 // evicted, the copy is still the current one iff the page map still points to it. With claim_clean, a clean evicted
-// page is claimed as well (MOVE). An IO frame inserted by a worker means the page is being loaded, the lookup is
-// retried until the page is cached (and queued as hot). One inserted by another bg page fixer means that fixer moves it.
+// page is claimed as well (MOVE). A cached page, inner and meta nodes included, is returned as HOT for the caller to
+// move. An IO frame inserted by a worker means the page is being loaded (RETRY), the caller looks it up again once the
+// page is cached. One inserted by another bg page fixer means that fixer moves it.
 RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx, PID location, bool claim_clean)
 {
    ensure(!claim_clean || location != 0);
@@ -655,8 +667,10 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
       COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_other_ru_epoch++; }
       return TreeLookup::SKIP;
    }
-   if (!reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf) {
-      // Inner and meta nodes are pinned, they are never discarded.
+   const bool is_leaf = reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf;
+   if (!is_leaf && location == 0) {
+      // Inner and meta nodes are pinned, they are never discarded. With compression they are moved like the other
+      // cached pages, to free their block.
       COUNTERS_BLOCK(gc)
       {
          GCCounters::myCounters().clean++;
@@ -698,7 +712,18 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
                GCCounters::myCounters().hot_fixed++;
                GCCounters::myCounters().tree_swip_cached++;
             }
+            record_retries();
+            if (location != 0) {
+               ctx.lookup_hot_bf = bf;
+               jumpmu_return TreeLookup::HOT;
+            }
             ctx.hot_pids.push_back({pid, bf});
+            jumpmu_return TreeLookup::SKIP;
+         }
+         if (!is_leaf) {
+            // The inner and meta nodes are pinned: the copy is stale, its pid got reused for a leaf since.
+            parent_handler->parent_guard.recheck();
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().dead_pages++; }
             record_retries();
             jumpmu_return TreeLookup::SKIP;
          }
@@ -719,7 +744,6 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
             ensure_equal(static_cast<ru_epoch_t>(swip.ru_epoch()), ctx.current_gc_epoch);
          }
          Partition& partition = bm.getPartition(pid);
-         bool loaded_by_worker = false;
          {
             std::lock_guard<instrumented_mutex> _m(partition.ht_mutex);
             auto frame_handler = partition.io_ht.lookup(pid);
@@ -730,7 +754,10 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
                   record_retries();
                   jumpmu_return TreeLookup::SKIP;
                }
-               loaded_by_worker = true;
+               // Retried once the page is cached, the worker needs the parent latch to swizzle it.
+               COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_io_frame_busy++; }
+               record_retries();
+               jumpmu_return TreeLookup::RETRY;
             } else if (frame_handler) {
                // A worker is loading the page and applies its log records, the page is cached afterwards.
                COUNTERS_BLOCK(gc)
@@ -750,11 +777,6 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
             } else {
                insertFixerIOFrame(partition, pid, stats.io_frames_held);
             }
-         }
-         if (loaded_by_worker) {
-            // Retried once the parent latch is released (by the jump), the worker needs it to swizzle the page.
-            COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_io_frame_busy++; }
-            jumpmu::jump();
          }
          if (!dirty) {
             COUNTERS_BLOCK(gc)
@@ -804,12 +826,13 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
 // -------------------------------------------------------------------------------------
 // FLAGS_compress_pages. Every live page of the blocks is decompressed and looked up in its B-Tree: the discarded ones are
 // fixed and recompressed, the clean ones copied as is, both to blocks of the open RU epoch (out of place), the cached
-// ones are left in place (queued as hot). The blocks are freed as their last live page leaves them, into the free list of
-// this thread, so the next batch reuses them first.
+// ones are moved from their frame (tryMoveHotPage()). The pages that cannot be moved right away are retried, blocking,
+// before the batch ends. The blocks are freed as their last live page leaves them, into the free list of this thread,
+// so the next batch reuses them first.
 void RUBackgroundPageFixer::moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count)
 {
    ensure_lte(count, ThreadContext::compressed_batch_blocks);
-   ensure(ctx.to_fix_pids.empty() && ctx.moved.empty());
+   ensure(ctx.to_fix_pids.empty() && ctx.moved.empty() && ctx.deferred_pages.empty());
    CompressedSpace& space = *bm.compressed_space;
    const ru_epoch_t gc_ru_epoch = ctx.current_gc_epoch;
    u64 read_blocks[ThreadContext::compressed_batch_blocks];
@@ -881,6 +904,7 @@ void RUBackgroundPageFixer::moveBlocksBatch(ThreadContext& ctx, const PID* block
       }
    }
    flushPacker(ctx);
+   retryDeferredPages(ctx);
 }
 // -------------------------------------------------------------------------------------
 // The copy of pid at location (src, as read from the SSD), written to ru_epoch.
@@ -903,13 +927,26 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
    ensure(ctx.to_fix_pids.empty());
    ctx.to_fix_pids.emplace_back(pid, nullptr, INVALID_LSN, INVALID_LSN, 0);
    // A log_only pass does not reclaim the RU epoch, there is no point in moving its clean pages.
-   const TreeLookup outcome = lookUpPageInTree(ctx, 0, location, /* claim_clean */ !ctx.log_only);
-   if (outcome != TreeLookup::SKIP && ctx.packer->full()) {
+   TreeLookup outcome = lookUpPageInTree(ctx, 0, location, /* claim_clean */ !ctx.log_only);
+   if (outcome == TreeLookup::HOT && !FLAGS_bg_fixer_write_back_hot_pages) {
+      // Left in place, it pins its block.
+      outcome = TreeLookup::SKIP;
+   }
+   if (outcome != TreeLookup::SKIP && outcome != TreeLookup::RETRY && ctx.packer->full()) {
       // The IO frame of this page is held, but it is not part of the flush.
       flushPacker(ctx);
    }
    ru_epoch_t written_ru_epoch;
-   if (outcome == TreeLookup::FIX) {
+   if (outcome == TreeLookup::HOT) {
+      if (tryMoveHotPage(ctx, *ctx.lookup_hot_bf, pid, location, src) == HotPage::RETRY) {
+         outcome = TreeLookup::RETRY;
+      }
+      ctx.lookup_hot_bf = nullptr;
+   }
+   if (outcome == TreeLookup::RETRY) {
+      ctx.deferred_pages.push_back({pid, location, src, ru_epoch});
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().batch_deferred++; }
+   } else if (outcome == TreeLookup::FIX) {
       setPhase(ctx, Phase::FIX);
       const LID last_lsn = ctx.to_fix_pids[0].last_lsn;
       redoPage(ctx, 0);
@@ -939,6 +976,146 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
    }
    ctx.to_fix_pids.clear();
    bf.reset();
+}
+// -------------------------------------------------------------------------------------
+// Pre: bf was found through the parent swip of pid, src is the copy of pid at location read from the reclaimed RU epoch.
+// The clean page is copied from src, it is the same page. Holding is_being_written_back keeps the page providers from
+// writing the page back or evicting it, so the page map points to the new copy right away, as the page providers do.
+// Whoever changes the location of a cached page (or rewrites an uncompressed one in place) holds is_being_written_back:
+// once it is held, the copy at location is still the current one iff the page map points to it and its block is still
+// in the reclaimed RU epoch.
+RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryMoveHotPage(ThreadContext& ctx, BufferFrame& bf, PID pid, PID location, const u8* src)
+{
+   CompressedSpace& space = *bm.compressed_space;
+   jumpmuTry()
+   {
+      BMOptimisticGuard o_guard(bf.header.latch);
+      if (bf.header.pid != pid || bf.isFree()) {
+         // Evicted since, the lookup decides again.
+         o_guard.recheck();
+         jumpmu_return HotPage::RETRY;
+      }
+      if (bf.header.is_being_written_back.load(std::memory_order_acquire)) {
+         o_guard.recheck();
+         jumpmu_return HotPage::RETRY;
+      }
+      BMExclusiveGuard x_guard(o_guard);
+      if (bf.header.is_being_written_back.load(std::memory_order_acquire)) {
+         jumpmu_return HotPage::RETRY;
+      }
+      if (space.location(pid) != location || space.blockRUEpoch(cpid::block(location)) != ctx.current_gc_epoch) {
+         // Written back since, it left the block.
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().dead_pages++; }
+         jumpmu_return HotPage::DONE;
+      }
+      bf.header.is_being_written_back.store(true, std::memory_order_release);
+      const u32 length = cpid::length(location);
+      ru_epoch_t written_ru_epoch;
+      PID new_location;
+      if (bf.isDirty()) {
+         // As tryWriteBackHotPage() does, the copy replaces the one read from the block in buf_pages[0].
+         bm.prepareDirtyWriteBack(bf);
+         ensure_equal(bf.page.magic_debugging_number, pid);
+         ++bf.page.write_back_count;
+         BufferFrame::Page& copy = ctx.buf_pages[0].page;
+         DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, copy);
+         auto& node = *reinterpret_cast<btree::BTreeNode*>(copy.dt);
+         if (FLAGS_compression_zero_free_space) {
+            node.zeroFreeSpace();
+         }
+         new_location = ctx.packer->add(copy, !bf.header.keep_in_memory && node.is_leaf, location, written_ru_epoch);
+         ++ctx.total_fixed;
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_written++; }
+      } else {
+         // An uncompressed page is rewritten in place, as its write back would.
+         if (length == PAGE_SIZE) {
+            new_location = ctx.packer->add(src, /* compress */ false, location, written_ru_epoch);
+         } else {
+            new_location = ctx.packer->addVerbatim(src, length, written_ru_epoch);
+         }
+         // Like a clean copy (MOVE): its copy in the reclaimed RU epoch gets invalid.
+         bm.ru_discard_set[DEFAULT_RUH].at(ctx.current_gc_epoch).invalid.fetch_add(1);
+         ++ctx.total_clean_copied;
+         space.clean_copied_pages.fetch_add(1, std::memory_order_relaxed);
+         COUNTERS_BLOCK(gc)
+         {
+            GCCounters::myCounters().clean_copied++;
+            GCCounters::myCounters().clean_copied_bytes += length;
+            GCCounters::myCounters().hot_moved++;
+         }
+      }
+      bf.page.ru_epoch = written_ru_epoch;
+      bm.countPackedPage(bf.page);
+      const PID previous = space.exchangeLocation(pid, new_location);
+      ensure_equal(previous, location);
+      if (previous != new_location) {
+         space.free(previous);
+      }
+      ctx.hot_bfs.push_back(&bf);
+      jumpmu_return HotPage::WRITING;
+   }
+   jumpmuCatch()
+   {
+      return HotPage::RETRY;
+   }
+}
+// -------------------------------------------------------------------------------------
+// The deferred pages are looked up again from their copy in read_blocks, they may have been cached, evicted or moved
+// since. Nothing is held while waiting: the packer is flushed first, so no worker waits on an IO frame of this thread.
+void RUBackgroundPageFixer::retryDeferredPages(ThreadContext& ctx)
+{
+   if (ctx.deferred_pages.empty()) {
+      return;
+   }
+   const Phase phase = static_cast<Phase>(stats.threads[ctx.gc_id].phase.load(std::memory_order_relaxed));
+   setPhase(ctx, Phase::RETRY);
+   u64 rounds = 0;
+   while (!ctx.deferred_pages.empty()) {
+      ensure(ctx.retried_pages.empty());
+      ctx.retried_pages.swap(ctx.deferred_pages);
+      for (const auto& page : ctx.retried_pages) {
+         waitForWorkerIOFrame(page.pid);
+         movePage(ctx, page.pid, page.location, page.src, page.ru_epoch);
+      }
+      ctx.retried_pages.clear();
+      setPhase(ctx, Phase::RETRY);
+      flushPacker(ctx);
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().batch_retry_rounds++; }
+      if (!ctx.deferred_pages.empty()) {
+         if ((++rounds % (u64(1) << 20)) == 0) {
+            LOG_WARN(bm.logger, "ru_gc_%u: %lu rounds retrying %lu pages of a batch of RU epoch %lu (first pid %lu)", ctx.gc_id, rounds,
+                     ctx.deferred_pages.size(), ctx.current_gc_epoch, ctx.deferred_pages.front().pid);
+         }
+         std::this_thread::yield();
+      }
+   }
+   setPhase(ctx, phase);
+}
+// -------------------------------------------------------------------------------------
+// Same protocol as a worker waiting for a page another worker reads (see BufferManager::resolveSwip()).
+void RUBackgroundPageFixer::waitForWorkerIOFrame(PID pid)
+{
+   Partition& partition = bm.getPartition(pid);
+   std::unique_lock<instrumented_mutex> g_guard(partition.ht_mutex);
+   auto frame_handler = partition.io_ht.lookup(pid);
+   if (!frame_handler) {
+      return;
+   }
+   IOFrame& io_frame = frame_handler.frame();
+   if (io_frame.state != IOFrame::STATE::READING || io_frame.inserted_by_bg_page_fixer) {
+      // READY: loaded, the next worker resolving the swip swizzles it.
+      return;
+   }
+   io_frame.readers_counter++;
+   g_guard.unlock();
+   io_frame.mutex.lock();
+   io_frame.mutex.unlock();
+   if (io_frame.readers_counter.fetch_add(-1) == 1) {
+      g_guard.lock();
+      if (io_frame.readers_counter == 0) {
+         partition.io_ht.remove(pid);
+      }
+   }
 }
 // -------------------------------------------------------------------------------------
 void RUBackgroundPageFixer::flushPacker(ThreadContext& ctx)
@@ -997,14 +1174,14 @@ void RUBackgroundPageFixer::flushPacker(ThreadContext& ctx)
    for (BufferFrame* bf : ctx.hot_bfs) {
       ackHotPage(*bf);
    }
-   ctx.total_fixed += ctx.hot_bfs.size();
    ctx.hot_bfs.clear();
    setPhase(ctx, phase);
 }
 // -------------------------------------------------------------------------------------
-// The blocks of the chain that are still valid on the SSD hold live pages left in place (hot pages, or a block listed
-// in the chain that the fixers skipped), or are free but not overwritten yet (the leftover of the pools, the
-// blocks freed into the free lists of other threads). The LBA chain blocks are counted in block_total only.
+// The blocks of the chain that are still valid on the SSD hold live pages left in place (hot pages without
+// FLAGS_bg_fixer_write_back_hot_pages, pages whose parent was not found, a block listed in the chain that the fixers
+// skipped), or are free but not overwritten yet (the leftover of the pools, the blocks freed into the free lists of
+// other threads). The LBA chain blocks are counted in block_total only.
 void RUBackgroundPageFixer::reportBlocks(ThreadContext& ctx, RUEpochDiscardSet& set)
 {
    CompressedSpace& space = *bm.compressed_space;
@@ -1534,6 +1711,7 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(Thread
          if (previous != location) {
             space.free(previous);
          }
+         ++ctx.total_fixed;
       } else {
          // Unswizzles the children of inner pages in the copy.
          DTRegistry::global_dt_registry.checkpoint(bf->page.dt_id, *bf, ctx.buf_pages[ctx.hot_bfs.size()].page);
