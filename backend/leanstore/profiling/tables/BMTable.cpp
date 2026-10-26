@@ -263,6 +263,17 @@ void BMTable::open()
    gc_counter("gc_filter_passed", &GCCounters::filter_passed);
    gc_counter("gc_hot_deferred", &GCCounters::hot_deferred);
    gc_counter("gc_drain_rounds", &GCCounters::drain_rounds);
+   gc_counter("gc_blocks_read", &GCCounters::blocks_read);
+   gc_counter("gc_blocks_overwritten", &GCCounters::blocks_overwritten);
+   gc_counter("gc_dead_pages", &GCCounters::dead_pages);
+   gc_counter("gc_clean_copied", &GCCounters::clean_copied);
+   // --compress_pages, cumulative: pages written in total over the ones the database had to write, the clean copies of
+   // the bg page fixer being the extra ones.
+   columns.emplace("db_waf", [this](Column& col) {
+      const u64 written = bm.compressed_space ? bm.compressed_space->written_pages.load() : 0;
+      const u64 copied = bm.compressed_space ? bm.compressed_space->clean_copied_pages.load() : 0;
+      col << (written > copied ? written * 1.0 / (written - copied) : 1.0);
+   });
    columns.emplace("gc_tree_max_retries", [](Column& col) {
       u64 m = 0;
       for (auto& c : GCCounters::gc_counters) {

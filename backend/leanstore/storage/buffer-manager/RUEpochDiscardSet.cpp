@@ -85,6 +85,7 @@ void RUEpochDiscardSet::clear()
    block_total = 0;
    block_invalid = 0;
    total_fixed = 0;
+   total_clean_copied = 0;
    log_reclaimed = false;
    clearGCState();
    cur_ru_epoch = -1;
@@ -128,6 +129,7 @@ void RUEpochDiscardSet::dump()
    cout << "block_invalid: " << block_invalid.load() << endl;
    cout << "done_gc: " << done_gc.load() << endl;
    cout << "total_fixed: " << total_fixed.load() << endl;
+   cout << "total_clean_copied: " << total_clean_copied.load() << endl;
 
    cout << "cur_ru_epoch: " << cur_ru_epoch << endl;
    cout << "active: " << (active.load() ? "true" : "false") << endl;

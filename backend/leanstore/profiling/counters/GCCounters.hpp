@@ -39,6 +39,14 @@ struct GCCounters {
    // Hot pages that could not be written back yet (frame latched, being written back...), rounds of the final drain.
    atomic<u64> hot_deferred;
    atomic<u64> drain_rounds;
+   // FLAGS_compress_pages: blocks of the reclaimed RU epoch read (or skipped since overwritten), the pages found in them
+   // that are dead (deleted or rewritten elsewhere), and the clean pages copied as is to a block of the open RU epoch,
+   // in pages and bytes. The clean copies are the write amplification of the database (DB-WAF).
+   atomic<u64> blocks_read;
+   atomic<u64> blocks_overwritten;
+   atomic<u64> dead_pages;
+   atomic<u64> clean_copied;
+   atomic<u64> clean_copied_bytes;
    // -------------------------------------------------------------------------------------
    atomic<u64> absorbed_writes_histogram[64] = {0};
    // -------------------------------------------------------------------------------------

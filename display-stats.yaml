@@ -291,6 +291,11 @@ columns:
     enabled: true
     source: bm
 
+  db_waf:
+    field: "DB-WAF"
+    enabled: true
+    source: bm
+
   ruh_0_util_pct:
     field: "RUH0 %"
     enabled: true
@@ -493,6 +498,26 @@ columns:
   # discarded pages claimed for fixing
   gc_tree_claimed:
     field: "GC claim"
+    enabled: true
+    source: bm
+
+  gc_blocks_read:
+    field: "GC blk R"
+    enabled: true
+    source: bm
+
+  gc_blocks_overwritten:
+    field: "GC blk ovw"
+    enabled: false
+    source: bm
+
+  gc_dead_pages:
+    field: "GC dead"
+    enabled: false
+    source: bm
+
+  gc_clean_copied:
+    field: "GC clean cp"
     enabled: true
     source: bm
 

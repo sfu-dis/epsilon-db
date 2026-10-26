@@ -535,8 +535,9 @@ void LeanStore::verifyFlags()
          SetupFailed("discard_state_paranoid requires bg_page_fixer_tree_lookup");
       }
       if (FLAGS_bg_page_fixer_tree_lookup && !FLAGS_bg_page_fixer_tree_lookup_state_filter && !FLAGS_discard_state_paranoid &&
-          FLAGS_bg_fixer_write_back_hot_pages) {
-         // The hot pages are found through their page state, which is not maintained in this setting.
+          FLAGS_bg_fixer_write_back_hot_pages && !FLAGS_compress_pages) {
+         // The hot pages are found through their page state, which is not maintained in this setting. With compression
+         // they are found through their parent swip.
          SetupFailed("bg_fixer_write_back_hot_pages requires the page state: bg_page_fixer_tree_lookup_state_filter or discard_state_paranoid");
       }
    } else {
@@ -546,8 +547,8 @@ void LeanStore::verifyFlags()
    }
    if (FLAGS_compress_pages) {
       if (FLAGS_enable_discarding) {
-         // The bg page fixer moves blocks: it walks the RU epoch's LBA chain of blocks, finds the discarded pages
-         // through their parent swip and the blocks are freed as a whole.
+         // The bg page fixer moves blocks: it walks the RU epoch's LBA chain of blocks, finds the discarded and the clean
+         // pages through their parent swip and moves them, the blocks are freed as their last page leaves.
          if (FLAGS_bg_page_fixer_variant != 2 || !FLAGS_bg_page_fixer_tree_lookup || !FLAGS_discard_lsns_in_parent || !FLAGS_btree_pin_inner_nodes) {
             SetupFailed("compress_pages with discarding requires bg_page_fixer_variant 2, bg_page_fixer_tree_lookup, discard_lsns_in_parent "
                         "and btree_pin_inner_nodes");
@@ -555,8 +556,6 @@ void LeanStore::verifyFlags()
          if (FLAGS_per_page_logging) {
             SetupFailed("compress_pages does not support per_page_logging");
          }
-         // TODO(mfd) : Step 4 of .docs/COMPRESSION_DISCARDING_PLAN_V2.md
-         SetupFailed("compress_pages with discarding: the compressed bg page fixer is not implemented yet");
       }
       if (FLAGS_fdp_placement_policy != "Default") {
          SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");

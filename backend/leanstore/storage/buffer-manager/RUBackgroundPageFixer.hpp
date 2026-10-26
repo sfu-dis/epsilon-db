@@ -20,6 +20,7 @@ struct Logging;  // Forward declaration
 namespace storage
 {
 class BufferManager;  // Forward declaration
+struct BufferFrame;  // Forward declaration
 struct RUEpochDiscardSet;  // Forward declaration
 // -------------------------------------------------------------------------------------
 // Owns the ru_gc background threads: they wait for the RU epochs handed over by the
@@ -73,6 +74,15 @@ class RUBackgroundPageFixer
       ru_epoch_t ru_epoch;
       bool log_only;
    };
+   // A cached page of the reclaimed RU epoch to write back. bf is known when the page was found through its parent
+   // swip (FLAGS_compress_pages), otherwise it is looked up in the page state.
+   struct HotPageRef {
+      PID pid;
+      BufferFrame* bf;
+   };
+   // Outcome of lookUpPageInTree(). FIX: discarded into the log being reclaimed, MOVE: clean and not cached, to be
+   // copied as is (FLAGS_compress_pages). Both are claimed: their IO frame is inserted.
+   enum class TreeLookup : u8 { SKIP, FIX, MOVE };
    // -------------------------------------------------------------------------------------
    BufferManager& bm;
    // -------------------------------------------------------------------------------------
@@ -101,7 +111,17 @@ class RUBackgroundPageFixer
    // FLAGS_bg_page_fixer_tree_lookup: reads every page of a batch of the LBA chain, finds the discarded ones through
    // their parent swip, fixes them and waits for their write back.
    void fixLBAChainBatchInTree(ThreadContext& ctx, const PID* pids, u64 count);
-   bool lookUpPageInTree(ThreadContext& ctx, u64 idx);
+   // location: the cpid the copy in buf_pages[idx] was read from (FLAGS_compress_pages), 0 otherwise.
+   // claim_clean: also claim the clean pages that are not cached (MOVE), requires the location.
+   TreeLookup lookUpPageInTree(ThreadContext& ctx, u64 idx, PID location = 0, bool claim_clean = false);
+   // FLAGS_compress_pages: reads a batch of the blocks listed in the LBA chain and moves their live pages to blocks of the
+   // open RU epoch, the discarded pages fixed and the clean ones copied as is. The cached pages are left in place.
+   void moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count);
+   void movePage(ThreadContext& ctx, PID pid, PID location, const u8* src, ru_epoch_t ru_epoch);
+   // Writes the blocks of the packer, then publishes the new locations of the moved pages and acknowledges the hot ones.
+   void flushPacker(ThreadContext& ctx);
+   // Logs how many blocks of the RU epoch got invalidated on the SSD. Pre: the caller holds set.m.
+   void reportBlocks(ThreadContext& ctx, RUEpochDiscardSet& set);
    bool mayBeDiscardedInLog(ThreadContext& ctx, PID pid);
    bool needsFix(ThreadContext& ctx, PID pid);
    bool registerPageToFix(ThreadContext& ctx, LID first_lsn, PID pid, u64 idx);
@@ -112,13 +132,16 @@ class RUBackgroundPageFixer
    void fixPage(ThreadContext& ctx, io_uring_cqe* cqe);
    // Applies the log records of the registered page at idx (read into buf_pages[idx]) and issues its write back.
    void redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 data);
+   // The redo part, maps the page to the open RU epoch for its write back.
+   void redoPage(ThreadContext& ctx, u64 idx);
    void ackFixedPage(ThreadContext& ctx, io_uring_cqe* cqe);
    // Write back of the pages of the reclaimed log that are cached (hot).
    enum class HotPage { DONE, WRITING, RETRY };
    void fixHotPages(ThreadContext& ctx);
-   HotPage tryWriteBackHotPage(ThreadContext& ctx, PID pid);
+   HotPage tryWriteBackHotPage(ThreadContext& ctx, const HotPageRef& hot);
    void writeBackHotPages(ThreadContext& ctx);
    void ackHotPage(ThreadContext& ctx, io_uring_cqe* cqe);
+   void ackHotPage(BufferFrame& bf);
    void drainDeferredHotPages(ThreadContext& ctx);
    void setPhase(ThreadContext& ctx, Phase phase);
    // Removes the IO frame inserted by registerPageToFix() and lets the waiting workers retry.

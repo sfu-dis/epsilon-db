@@ -3,6 +3,7 @@
 #include "Units.hpp"
 // -------------------------------------------------------------------------------------
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -65,21 +66,29 @@ namespace compression
 // The header is not compressed so that the page can be copied to another block (of a newer RU epoch) as is, only
 // its header gets updated. The RU epoch inside the compressed page may then be stale, decompressPage() brings it
 // up to date from the header. An uncompressed page (length PAGE_SIZE) has no header, its RU epoch is in the page.
+// The PID and the length let the bg page fixer walk the pages of a block without decompressing them.
 struct CompressedPageHeader {
    ru_epoch_t ru_epoch;
+   u64 pid_and_length;  // [63..48] length (header included), [47..0] PID
+   static constexpr u64 PID_MASK = (u64(1) << 48) - 1;
+   PID pid() const { return pid_and_length & PID_MASK; }
+   u32 length() const { return pid_and_length >> 48; }
 };
 // The compressed pages are packed at any byte offset of a block, so the header is accessed through memcpy.
 // Pre: src points to a compressed page (length < PAGE_SIZE).
-inline ru_epoch_t ruEpoch(const u8* src)
+inline CompressedPageHeader header(const u8* src)
 {
    CompressedPageHeader header;
    std::memcpy(&header, src, sizeof(header));
-   return header.ru_epoch;
+   return header;
+}
+inline ru_epoch_t ruEpoch(const u8* src)
+{
+   return header(src).ru_epoch;
 }
 inline void setRUEpoch(u8* src, ru_epoch_t ru_epoch)
 {
-   CompressedPageHeader header{ru_epoch};
-   std::memcpy(src, &header, sizeof(header));
+   std::memcpy(src + offsetof(CompressedPageHeader, ru_epoch), &ru_epoch, sizeof(ru_epoch));
 }
 // Compresses a PAGE_SIZE page into dst (PAGE_SIZE bytes), header included, returns the length.
 // A page that does not compress is copied as is and PAGE_SIZE is returned.
@@ -125,6 +134,16 @@ class CompressedSpace
    static PID rawBlockLocation(u64 block) { return cpid::make(block * PAGE_SIZE, PAGE_SIZE); }
    // A sealed block whose live bytes are exactly its raw block (no page maps to it).
    bool isRawBlock(u64 block) const { return block_states[block].load() == SEALED && live_bytes[block].load() == static_cast<s32>(PAGE_SIZE); }
+   bool isFreeBlock(u64 block) const { return block_states[block].load() == FREE; }
+   // -------------------------------------------------------------------------------------
+   // RU epoch the block was last written to (UNMAPPED_RU_EPOCH if never), i.e. the RU holding its valid copy on the SSD.
+   // A write to the block invalidates the copy in the previous RU epoch, the caller accounts for it (see
+   // BufferManager::countBlockWrite()). A freed block keeps its RU epoch until it is written again.
+   ru_epoch_t blockRUEpoch(u64 block) const { return block_ru_epochs[block].load(std::memory_order_acquire); }
+   ru_epoch_t exchangeBlockRUEpoch(u64 block, ru_epoch_t ru_epoch) { return block_ru_epochs[block].exchange(ru_epoch, std::memory_order_acq_rel); }
+   // Tops up the free list of the calling writer to n blocks, so that it reuses its own freed blocks first
+   // (allocateBlock() pops the most recently freed one). Pre: called by a writer.
+   void reserveBlocks(u64 n);
    // Frees the copy of a page that got rewritten elsewhere or deleted, no-op if the page is not on the SSD.
    void free(PID pid);
    // -------------------------------------------------------------------------------------
@@ -137,6 +156,8 @@ class CompressedSpace
    std::atomic<u64> written_pages = 0;
    std::atomic<u64> written_compressed_bytes = 0;
    std::atomic<u64> written_blocks = 0;
+   // The written pages that are clean copies made by the bg page fixer, the write amplification of the database (DB-WAF).
+   std::atomic<u64> clean_copied_pages = 0;
    u64 usedBlocks();
 
   private:
@@ -159,6 +180,7 @@ class CompressedSpace
    // FREE -allocateBlock-> OPEN (being packed) -sealBlock-> SEALED -last free-> FREE
    enum BlockState : u8 { FREE = 0, OPEN = 1, SEALED = 2 };
    std::unique_ptr<std::atomic<u8>[]> block_states;
+   std::unique_ptr<std::atomic<ru_epoch_t>[]> block_ru_epochs;
    void transition(u64 block, BlockState from, BlockState to);
    // Blocks above have never been used.
    std::atomic<u64> next_unused_block = 0;
@@ -184,6 +206,9 @@ class BlockPacker
    // ru_epoch: the RU epoch the page is written to, as stored in its copy, the caller sets it in the frame.
    // Without an LBA chain, it is the page's own ru_epoch.
    PID add(const u8* page, bool compress, PID current_location, ru_epoch_t& ru_epoch);
+   // Copies a page as stored on the SSD (src, length as in its cpid) without recompressing it, only its RU epoch is
+   // updated to the one of the block it lands in. For the bg page fixer moving the clean pages. Pre: !full()
+   PID addVerbatim(const u8* src, u32 length, ru_epoch_t& ru_epoch);
    // There may be no room left for another page.
    bool full() const { return blocks_count >= max_blocks; }
    // Pre: the batch is sealed and written.
@@ -193,6 +218,7 @@ class BlockPacker
    u64 blocksCount() const { return blocks_count; }
    u8* block(u64 slot) { return blocks + slot * PAGE_SIZE; }
    u64 blockOffset(u64 slot) const { return block_ids[slot] * PAGE_SIZE; }
+   u64 blockId(u64 slot) const { return block_ids[slot]; }
    u64 slotOf(const void* block_ptr) const { return (reinterpret_cast<const u8*>(block_ptr) - blocks) / PAGE_SIZE; }
    // Only with an LBA chain: the RU epoch the block got recorded to.
    ru_epoch_t blockRUEpoch(u64 slot) const { return block_ru_epochs[slot]; }
@@ -219,6 +245,8 @@ class BlockPacker
    std::vector<ru_epoch_t> block_ru_epochs;
    // Records the block of the slot in the LBA chain, if any.
    void recordBlock(u64 slot);
+   // Copies the length bytes of scratch to the fullest open block they fit in, a new one if none, returns its location.
+   PID place(u32 length, ru_epoch_t& ru_epoch);
    // PAGE_SIZE buffer the page is compressed into before being copied to its block.
    std::unique_ptr<u8[]> scratch;
 };

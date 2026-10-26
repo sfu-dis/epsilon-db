@@ -257,6 +257,21 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
             compressed_space->recover(FLAGS_compression_space_map_file, chain_blocks);
             LOG_INFO(logger, "Recovered the compression space map from %s, %lu blocks in use", FLAGS_compression_space_map_file.c_str(),
                      compressed_space->usedBlocks());
+            // The blocks of an RU epoch that were not overwritten since still hold their copy, the others got invalidated.
+            const ru_epoch_t oldest = oldest_uncollected_ru_epoch[DEFAULT_RUH].load();
+            const ru_epoch_t newest = ru_epoch[DEFAULT_RUH].load();
+            std::vector<s64> valid_blocks(newest - oldest + 1, 0);
+            for (u64 block = 0; block < max_pid; block++) {
+               const ru_epoch_t e = compressed_space->blockRUEpoch(block);
+               if (e >= oldest && e <= newest) {
+                  valid_blocks[e - oldest]++;
+               }
+            }
+            for (ru_epoch_t e = oldest; e <= newest; ++e) {
+               auto& set = ru_discard_set[DEFAULT_RUH].at(e);
+               ensure_lte(valid_blocks[e - oldest], set.block_total.load());
+               set.block_invalid.store(set.block_total.load() - valid_blocks[e - oldest]);
+            }
          }
       }
       // -------------------------------------------------------------------------------------
@@ -1423,15 +1438,28 @@ void BufferManager::countWrittenBlocks(ruh_id_t ruh, u64 n)
    writers_iostat[tls_writer_thread_id].io_counter[ruh].fetch_add(n, std::memory_order_relaxed);
 }
 // -------------------------------------------------------------------------------------
+void BufferManager::countBlockWrite(u64 block, ru_epoch_t ru_epoch)
+{
+   const ru_epoch_t prev = compressed_space->exchangeBlockRUEpoch(block, ru_epoch);
+   if (prev != UNMAPPED_RU_EPOCH && prev > reclaimed_ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire)) {
+      ru_discard_set[DEFAULT_RUH].at(prev).block_invalid.fetch_add(1, std::memory_order_relaxed);
+   }
+}
+// -------------------------------------------------------------------------------------
 void BufferManager::countPackedBlocks(const BlockPacker& packer)
 {
    if (!lba_chain) {
+      const ru_epoch_t open_ru_epoch = ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire);
+      for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
+         countBlockWrite(packer.blockId(b_i), open_ru_epoch);
+      }
       countWrittenBlocks(DEFAULT_RUH, packer.blocksCount());
       return;
    }
    ensure(tls_writer_thread_id != -1);
    for (u64 b_i = 0; b_i < packer.blocksCount(); b_i++) {
       ru_discard_set[DEFAULT_RUH][packer.blockRUEpoch(b_i)].block_total.fetch_add(1, std::memory_order_relaxed);
+      countBlockWrite(packer.blockId(b_i), packer.blockRUEpoch(b_i));
    }
    writers_iostat[tls_writer_thread_id].io_counter[DEFAULT_RUH].fetch_add(packer.blocksCount(), std::memory_order_relaxed);
 }

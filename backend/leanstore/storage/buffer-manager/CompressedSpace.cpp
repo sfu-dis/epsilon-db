@@ -64,8 +64,12 @@ u32 compressPage(const u8* page, u8* dst)
       std::memcpy(dst, page, PAGE_SIZE);
       return PAGE_SIZE;
    }
-   setRUEpoch(dst, reinterpret_cast<const BufferFrame::Page*>(page)->ru_epoch);
-   return header_size + ret;
+   const auto& p = *reinterpret_cast<const BufferFrame::Page*>(page);
+   const u32 length = header_size + ret;
+   ensure((p.magic_debugging_number & ~CompressedPageHeader::PID_MASK) == 0);
+   const CompressedPageHeader header{p.ru_epoch, (u64(length) << 48) | p.magic_debugging_number};
+   std::memcpy(dst, &header, sizeof(header));
+   return length;
 }
 // -------------------------------------------------------------------------------------
 void decompressPage(const u8* src, u32 length, u8* page)
@@ -104,11 +108,13 @@ CompressedSpace::CompressedSpace(u64 blocks_count, u64 logical_pages, u32 writer
       writers_count(writers_count),
       live_bytes(std::make_unique<std::atomic<s32>[]>(blocks_count)),
       block_states(std::make_unique<std::atomic<u8>[]>(blocks_count)),
+      block_ru_epochs(std::make_unique<std::atomic<ru_epoch_t>[]>(blocks_count)),
       writer_free_lists(std::make_unique<BlockFreeList[]>(writers_count))
 {
    for (u64 b = 0; b < blocks_count; b++) {
       live_bytes[b].store(0, std::memory_order_relaxed);
       block_states[b].store(FREE, std::memory_order_relaxed);
+      block_ru_epochs[b].store(UNMAPPED_RU_EPOCH, std::memory_order_relaxed);
    }
    // Anonymous memory reads as 0 (never written) until it is touched.
    void* map = mmap(nullptr, logical_pages * sizeof(std::atomic<u64>), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -167,6 +173,33 @@ u64 CompressedSpace::allocateBlock()
    ensure_equal(live_bytes[block].load(), 0);
    transition(block, FREE, OPEN);
    return block;
+}
+// -------------------------------------------------------------------------------------
+void CompressedSpace::reserveBlocks(u64 n)
+{
+   ensure(tls_writer_thread_id >= 0 && static_cast<u32>(tls_writer_thread_id) < writers_count);
+   auto& mine = writer_free_lists[tls_writer_thread_id];
+   std::unique_lock guard(mine.mutex);
+   if (mine.blocks.size() >= n) {
+      return;
+   }
+   const u64 wanted = n - mine.blocks.size();
+   {
+      std::unique_lock shared_guard(shared_free_list.mutex);
+      const u64 taken = std::min<u64>(shared_free_list.blocks.size(), wanted);
+      // The oldest freed first, the most recently freed ones end up at the back and are reused first.
+      mine.blocks.insert(mine.blocks.begin(), shared_free_list.blocks.end() - taken, shared_free_list.blocks.end());
+      shared_free_list.blocks.resize(shared_free_list.blocks.size() - taken);
+   }
+   while (mine.blocks.size() < n) {
+      const u64 block = next_unused_block.fetch_add(1);
+      if (block >= blocks_count) {
+         // Not fatal, allocateBlock() fails later if the space is really exhausted.
+         break;
+      }
+      mine.blocks.insert(mine.blocks.begin(), block);
+      free_blocks.fetch_add(1, std::memory_order_relaxed);
+   }
 }
 // -------------------------------------------------------------------------------------
 u64 CompressedSpace::allocateRawBlock()
@@ -246,9 +279,11 @@ namespace
 {
 // 0002: the page map replaced the live bytes, the PIDs are logical.
 // 0003: the compressed pages start with a CompressedPageHeader.
-constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0003;
+// 0004: the CompressedPageHeader holds the PID and the length, the RU epochs of the blocks follow the page map.
+constexpr u64 SPACE_MAP_MAGIC = 0xC0DEC0DE5A5A0004;
 }
-// Format: magic, blocks_count, logical_pages, next_unused_block, pids_end, page_map[0, pids_end)
+// Format: magic, blocks_count, logical_pages, next_unused_block, pids_end, page_map[0, pids_end),
+// block_ru_epochs[0, next_unused_block)
 void CompressedSpace::persist(const std::string& path, PID pids_end)
 {
    ensure(pids_end <= logical_pages);
@@ -258,6 +293,8 @@ void CompressedSpace::persist(const std::string& path, PID pids_end)
    file.write(reinterpret_cast<const char*>(header), sizeof(header));
    static_assert(sizeof(std::atomic<u64>) == sizeof(u64));
    file.write(reinterpret_cast<const char*>(page_map), pids_end * sizeof(u64));
+   static_assert(sizeof(std::atomic<ru_epoch_t>) == sizeof(ru_epoch_t));
+   file.write(reinterpret_cast<const char*>(block_ru_epochs.get()), header[3] * sizeof(ru_epoch_t));
    ensure(file.good());
 }
 // -------------------------------------------------------------------------------------
@@ -280,6 +317,7 @@ void CompressedSpace::recover(const std::string& path, const std::vector<u64>& r
    const PID pids_end = header[4];
    ensure(next <= blocks_count && pids_end <= logical_pages);
    file.read(reinterpret_cast<char*>(page_map), pids_end * sizeof(u64));
+   file.read(reinterpret_cast<char*>(block_ru_epochs.get()), next * sizeof(ru_epoch_t));
    ensure(file.good());
    // The live bytes of a block are the lengths of the pages it holds.
    for (PID pid = 0; pid < pids_end; pid++) {
@@ -361,6 +399,24 @@ PID BlockPacker::add(const u8* page, bool compress, PID current_location, ru_epo
    } else {
       std::memcpy(scratch.get(), page, PAGE_SIZE);
    }
+   return place(length, ru_epoch);
+}
+// -------------------------------------------------------------------------------------
+PID BlockPacker::addVerbatim(const u8* src, u32 length, ru_epoch_t& ru_epoch)
+{
+   ensure(!sealed);
+   ensure(length > 0 && length <= PAGE_SIZE);
+   std::memcpy(scratch.get(), src, length);
+   if (length == PAGE_SIZE) {
+      ru_epoch = reinterpret_cast<const BufferFrame::Page*>(src)->ru_epoch;
+   } else {
+      ru_epoch = compression::ruEpoch(src);
+   }
+   return place(length, ru_epoch);
+}
+// -------------------------------------------------------------------------------------
+PID BlockPacker::place(u32 length, ru_epoch_t& ru_epoch)
+{
    u64 slot = blocks_count;
    for (u64 b_i = 0; b_i < blocks_count; b_i++) {
       if (used[b_i] + length <= PAGE_SIZE && (slot == blocks_count || used[b_i] > used[slot])) {

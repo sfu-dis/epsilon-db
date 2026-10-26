@@ -42,14 +42,17 @@ struct RUEpochDiscardSet {
    alignas(CACHE_LINE_SIZE) atomic<s32> total{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> invalid{0};
    // SSD block level, the same as the page level ones unless FLAGS_compress_pages. With compression, block_total
-   // counts the 4 KiB blocks written to the RU epoch (the LBA chain blocks included), it is the one that fills the RU.
-   // TODO(mfd) : with compression, block_invalid, block_inserted and block_deleted are not maintained yet, they stay 0.
+   // counts the 4 KiB blocks written to the RU epoch (the LBA chain blocks included), it is the one that fills the RU,
+   // and block_invalid the ones overwritten since (see BufferManager::countBlockWrite()).
+   // TODO(mfd) : with compression, block_inserted and block_deleted are not maintained yet, they stay 0.
    alignas(CACHE_LINE_SIZE) atomic<s32> block_inserted{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> block_deleted{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> block_total{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> block_invalid{0};
    alignas(CACHE_LINE_SIZE) atomic<s32> done_gc{static_cast<s32>(FLAGS_ru_gc_threads)};
    alignas(CACHE_LINE_SIZE) atomic<s32> total_fixed{0}; // used just as a stat
+   // FLAGS_compress_pages: the clean pages the bg page fixer copied out of the RU epoch's blocks (DB-WAF), stat only.
+   atomic<s32> total_clean_copied{0};
    // -------------------------------------------------------------------------------------
    ru_epoch_t cur_ru_epoch = -1;
    atomic<bool> active{false};

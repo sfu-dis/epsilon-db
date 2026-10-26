@@ -166,6 +166,10 @@ bool LBAChain::seal(u64 seq)
       b.written_ru_epoch = bm.ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire);
       b.count = reserved;
       b.pad = 0;
+      if (FLAGS_compress_pages) {
+         // Before the write, the bg page fixers rely on it to detect a block overwritten while they read it.
+         bm.countBlockWrite(pid, b.written_ru_epoch);
+      }
       const s64 ret = nvme_pwrite(bm.ssd_fd, &b, PAGE_SIZE, pid * PAGE_SIZE, DEFAULT_RUH);
       ensure_equal(ret, s64(PAGE_SIZE));
       auto& set = bm.ru_discard_set[DEFAULT_RUH][b.written_ru_epoch];

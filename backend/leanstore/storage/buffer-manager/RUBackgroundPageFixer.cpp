@@ -1,6 +1,7 @@
 #include "RUBackgroundPageFixer.hpp"
 
 #include "BufferManager.hpp"
+#include "CompressedSpace.hpp"
 #include "CustomSlabAllocator.hpp"
 #include "LBAChain.hpp"
 // -------------------------------------------------------------------------------------
@@ -16,6 +17,7 @@
 #include <liburing.h>
 #include <pthread.h>
 
+#include <algorithm>
 #include <thread>
 // -------------------------------------------------------------------------------------
 /** Used as a sanity check. It traverses the log records of a page from the last LSN applied
@@ -57,6 +59,9 @@ struct page_info {
 struct RUBackgroundPageFixer::ThreadContext {
    // FIXME(mfd): Temporely set it large enough
    static constexpr u32 batch_size = 256;
+   // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
+   // written with. The blocks a batch frees make the pool of the next one.
+   static constexpr u32 compressed_batch_blocks = 64;
    // -------------------------------------------------------------------------------------
    const u32 gc_id;
    BufferFrame buf_pages[batch_size];
@@ -66,13 +71,30 @@ struct RUBackgroundPageFixer::ThreadContext {
    // Pages of the current batch, indexed like buf_pages.
    std::vector<page_info> to_fix_pids;
    // Hot pages to fix of the current batch
-   std::vector<PID> hot_pids;
+   std::vector<HotPageRef> hot_pids;
    // Hot pages that could not be handled yet, retried before the RU epoch is finished.
-   std::vector<PID> deferred_hot_pids;
+   std::vector<HotPageRef> deferred_hot_pids;
    // Frames whose copy is in buf_pages, indexed like buf_pages.
    std::vector<BufferFrame*> hot_bfs;
    // FLAGS_bg_page_fixer_tree_lookup: pending LSNs copied from the parent swips, indexed like buf_pages.
    LID parent_lsns[batch_size][btree::BTreeNode::max_pending_lsn];
+   // -------------------------------------------------------------------------------------
+   // FLAGS_compress_pages
+   struct MovedPage {
+      PID pid;
+      PID old_location;
+      PID new_location;
+      ru_epoch_t ru_epoch;  // the one it got written to
+      bool fixed;  // a discarded page that got fixed, otherwise a clean copy
+      LID last_lsn;
+   };
+   // compressed_batch_blocks blocks each, the blocks read from the LBA chain and the blocks the packer fills.
+   std::unique_ptr<u8, decltype(&std::free)> read_blocks{nullptr, &std::free};
+   std::unique_ptr<u8, decltype(&std::free)> packer_blocks{nullptr, &std::free};
+   std::unique_ptr<BlockPacker> packer;
+   // Pages added to the packer, their IO frame is held until the packer is flushed.
+   std::vector<MovedPage> moved;
+   u64 total_clean_copied = 0;  // in the current RU epoch
    // -------------------------------------------------------------------------------------
    // Jobs of to_gc_epochs already picked up, and those left to collect.
    u64 picked_up_jobs = 0;
@@ -178,6 +200,14 @@ void RUBackgroundPageFixer::run(u32 gc_id)
    bm.bg_threads_counter++;
 
    ThreadContext ctx(gc_id);
+   if (FLAGS_compress_pages) {
+      const u64 bytes = u64(ThreadContext::compressed_batch_blocks) * PAGE_SIZE;
+      ctx.read_blocks.reset(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, bytes)));
+      ctx.packer_blocks.reset(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, bytes)));
+      ensure(ctx.read_blocks != nullptr && ctx.packer_blocks != nullptr);
+      ctx.packer = std::make_unique<BlockPacker>(*bm.compressed_space, ctx.packer_blocks.get(), ThreadContext::compressed_batch_blocks,
+                                                 bm.lba_chain.get());
+   }
    while (bm.bg_threads_keep_running) {
       setPhase(ctx, Phase::IDLE);
       waitForRUEpochsToCollect(ctx);
@@ -221,7 +251,24 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
    ctx.log_records = static_cast<u8*>(set.mmaped_log);
    ctx.cur_log_segment_size = scan_log ? set.log_segment_size : 0;
 
-   if (FLAGS_bg_page_fixer_variant == 2) {
+   if (FLAGS_compress_pages) {
+      // The GC threads split the blocks of the LBA chain in batches. The pool of blocks the moved pages are written to
+      // is the free list of the thread: the blocks a batch frees are the first ones reused, which invalidates their
+      // copy in this RU epoch on the SSD. What is left of the pool carries over to the next RU epoch.
+      bm.compressed_space->reserveBlocks(ThreadContext::compressed_batch_blocks);
+      const u64 entries = set.lba_chain_entries.size();
+      while (true) {
+         const u64 begin = set.offset_batch.fetch_add(ThreadContext::compressed_batch_blocks);
+         if (begin >= entries) {
+            break;
+         }
+         const u64 count = std::min<u64>(entries - begin, ThreadContext::compressed_batch_blocks);
+         moveBlocksBatch(ctx, set.lba_chain_entries.data() + begin, count);
+         setPhase(ctx, Phase::HOT);
+         fixHotPages(ctx);
+         stats.chain_done.fetch_add(count, std::memory_order_relaxed);
+      }
+   } else if (FLAGS_bg_page_fixer_variant == 2) {
       // The GC threads split the PIDs of the LBA chain in batches.
       const u64 entries = set.lba_chain_entries.size();
       while (true) {
@@ -264,6 +311,7 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
    auto end = std::chrono::system_clock::now();
    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
    set.total_fixed.fetch_add(ctx.total_fixed);
+   set.total_clean_copied.fetch_add(ctx.total_clean_copied);
    if (set.done_gc.fetch_sub(1) == 1) {
       setPhase(ctx, Phase::FINISH);
       if (ctx.log_only) {
@@ -273,6 +321,7 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
       }
    }
    ctx.total_fixed = 0;
+   ctx.total_clean_copied = 0;
    setPhase(ctx, Phase::BARRIER);
    while (set.done_gc.load() != FLAGS_ru_gc_threads) {
    }
@@ -307,8 +356,10 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
       // The log was reclaimed early and stayed redirected since, nothing to scan.
       logging.mutex.unlock();
       if (FLAGS_bg_page_fixer_variant == 2) {
-         // Only the blocks of the chain, they are recycled once the RU epoch is reclaimed.
-         loadLBAChain(set, gc_ru_epoch, /* with_entries */ false);
+         // Only the blocks of the chain, they are recycled once the RU epoch is reclaimed. With compression, the
+         // blocks of the RU epoch are moved by this pass.
+         loadLBAChain(set, gc_ru_epoch, /* with_entries */ FLAGS_compress_pages);
+         stats.chain_entries.store(set.lba_chain_entries.size(), std::memory_order_relaxed);
       }
       set.m.unlock();
       LOG_INFO(bm.logger, "Garbage collecting RU epoch %lu whose log was already reclaimed", gc_ru_epoch);
@@ -359,6 +410,16 @@ void RUBackgroundPageFixer::loadLBAChain(RUEpochDiscardSet& set, ru_epoch_t ru_e
    ensure(set.lba_chain_entries.empty() && set.lba_chain_blocks.empty());
    const PID head = bm.persistant_ru_state->chainHead(ru_epoch);
    LBAChain::readChain(bm.ssd_fd, head, ru_epoch, with_entries ? &set.lba_chain_entries : nullptr, set.lba_chain_blocks);
+   if (FLAGS_compress_pages) {
+      // A block freed and reused within the RU epoch is listed several times, it is moved once. In LBA order, and
+      // without the tombstones.
+      auto& entries = set.lba_chain_entries;
+      std::sort(entries.begin(), entries.end());
+      entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+      if (!entries.empty() && entries.back() == INVALID_PID) {
+         entries.pop_back();
+      }
+   }
 }
 // -------------------------------------------------------------------------------------
 // Called by the last GC thread done with the RU epoch.
@@ -380,6 +441,9 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
       set.mmaped_log = nullptr;
    }
    const u64 lba_chain_blocks = set.lba_chain_blocks.size();
+   if (FLAGS_compress_pages) {
+      reportBlocks(ctx, set);
+   }
    if (FLAGS_bg_page_fixer_variant == 2) {
       // The chain lives as long as the RU epoch. Its head slot is reused by the RU epoch opened in this slot, which
       // only happens once the set is reset.
@@ -551,7 +615,7 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
    // -------------------------------------------------------------------------------------
    setPhase(ctx, Phase::LOOKUP);
    for (u64 idx = 0; idx < to_read; ++idx) {
-      if (lookUpPageInTree(ctx, idx)) {
+      if (lookUpPageInTree(ctx, idx) == TreeLookup::FIX) {
          redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
       }
    }
@@ -560,7 +624,7 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
 }
 // -------------------------------------------------------------------------------------
 // FLAGS_bg_page_fixer_tree_lookup. Pre: buf_pages[idx] holds the copy of the page read from the SSD.
-// Returns true if the page is discarded into the log being reclaimed. It is then registered as registerPageToFix()
+// Returns FIX if the page is discarded into the log being reclaimed. It is then registered as registerPageToFix()
 // does: IO frame inserted, page state latched, and its pending LSNs copied from the parent into to_fix_pids[idx].
 // The parent swip is made clean right away: the IO frame keeps the workers away until the fixed page is written.
 // A cached page is queued in hot_pids, like needsFix() does.
@@ -570,8 +634,16 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
 // later write back maps it to a newer RU epoch). So a dirty swip of the reclaimed RU epoch, seen after the read, means
 // the copy is that write back. Since mapRUEpochLog() set reclaiming_ru_epoch, the pages of the RU epoch are no longer
 // discarded, except for the reclaiming_ru_epoch race of the page providers (TODO.md B4).
-bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
+//
+// FLAGS_compress_pages (location != 0): the page leaves its block, so it must not be read from there anymore. Whoever
+// moves a page on the SSD holds its IO frame (see the read path), and the page map only changes for a cached page or
+// under an IO frame. So once the IO frame is inserted, with the parent latched exclusively so that the swip stays
+// evicted, the copy is still the current one iff the page map still points to it. With claim_clean, a clean evicted
+// page is claimed as well (MOVE). An IO frame inserted by a worker means the page is being loaded, the lookup is
+// retried until the page is cached (and queued as hot). One inserted by another bg page fixer means that fixer moves it.
+RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx, PID location, bool claim_clean)
 {
+   ensure(!claim_clean || location != 0);
    page_info& info = ctx.to_fix_pids[idx];
    const PID pid = info.pid;
    BufferFrame::Page& page = ctx.buf_pages[idx].page;
@@ -581,7 +653,7 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
       // Newer: written back again since. Older: the write back to this RU epoch is still in flight, the page is cached
       // and not discarded. Either way not discarded into this log.
       COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_other_ru_epoch++; }
-      return false;
+      return TreeLookup::SKIP;
    }
    if (!reinterpret_cast<btree::BTreeNode*>(page.dt)->is_leaf) {
       // Inner and meta nodes are pinned, they are never discarded.
@@ -590,7 +662,7 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
          GCCounters::myCounters().clean++;
          GCCounters::myCounters().tree_inner++;
       }
-      return false;
+      return TreeLookup::SKIP;
    }
    u64 retries = 0;
    // Records the retries of this lookup on every exit.
@@ -615,21 +687,23 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
                GCCounters::myCounters().tree_parent_not_found++;
             }
             record_retries();
-            jumpmu_return false;
+            jumpmu_return TreeLookup::SKIP;
          }
          Swip<BufferFrame>& swip = parent_handler->swip;
          if (!swip.isEVICTED()) {
+            BufferFrame* bf = location ? &swip.asBufferFrameMasked() : nullptr;
             parent_handler->parent_guard.recheck();
             COUNTERS_BLOCK(gc)
             {
                GCCounters::myCounters().hot_fixed++;
                GCCounters::myCounters().tree_swip_cached++;
             }
-            ctx.hot_pids.emplace_back(pid);
+            ctx.hot_pids.push_back({pid, bf});
             record_retries();
-            jumpmu_return false;
+            jumpmu_return TreeLookup::SKIP;
          }
-         if (!swip.isDIRTY()) {
+         const bool dirty = swip.isDIRTY();
+         if (!dirty && !claim_clean) {
             parent_handler->parent_guard.recheck();
             COUNTERS_BLOCK(gc)
             {
@@ -637,29 +711,62 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
                GCCounters::myCounters().tree_swip_clean++;
             }
             record_retries();
-            jumpmu_return false;
+            jumpmu_return TreeLookup::SKIP;
          }
          // Jumps if the parent changed since the swip was read.
          BMExclusiveUpgradeIfNeeded p_x_guard(parent_handler->parent_guard);
-         ensure_equal(static_cast<ru_epoch_t>(swip.ru_epoch()), ctx.current_gc_epoch);
-         const u8 nb_log_records = swip.pendingLSNCount();
-         ensure(nb_log_records > 0 && nb_log_records <= btree::BTreeNode::max_pending_lsn);
+         if (dirty) {
+            ensure_equal(static_cast<ru_epoch_t>(swip.ru_epoch()), ctx.current_gc_epoch);
+         }
          Partition& partition = bm.getPartition(pid);
+         bool loaded_by_worker = false;
          {
             std::lock_guard<instrumented_mutex> _m(partition.ht_mutex);
-            if (partition.io_ht.lookup(pid)) {
+            auto frame_handler = partition.io_ht.lookup(pid);
+            if (frame_handler && location != 0) {
+               if (frame_handler.frame().inserted_by_bg_page_fixer) {
+                  // Another bg page fixer moves it, its block got listed twice. Waiting for it could deadlock.
+                  COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_io_frame_busy++; }
+                  record_retries();
+                  jumpmu_return TreeLookup::SKIP;
+               }
+               loaded_by_worker = true;
+            } else if (frame_handler) {
                // A worker is loading the page and applies its log records, the page is cached afterwards.
                COUNTERS_BLOCK(gc)
                {
                   GCCounters::myCounters().hot_fixed++;
                   GCCounters::myCounters().tree_io_frame_busy++;
                }
-               ctx.hot_pids.emplace_back(pid);
+               ctx.hot_pids.push_back({pid, nullptr});
                record_retries();
-               jumpmu_return false;
+               jumpmu_return TreeLookup::SKIP;
+            } else if (location != 0 && bm.compressed_space->location(pid) != location) {
+               // Moved since it was read: loaded, written back elsewhere and evicted again.
+               ensure(!dirty);
+               COUNTERS_BLOCK(gc) { GCCounters::myCounters().dead_pages++; }
+               record_retries();
+               jumpmu_return TreeLookup::SKIP;
+            } else {
+               insertFixerIOFrame(partition, pid, stats.io_frames_held);
             }
-            insertFixerIOFrame(partition, pid, stats.io_frames_held);
          }
+         if (loaded_by_worker) {
+            // Retried once the parent latch is released (by the jump), the worker needs it to swizzle the page.
+            COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_io_frame_busy++; }
+            jumpmu::jump();
+         }
+         if (!dirty) {
+            COUNTERS_BLOCK(gc)
+            {
+               GCCounters::myCounters().clean++;
+               GCCounters::myCounters().tree_swip_clean++;
+            }
+            record_retries();
+            jumpmu_return TreeLookup::MOVE;
+         }
+         const u8 nb_log_records = swip.pendingLSNCount();
+         ensure(nb_log_records > 0 && nb_log_records <= btree::BTreeNode::max_pending_lsn);
          LID* lsn_list = ctx.parent_lsns[idx];
          std::memcpy(lsn_list, swip.pendingLSNs(), nb_log_records * sizeof(LID));
          if (bm.track_discard_state) {
@@ -682,7 +789,7 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
          info.nb_log_records = nb_log_records;
          COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_claimed++; }
          record_retries();
-         jumpmu_return true;
+         jumpmu_return TreeLookup::FIX;
       }
       jumpmuCatch()
       {
@@ -693,6 +800,233 @@ bool RUBackgroundPageFixer::lookUpPageInTree(ThreadContext& ctx, u64 idx)
          }
       }
    }
+}
+// -------------------------------------------------------------------------------------
+// FLAGS_compress_pages. Every live page of the blocks is decompressed and looked up in its B-Tree: the discarded ones are
+// fixed and recompressed, the clean ones copied as is, both to blocks of the open RU epoch (out of place), the cached
+// ones are left in place (queued as hot). The blocks are freed as their last live page leaves them, into the free list of
+// this thread, so the next batch reuses them first.
+void RUBackgroundPageFixer::moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count)
+{
+   ensure_lte(count, ThreadContext::compressed_batch_blocks);
+   ensure(ctx.to_fix_pids.empty() && ctx.moved.empty());
+   CompressedSpace& space = *bm.compressed_space;
+   const ru_epoch_t gc_ru_epoch = ctx.current_gc_epoch;
+   u64 read_blocks[ThreadContext::compressed_batch_blocks];
+   u32 to_read = 0;
+   for (u64 i = 0; i < count; ++i) {
+      const u64 block = blocks[i];
+      ensure_lt(block, bm.max_pid);
+      if (space.blockRUEpoch(block) != gc_ru_epoch) {
+         // Overwritten since, its copy in this RU epoch is already invalid.
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().blocks_overwritten++; }
+         continue;
+      }
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.r_ring);
+      ensure(sqe != nullptr);
+      io_uring_prep_read(sqe, bm.ssd_fd, ctx.read_blocks.get() + u64(to_read) * PAGE_SIZE, PAGE_SIZE, block * PAGE_SIZE);
+      io_uring_sqe_set_data64(sqe, to_read);
+      read_blocks[to_read++] = block;
+   }
+   if (to_read == 0) {
+      return;
+   }
+   setPhase(ctx, Phase::READ);
+   int s = io_uring_submit_and_wait(&ctx.r_ring, to_read);
+   ensure_equal(s, static_cast<int>(to_read));
+   struct io_uring_cqe* cqe;
+   u32 head;
+   u32 completed = 0;
+   io_uring_for_each_cqe(&ctx.r_ring, head, cqe)
+   {
+      ensure_equal(cqe->res, PAGE_SIZE);
+      ++completed;
+   }
+   ensure_equal(completed, to_read);
+   io_uring_cq_advance(&ctx.r_ring, to_read);
+   COUNTERS_BLOCK(gc)
+   {
+      GCCounters::myCounters().blocks_read += to_read;
+      GCCounters::myCounters().pages_read += to_read;
+   }
+   // -------------------------------------------------------------------------------------
+   setPhase(ctx, Phase::LOOKUP);
+   for (u32 r = 0; r < to_read; ++r) {
+      const u64 block = read_blocks[r];
+      // The writers set the RU epoch of a block before writing it: unchanged, the block was not written during the read.
+      if (space.blockRUEpoch(block) != gc_ru_epoch) {
+         COUNTERS_BLOCK(gc) { GCCounters::myCounters().blocks_overwritten++; }
+         continue;
+      }
+      const u8* buffer = ctx.read_blocks.get() + u64(r) * PAGE_SIZE;
+      const u64 address = block * PAGE_SIZE;
+      // An uncompressed page fills its block and has no header, it is recognized by the page map pointing to it.
+      const auto& raw = *reinterpret_cast<const BufferFrame::Page*>(buffer);
+      const PID raw_pid = raw.magic_debugging_number;
+      if (raw_pid < bm.pid_space && space.location(raw_pid) == cpid::make(address, PAGE_SIZE)) {
+         movePage(ctx, raw_pid, cpid::make(address, PAGE_SIZE), buffer, raw.ru_epoch);
+         continue;
+      }
+      // The compressed pages are packed from the start of the block, the tail is zeroed.
+      u32 offset = 0;
+      while (offset + sizeof(compression::CompressedPageHeader) <= PAGE_SIZE) {
+         const auto header = compression::header(buffer + offset);
+         const u32 length = header.length();
+         if (length == 0) {
+            break;
+         }
+         ensure(length > sizeof(compression::CompressedPageHeader) && length < PAGE_SIZE && offset + length <= PAGE_SIZE);
+         movePage(ctx, header.pid(), cpid::make(address + offset, length), buffer + offset, header.ru_epoch);
+         offset += length;
+      }
+   }
+   flushPacker(ctx);
+}
+// -------------------------------------------------------------------------------------
+// The copy of pid at location (src, as read from the SSD), written to ru_epoch.
+void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, const u8* src, ru_epoch_t ru_epoch)
+{
+   CompressedSpace& space = *bm.compressed_space;
+   if (ru_epoch != ctx.current_gc_epoch) {
+      // An uncompressed page rewritten in place to a newer RU epoch since.
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_other_ru_epoch++; }
+      return;
+   }
+   if (pid >= bm.pid_space || space.location(pid) != location) {
+      // Deleted or rewritten elsewhere since.
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().dead_pages++; }
+      return;
+   }
+   const u32 length = cpid::length(location);
+   BufferFrame& bf = ctx.buf_pages[0];
+   compression::decompressPage(src, length, bf.page);
+   ensure(ctx.to_fix_pids.empty());
+   ctx.to_fix_pids.emplace_back(pid, nullptr, INVALID_LSN, INVALID_LSN, 0);
+   // A log_only pass does not reclaim the RU epoch, there is no point in moving its clean pages.
+   const TreeLookup outcome = lookUpPageInTree(ctx, 0, location, /* claim_clean */ !ctx.log_only);
+   if (outcome != TreeLookup::SKIP && ctx.packer->full()) {
+      // The IO frame of this page is held, but it is not part of the flush.
+      flushPacker(ctx);
+   }
+   ru_epoch_t written_ru_epoch;
+   if (outcome == TreeLookup::FIX) {
+      setPhase(ctx, Phase::FIX);
+      const LID last_lsn = ctx.to_fix_pids[0].last_lsn;
+      redoPage(ctx, 0);
+      if (FLAGS_compression_zero_free_space) {
+         reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->zeroFreeSpace();
+      }
+      const PID new_location = ctx.packer->add(bf.page, /* compress */ true, location, written_ru_epoch);
+      bf.page.ru_epoch = written_ru_epoch;
+      bm.countPackedPage(bf.page);
+      ctx.moved.push_back({pid, location, new_location, written_ru_epoch, true, last_lsn});
+      setPhase(ctx, Phase::LOOKUP);
+   } else if (outcome == TreeLookup::MOVE) {
+      const PID new_location = ctx.packer->addVerbatim(src, length, written_ru_epoch);
+      // As a write back of the page would: its copy in the reclaimed RU epoch gets invalid, the new one counts to the
+      // RU epoch it is written to.
+      bm.ru_discard_set[DEFAULT_RUH].at(ctx.current_gc_epoch).invalid.fetch_add(1);
+      bf.page.ru_epoch = written_ru_epoch;
+      bm.countPackedPage(bf.page);
+      ctx.moved.push_back({pid, location, new_location, written_ru_epoch, false, INVALID_LSN});
+      ++ctx.total_clean_copied;
+      space.clean_copied_pages.fetch_add(1, std::memory_order_relaxed);
+      COUNTERS_BLOCK(gc)
+      {
+         GCCounters::myCounters().clean_copied++;
+         GCCounters::myCounters().clean_copied_bytes += length;
+      }
+   }
+   ctx.to_fix_pids.clear();
+   bf.reset();
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::flushPacker(ThreadContext& ctx)
+{
+   BlockPacker& packer = *ctx.packer;
+   const u64 blocks = packer.blocksCount();
+   if (blocks == 0) {
+      ensure(ctx.moved.empty() && ctx.hot_bfs.empty());
+      return;
+   }
+   const Phase phase = static_cast<Phase>(stats.threads[ctx.gc_id].phase.load(std::memory_order_relaxed));
+   setPhase(ctx, Phase::WRITE_BACK);
+   packer.seal();
+   // Before the writes, see moveBlocksBatch().
+   bm.countPackedBlocks(packer);
+   for (u64 b_i = 0; b_i < blocks; b_i++) {
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
+      ensure(sqe != nullptr);
+      nvme_io_uring_prep_write(sqe, bm.ssd_fd, packer.block(b_i), PAGE_SIZE, packer.blockOffset(b_i), DEFAULT_RUH);
+      io_uring_sqe_set_data64(sqe, b_i);
+   }
+   int s = io_uring_submit_and_wait(&ctx.w_ring, blocks);
+   ensure_equal(s, static_cast<int>(blocks));
+   struct io_uring_cqe* cqe;
+   u32 head;
+   u32 completed = 0;
+   io_uring_for_each_cqe(&ctx.w_ring, head, cqe)
+   {
+      ensure_equal(cqe->res, FLAGS_enable_fdp ? 0 : static_cast<s32>(PAGE_SIZE));
+      ++completed;
+   }
+   ensure_equal(completed, static_cast<u32>(blocks));
+   io_uring_cq_advance(&ctx.w_ring, blocks);
+   packer.reset();
+   // -------------------------------------------------------------------------------------
+   // The moved pages: the workers waiting on their IO frame read the new copy. The old one is freed, its block goes
+   // to the free list of this thread once its last live page left it.
+   CompressedSpace& space = *bm.compressed_space;
+   for (const auto& moved : ctx.moved) {
+      const PID previous = space.exchangeLocation(moved.pid, moved.new_location);
+      ensure_equal(previous, moved.old_location);
+      space.free(previous);
+      if (moved.fixed && bm.track_discard_state) {
+         bm.discard_state[moved.pid].unlockClean(moved.last_lsn, cr::LogManager::getLogID(moved.ru_epoch), 0);
+      }
+      releaseIOFrame(moved.pid);
+      COUNTERS_BLOCK(gc)
+      {
+         if (moved.fixed) {
+            GCCounters::myCounters().total_fixed++;
+         }
+         GCCounters::myCounters().pages_written++;
+      }
+   }
+   ctx.moved.clear();
+   for (BufferFrame* bf : ctx.hot_bfs) {
+      ackHotPage(*bf);
+   }
+   ctx.total_fixed += ctx.hot_bfs.size();
+   ctx.hot_bfs.clear();
+   setPhase(ctx, phase);
+}
+// -------------------------------------------------------------------------------------
+// The blocks of the chain that are still valid on the SSD hold live pages left in place (hot pages, or a block listed
+// in the chain that the fixers skipped), or are free but not overwritten yet (the leftover of the pools, the
+// blocks freed into the free lists of other threads). The LBA chain blocks are counted in block_total only.
+void RUBackgroundPageFixer::reportBlocks(ThreadContext& ctx, RUEpochDiscardSet& set)
+{
+   CompressedSpace& space = *bm.compressed_space;
+   const ru_epoch_t gc_ru_epoch = ctx.current_gc_epoch;
+   u64 valid_live = 0, valid_free = 0;
+   for (const PID block : set.lba_chain_entries) {
+      if (space.blockRUEpoch(block) == gc_ru_epoch) {
+         if (space.isFreeBlock(block)) {
+            valid_free++;
+         } else {
+            valid_live++;
+         }
+      }
+   }
+   const s32 block_total = set.block_total.load();
+   const s32 block_invalid = set.block_invalid.load();
+   LOG_INFO(bm.logger,
+            "GC epoch %lu blocks : %d written, %d invalidated (%.1f%%), still valid %lu with live pages and %lu free not yet "
+            "overwritten, %ld others (LBA chain blocks), %lu blocks listed in the chain, %d clean pages copied, %d fixed",
+            gc_ru_epoch, block_total, block_invalid, block_total ? block_invalid * 100.0 / block_total : 0.0, valid_live, valid_free,
+            static_cast<s64>(block_total) - block_invalid - static_cast<s64>(valid_live + valid_free), set.lba_chain_entries.size(),
+            set.total_clean_copied.load(), set.total_fixed.load());
 }
 // -------------------------------------------------------------------------------------
 // FLAGS_bg_page_fixer_tree_lookup_state_filter: returns false if the page state rules out a discard into the log being
@@ -750,7 +1084,7 @@ bool RUBackgroundPageFixer::needsFix(ThreadContext& ctx, PID pid)
       {
          GCCounters::myCounters().hot_fixed++;
       }
-      ctx.hot_pids.emplace_back(pid);
+      ctx.hot_pids.push_back({pid, nullptr});
       return false;
    }
 
@@ -803,7 +1137,7 @@ bool RUBackgroundPageFixer::registerPageToFix(ThreadContext& ctx, LID first_lsn,
       // written back before this log reclaimed.
       // Increment the reader count.
       // Read the BufferFrame address and register it for fixing.
-      ctx.hot_pids.emplace_back(pid);
+      ctx.hot_pids.push_back({pid, nullptr});
       return false;
    }
    // if (bm.discard_state[pid].isHot()) {}
@@ -933,6 +1267,20 @@ void RUBackgroundPageFixer::redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 da
 {
    const PID fixed_pid = data & 0x0000FFFFFFFFFFFF;
    ensure_equal(ctx.to_fix_pids[idx].pid, fixed_pid);
+   redoPage(ctx, idx);
+   auto& page = ctx.buf_pages[idx].page;
+   struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
+   ensure(sqe != nullptr);
+   nvme_io_uring_prep_write(sqe, bm.ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE, page.ruh);
+   io_uring_sqe_set_data64(sqe, data);
+   // TODO(mfd) : Amortize
+   int s = io_uring_submit(&ctx.w_ring);
+   ensure(s == 1);
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::redoPage(ThreadContext& ctx, u64 idx)
+{
+   [[maybe_unused]] const PID fixed_pid = ctx.to_fix_pids[idx].pid;
    const LID last_lsn = ctx.to_fix_pids[idx].last_lsn;
    auto& bf = ctx.buf_pages[idx];
    auto& page = bf.page;
@@ -1058,13 +1406,6 @@ fail:
 success:
 
 #endif
-   struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.w_ring);
-   ensure(sqe != nullptr);
-   nvme_io_uring_prep_write(sqe, bm.ssd_fd, (void*)page, PAGE_SIZE, fixed_pid * PAGE_SIZE, page.ruh);
-   io_uring_sqe_set_data64(sqe, data);
-   // TODO(mfd) : Amortize
-   int s = io_uring_submit(&ctx.w_ring);
-   ensure(s == 1);
 }
 // -------------------------------------------------------------------------------------
 // Pages of the reclaimed log that were cached when scanned. Their latest version depends on the log
@@ -1079,12 +1420,15 @@ void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
       ctx.hot_pids.clear();
       return;
    }
-   for (const PID pid : ctx.hot_pids) {
-      switch (tryWriteBackHotPage(ctx, pid)) {
+   for (const HotPageRef& hot : ctx.hot_pids) {
+      if (FLAGS_compress_pages && ctx.packer->full()) {
+         writeBackHotPages(ctx);
+      }
+      switch (tryWriteBackHotPage(ctx, hot)) {
          case HotPage::DONE:
             break;
          case HotPage::RETRY:
-            ctx.deferred_hot_pids.push_back(pid);
+            ctx.deferred_hot_pids.push_back(hot);
             COUNTERS_BLOCK(gc) { GCCounters::myCounters().hot_deferred++; }
             break;
          case HotPage::WRITING:
@@ -1100,11 +1444,16 @@ void RUBackgroundPageFixer::fixHotPages(ThreadContext& ctx)
 }
 // -------------------------------------------------------------------------------------
 // Never blocks: the guards jump when the frame is latched, and the page is retried later.
-RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(ThreadContext& ctx, PID pid)
+// With compression the page goes through the packer, like a write back of the page providers.
+RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(ThreadContext& ctx, const HotPageRef& hot)
 {
-   PageState& page_state = bm.discard_state[pid];
-   BufferFrame* bf = page_state.getBufferFrame();
+   const PID pid = hot.pid;
+   BufferFrame* bf = hot.bf;
    if (bf == nullptr) {
+      bf = bm.discard_state[pid].getBufferFrame();
+   }
+   if (bf == nullptr) {
+      PageState& page_state = bm.discard_state[pid];
       // bf == nullptr means the page is no longer hot.
       // 2 possible cases:
       // 1. Page is already written back in a clean state  (Most likely).
@@ -1131,9 +1480,14 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(Thread
    {
       BMOptimisticGuard o_guard(bf->header.latch);
       if (bf->header.pid != pid || bf->isFree()) {
+         o_guard.recheck();
+         if (hot.bf != nullptr) {
+            // Found through its parent: the page got evicted since, after its write back if it was dirty (the pages of
+            // the reclaimed RU epoch are not discarded anymore).
+            jumpmu_return HotPage::DONE;
+         }
          // The frame got evicted and reused meanwhile, look at the page state again.
          // Why I need to retry here ?
-         o_guard.recheck();
          jumpmu_return HotPage::RETRY;
       }
       // Writing back a page that did not need it is only an extra write, never incorrect. This covers
@@ -1162,8 +1516,28 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(Thread
       bm.prepareDirtyWriteBack(*bf);
       ensure_equal(bf->page.magic_debugging_number, pid);
       ++bf->page.write_back_count;
-      // Unswizzles the children of inner pages in the copy.
-      DTRegistry::global_dt_registry.checkpoint(bf->page.dt_id, *bf, ctx.buf_pages[ctx.hot_bfs.size()].page);
+      if (FLAGS_compress_pages) {
+         // The copy is packed right away, buf_pages[0] is only a scratch page. As the page providers do, the page map
+         // points to the new copy before it is written: the page is cached, nobody reads it from the SSD.
+         BufferFrame::Page& copy = ctx.buf_pages[0].page;
+         DTRegistry::global_dt_registry.checkpoint(bf->page.dt_id, *bf, copy);
+         auto& node = *reinterpret_cast<btree::BTreeNode*>(copy.dt);
+         if (FLAGS_compression_zero_free_space) {
+            node.zeroFreeSpace();
+         }
+         CompressedSpace& space = *bm.compressed_space;
+         ru_epoch_t written_ru_epoch;
+         const PID location = ctx.packer->add(copy, !bf->header.keep_in_memory && node.is_leaf, space.location(pid), written_ru_epoch);
+         bf->page.ru_epoch = written_ru_epoch;
+         bm.countPackedPage(bf->page);
+         const PID previous = space.exchangeLocation(pid, location);
+         if (previous != location) {
+            space.free(previous);
+         }
+      } else {
+         // Unswizzles the children of inner pages in the copy.
+         DTRegistry::global_dt_registry.checkpoint(bf->page.dt_id, *bf, ctx.buf_pages[ctx.hot_bfs.size()].page);
+      }
       ctx.hot_bfs.push_back(bf);
       jumpmu_return HotPage::WRITING;
    }
@@ -1177,6 +1551,10 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryWriteBackHotPage(Thread
 // Writes the copies made by tryWriteBackHotPage() and waits for them.
 void RUBackgroundPageFixer::writeBackHotPages(ThreadContext& ctx)
 {
+   if (FLAGS_compress_pages) {
+      flushPacker(ctx);
+      return;
+   }
    const u32 n = ctx.hot_bfs.size();
    if (n == 0) {
       return;
@@ -1217,11 +1595,16 @@ void RUBackgroundPageFixer::ackHotPage(ThreadContext& ctx, struct io_uring_cqe* 
       ensure_equal(cqe->res, PAGE_SIZE);
    }
    const u64 idx = io_uring_cqe_get_data64(cqe);
-   BufferFrame& bf = *ctx.hot_bfs[idx];
+   ackHotPage(*ctx.hot_bfs[idx]);
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::ackHotPage(BufferFrame& bf)
+{
    COUNTERS_BLOCK(gc)
    {
       GCCounters::myCounters().pages_written++;
    }
+   Partition* reclaimed_in = nullptr;
    while (true) {
       jumpmuTry()
       {
@@ -1229,9 +1612,20 @@ void RUBackgroundPageFixer::ackHotPage(ThreadContext& ctx, struct io_uring_cqe* 
          BMExclusiveGuard x_guard(o_guard);
          ensure(bf.header.is_being_written_back);
          bf.header.is_being_written_back.store(false, std::memory_order_release);
+         if (FLAGS_compress_pages && bf.isFree()) {
+            // Deleted while being written back (see reclaimPage), as the page providers do: nothing references this copy.
+            const PID pid = bf.header.pid;
+            bm.compressed_space->free(bm.compressed_space->exchangeLocation(pid, 0));
+            bm.recyclePID(pid, bf.page.ru_epoch, bf.page.ruh);
+            bf.reset();
+            reclaimed_in = &bm.getPartition(pid);
+         }
          jumpmu_break;
       }
       jumpmuCatch() {}
+   }
+   if (reclaimed_in != nullptr) {
+      reclaimed_in->dram_free_list.push(bf);
    }
 }
 // -------------------------------------------------------------------------------------
