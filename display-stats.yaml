@@ -22,32 +22,32 @@ columns:
 
   new_w_mib:
     field: "New W"
-    enabled: true
+    enabled: false
     source: bm
 
   pplf_w_mib:
     field: "PPLF W"
-    enabled: true
+    enabled: false
     source: bm
 
   undiscardable_wb_dc0_pct:
     field: "UWB DC0 %"
-    enabled: true
+    enabled: false
     source: bm
 
   undiscardable_wb_dc1_pct:
     field: "UWB DC1 %"
-    enabled: true
+    enabled: false
     source: bm
 
   undiscardable_wb_dcN_pct:
     field: "UWB DC>1 %"
-    enabled: true
+    enabled: false
     source: bm
 
   hot_w_mib:
     field: "HOT W"
-    enabled: true
+    enabled: false
     source: bm
 
   r_mib:
@@ -148,12 +148,12 @@ columns:
 
   device_gc_events:
     field: "Dev GC"
-    enabled: true
+    enabled: false
     source: bm
 
   total_in_use_ru:
     field: "Used RUs"
-    enabled: true
+    enabled: false
     source: bm
 
   estimated_gc_writes:
@@ -283,12 +283,12 @@ columns:
 
   comp_ratio:
     field: "Comp Ratio"
-    enabled: true
+    enabled: false
     source: bm
 
   comp_used_gib:
     field: "Comp GiB"
-    enabled: true
+    enabled: false
     source: bm
 
   db_waf:
@@ -298,17 +298,17 @@ columns:
 
   ruh_0_util_pct:
     field: "RUH0 %"
-    enabled: true
+    enabled: false
     source: bm
 
   ruh_1_util_pct:
     field: "RUH1 %"
-    enabled: true
+    enabled: false
     source: bm
 
   ruh_2_util_pct:
     field: "RUH2 %"
-    enabled: true
+    enabled: false
     source: bm
 
   stock_discard_mib:
@@ -318,7 +318,7 @@ columns:
 
   stock_w_mib:
     field: "Sto W"
-    enabled: true
+    enabled: false
     source: bm
 
   orderline_w_mib:
@@ -344,7 +344,7 @@ columns:
   # longest time a busy ru_gc thread spent in its current phase
   gc_max_phase_ms:
     field: "GCstk ms"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_thr_idle:
@@ -557,7 +557,7 @@ columns:
   # RU epochs of the DEFAULT_RUH
   ru_open:
     field: "RU open"
-    enabled: true
+    enabled: false
     source: bm
 
   ru_reclaiming:
@@ -567,7 +567,7 @@ columns:
 
   ru_reclaimed:
     field: "RU rcld"
-    enabled: true
+    enabled: false
     source: bm
 
   ru_oldest_uncollected:
@@ -578,7 +578,7 @@ columns:
   # 1: opening the next RU epoch is deferred, the GC is behind
   ru_next_slot_busy:
     field: "RUslot busy"
-    enabled: true
+    enabled: false
     source: bm
 
   # writers stalled on a full LBA chain ring, per second
@@ -590,7 +590,7 @@ columns:
   # writers waiting on the ring right now
   lba_stalled_now:
     field: "LBA stall"
-    enabled: true
+    enabled: false
     source: bm
 
   # writers spinning on a full or closed LBA chain block right now
@@ -626,7 +626,7 @@ columns:
   # longest single wait in the last second
   wk_fixer_max_wait_ms:
     field: "WKfix max"
-    enabled: true
+    enabled: false
     source: bm
 
   # waits on any IO frame being read, per second
