@@ -1,1 +1,8 @@
 # Add any flag here (one per line, e.g. --flag=value) to override the default behaviour.
+
+# --nocompress_pages
+--bg_page_fixer_variant=2
+--bg_page_fixer_tree_lookup
+--nobg_page_fixer_tree_lookup_state_filter
+--btree_pin_inner_nodes
+--bg_fixer_write_back_hot_pages

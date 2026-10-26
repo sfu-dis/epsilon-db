@@ -553,9 +553,6 @@ void LeanStore::verifyFlags()
             SetupFailed("compress_pages with discarding requires bg_page_fixer_variant 2, bg_page_fixer_tree_lookup, discard_lsns_in_parent "
                         "and btree_pin_inner_nodes");
          }
-         if (FLAGS_per_page_logging) {
-            SetupFailed("compress_pages does not support per_page_logging");
-         }
       }
       if (FLAGS_fdp_placement_policy != "Default") {
          SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");

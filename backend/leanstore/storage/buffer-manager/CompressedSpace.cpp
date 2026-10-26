@@ -154,8 +154,8 @@ u64 CompressedSpace::allocateBlock()
          shared_free_list.blocks.resize(shared_free_list.blocks.size() - n);
       }
       if (!mine.blocks.empty()) {
-         const u64 block = mine.blocks.back();
-         mine.blocks.pop_back();
+         const u64 block = mine.blocks.front();
+         mine.blocks.erase(mine.blocks.begin());
          free_blocks.fetch_sub(1, std::memory_order_relaxed);
          ensure_equal(live_bytes[block].load(), 0);
          transition(block, FREE, OPEN);

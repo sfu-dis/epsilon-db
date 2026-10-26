@@ -162,7 +162,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --compress_pages)
             compress_pages=1
-            vanilla=1
+            # vanilla=1
             shift 1
             ;;
         --benchmark)
@@ -641,14 +641,15 @@ fi
 
 dir_name="${dir_name}_${worker_threads}W"
 
-if (( compress_pages == 1 )); then
-   dir_name="${dir_name}_compressed"
-elif (( vanilla == 1 )); then
+if (( vanilla == 1 )); then
    dir_name="${dir_name}_vanilla"
 else
    dir_name="${dir_name}_${threshold}_discard${max_log_records_to_discard}_epsilondb"
 fi
 
+if (( compress_pages == 1 )); then
+   dir_name="${dir_name}_compressed"
+fi
 
 if [[ "$benchmark" == "ycsb" ]]; then
     # BENCHMARK_BINARY="${BUILD_DIR}/frontend/ycsb"
