@@ -59,10 +59,10 @@ struct page_info {
 struct RUBackgroundPageFixer::ThreadContext {
    // FIXME(mfd): Temporely set it large enough
    // Probably the batch is quite large when we use the bg page fixer variant 2.
-   static constexpr u32 batch_size = 256;
+   static constexpr u32 batch_size = 32;
    // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
    // written with. The blocks a batch frees make the pool of the next one.
-   static constexpr u32 compressed_batch_blocks = 64;
+   static constexpr u32 compressed_batch_blocks = 8;
    // A block holds at most FLAGS_compression_max_pages_per_block live pages, so every page of a batch gets a slot of
    // buf_pages.
    static_assert(compressed_batch_blocks * CompressedSpace::MAX_PAGES_PER_BLOCK <= batch_size);
