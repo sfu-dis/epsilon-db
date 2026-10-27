@@ -121,10 +121,14 @@ class RUBackgroundPageFixer
    // FLAGS_compress_pages: reads a batch of the blocks listed in the LBA chain and moves their live pages to blocks of the
    // open RU epoch, the discarded pages fixed, the clean ones copied as is, and the cached ones moved from their frame.
    void moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count);
+   // Looks up a live page of a block: packs it right away (clean or cached), queues it in to_redo (to fix) or defers it.
    void movePage(ThreadContext& ctx, PID pid, PID location, const u8* src, ru_epoch_t ru_epoch);
+   // Redoes the pages movePage() queued, their log records read in one go, and packs them.
+   void fixQueuedPages(ThreadContext& ctx);
    // Moves a cached page found in a block of the batch: the clean ones are copied as is, the dirty ones written back
-   // from their frame. RETRY when the frame is latched, being written back, or no longer holds the page.
-   HotPage tryMoveHotPage(ThreadContext& ctx, BufferFrame& bf, PID pid, PID location, const u8* src);
+   // from their frame, checkpointed into buf_pages[idx]. RETRY when the frame is latched, being written back, or no
+   // longer holds the page.
+   HotPage tryMoveHotPage(ThreadContext& ctx, u64 idx, BufferFrame& bf, PID pid, PID location, const u8* src);
    // Retries the pages of the batch movePage() deferred until none is left, blocking if it must, so that every
    // block of the batch is freed before the next batch.
    void retryDeferredPages(ThreadContext& ctx);

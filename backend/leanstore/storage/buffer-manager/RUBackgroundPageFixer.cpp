@@ -63,6 +63,9 @@ struct RUBackgroundPageFixer::ThreadContext {
    // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
    // written with. The blocks a batch frees make the pool of the next one.
    static constexpr u32 compressed_batch_blocks = 64;
+   // A block holds at most FLAGS_compression_max_pages_per_block live pages, so every page of a batch gets a slot of
+   // buf_pages.
+   static_assert(compressed_batch_blocks * CompressedSpace::MAX_PAGES_PER_BLOCK <= batch_size);
    // -------------------------------------------------------------------------------------
    const u32 gc_id;
    BufferFrame buf_pages[batch_size];
@@ -106,14 +109,18 @@ struct RUBackgroundPageFixer::ThreadContext {
    };
    std::vector<DeferredPage> deferred_pages;
    std::vector<DeferredPage> retried_pages;
+   // The cpid the page to fix in the slot of buf_pages was read from, indexed like buf_pages.
+   PID fix_locations[batch_size];
    u64 total_clean_copied = 0;  // in the current RU epoch
    // -------------------------------------------------------------------------------------
    // FLAGS_bg_page_fixer_log_io_uring: the 4 KiB log blocks holding the log records of the pages to fix, log_slots_per_page
    // (bm.max_pending_lsn) slots per page indexed like buf_pages, and the ring they are read with.
    std::unique_ptr<u8, decltype(&std::free)> log_blocks{nullptr, &std::free};
    u32 log_slots_per_page = 0;
+   u64 log_slots = 0;
    struct io_uring l_ring;
    // Pages of the current batch whose log records are to be read before their redo, indexes into buf_pages.
+   // FLAGS_compress_pages: the pages to fix, with or without FLAGS_bg_page_fixer_log_io_uring.
    std::vector<u64> to_redo;
    u8* logBlock(u64 idx, u32 i) { return log_blocks.get() + (idx * log_slots_per_page + i) * PAGE_SIZE; }
    // -------------------------------------------------------------------------------------
@@ -146,6 +153,7 @@ struct RUBackgroundPageFixer::ThreadContext {
 
       cqes = std::make_unique<struct io_uring_cqe*[]>(2 * batch_size);
       to_fix_pids.reserve(batch_size);
+      to_redo.reserve(batch_size);
       hot_bfs.reserve(batch_size);
    }
 };
@@ -232,13 +240,15 @@ void RUBackgroundPageFixer::run(u32 gc_id)
    if (FLAGS_bg_page_fixer_log_io_uring) {
       ensure(bm.max_pending_lsn > 0);
       ctx.log_slots_per_page = bm.max_pending_lsn;
-      const u64 slots = u64(ThreadContext::batch_size) * ctx.log_slots_per_page;
-      ctx.log_blocks.reset(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, slots * PAGE_SIZE)));
+      // FLAGS_compress_pages: at most one page to fix per live page of the batch.
+      const u64 batch_pages = FLAGS_compress_pages ? u64(ThreadContext::compressed_batch_blocks) * FLAGS_compression_max_pages_per_block
+                                                   : u64(ThreadContext::batch_size);
+      ctx.log_slots = batch_pages * ctx.log_slots_per_page;
+      ctx.log_blocks.reset(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, ctx.log_slots * PAGE_SIZE)));
       ensure(ctx.log_blocks != nullptr);
       // Every log record of a batch is read in one submission (the log chain walk aside).
-      const int rc = io_uring_queue_init(slots, &ctx.l_ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+      const int rc = io_uring_queue_init(ctx.log_slots, &ctx.l_ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
       posix_check(rc == 0);
-      ctx.to_redo.reserve(ThreadContext::batch_size);
    }
    while (bm.bg_threads_keep_running) {
       setPhase(ctx, Phase::IDLE);
@@ -854,11 +864,12 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
    }
 }
 // -------------------------------------------------------------------------------------
-// FLAGS_compress_pages. Every live page of the blocks is decompressed and looked up in its B-Tree: the discarded ones are
-// fixed and recompressed, the clean ones copied as is, both to blocks of the open RU epoch (out of place), the cached
-// ones are moved from their frame (tryMoveHotPage()). The pages that cannot be moved right away are retried, blocking,
-// before the batch ends. The blocks are freed as their last live page leaves them, into the free list of this thread,
-// so the next batch reuses them first.
+// FLAGS_compress_pages. Every live page of the blocks is decompressed and looked up in its B-Tree: the clean ones are
+// copied as is to blocks of the open RU epoch (out of place), the cached ones are moved from their frame
+// (tryMoveHotPage()), the discarded ones are queued and, once every block is looked up, fixed together
+// (fixQueuedPages()) and recompressed. The pages that cannot be moved right away are retried, blocking, before the batch
+// ends. The blocks are freed as their last live page leaves them, into the free list of this thread, so the next batch
+// reuses them first.
 void RUBackgroundPageFixer::moveBlocksBatch(ThreadContext& ctx, const PID* blocks, u64 count)
 {
    ensure_lte(count, ThreadContext::compressed_batch_blocks);
@@ -933,11 +944,13 @@ void RUBackgroundPageFixer::moveBlocksBatch(ThreadContext& ctx, const PID* block
          offset += length;
       }
    }
+   fixQueuedPages(ctx);
    flushPacker(ctx);
    retryDeferredPages(ctx);
 }
 // -------------------------------------------------------------------------------------
-// The copy of pid at location (src, as read from the SSD), written to ru_epoch.
+// The copy of pid at location (src, as read from the SSD), written to ru_epoch. Only a page to fix keeps its slot of
+// buf_pages, until fixQueuedPages(): at most FLAGS_compression_max_pages_per_block per block of the batch.
 void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, const u8* src, ru_epoch_t ru_epoch)
 {
    CompressedSpace& space = *bm.compressed_space;
@@ -952,23 +965,30 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
       return;
    }
    const u32 length = cpid::length(location);
-   BufferFrame& bf = ctx.buf_pages[0];
+   const u64 idx = ctx.to_fix_pids.size();
+   ensure_lt(idx, ThreadContext::batch_size);
+   BufferFrame& bf = ctx.buf_pages[idx];
    compression::decompressPage(src, length, bf.page);
-   ensure(ctx.to_fix_pids.empty());
    ctx.to_fix_pids.emplace_back(pid, nullptr, INVALID_LSN, INVALID_LSN, 0);
    // A log_only pass does not reclaim the RU epoch, there is no point in moving its clean pages.
-   TreeLookup outcome = lookUpPageInTree(ctx, 0, location, /* claim_clean */ !ctx.log_only);
+   TreeLookup outcome = lookUpPageInTree(ctx, idx, location, /* claim_clean */ !ctx.log_only);
+   if (outcome == TreeLookup::FIX) {
+      // Its IO frame is held until it is written, by the flush following fixQueuedPages().
+      ctx.fix_locations[idx] = location;
+      ctx.to_redo.push_back(idx);
+      return;
+   }
    if (outcome == TreeLookup::HOT && !FLAGS_bg_fixer_write_back_hot_pages) {
       // Left in place, it pins its block.
       outcome = TreeLookup::SKIP;
    }
-   if (outcome != TreeLookup::SKIP && outcome != TreeLookup::RETRY && ctx.packer->full()) {
-      // The IO frame of this page is held, but it is not part of the flush.
+   if ((outcome == TreeLookup::HOT || outcome == TreeLookup::MOVE) && ctx.packer->full()) {
+      // The IO frame of this page, and those of the queued pages to fix, are held but not part of the flush.
       flushPacker(ctx);
    }
    ru_epoch_t written_ru_epoch;
    if (outcome == TreeLookup::HOT) {
-      if (tryMoveHotPage(ctx, *ctx.lookup_hot_bf, pid, location, src) == HotPage::RETRY) {
+      if (tryMoveHotPage(ctx, idx, *ctx.lookup_hot_bf, pid, location, src) == HotPage::RETRY) {
          outcome = TreeLookup::RETRY;
       }
       ctx.lookup_hot_bf = nullptr;
@@ -976,22 +996,6 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
    if (outcome == TreeLookup::RETRY) {
       ctx.deferred_pages.push_back({pid, location, src, ru_epoch});
       COUNTERS_BLOCK(gc) { GCCounters::myCounters().batch_deferred++; }
-   } else if (outcome == TreeLookup::FIX) {
-      setPhase(ctx, Phase::FIX);
-      const LID last_lsn = ctx.to_fix_pids[0].last_lsn;
-      if (FLAGS_bg_page_fixer_log_io_uring) {
-         const u64 idx = 0;
-         readLogRecords(ctx, &idx, 1);
-      }
-      redoPage(ctx, 0);
-      if (FLAGS_compression_zero_free_space) {
-         reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->zeroFreeSpace();
-      }
-      const PID new_location = ctx.packer->add(bf.page, /* compress */ true, location, written_ru_epoch);
-      bf.page.ru_epoch = written_ru_epoch;
-      bm.countPackedPage(bf.page);
-      ctx.moved.push_back({pid, location, new_location, written_ru_epoch, true, last_lsn});
-      setPhase(ctx, Phase::LOOKUP);
    } else if (outcome == TreeLookup::MOVE) {
       const PID new_location = ctx.packer->addVerbatim(src, length, written_ru_epoch);
       // As a write back of the page would: its copy in the reclaimed RU epoch gets invalid, the new one counts to the
@@ -1008,8 +1012,44 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
          GCCounters::myCounters().clean_copied_bytes += length;
       }
    }
-   ctx.to_fix_pids.clear();
+   ctx.to_fix_pids.pop_back();
    bf.reset();
+}
+// -------------------------------------------------------------------------------------
+// The log of the RU epoch is read once for all the queued pages (FLAGS_bg_page_fixer_log_io_uring), then each page is
+// redone, recompressed and packed. Their IO frames are released by flushPacker().
+void RUBackgroundPageFixer::fixQueuedPages(ThreadContext& ctx)
+{
+   ensure_equal(ctx.to_redo.size(), ctx.to_fix_pids.size());
+   if (ctx.to_redo.empty()) {
+      return;
+   }
+   const Phase phase = static_cast<Phase>(stats.threads[ctx.gc_id].phase.load(std::memory_order_relaxed));
+   setPhase(ctx, Phase::FIX);
+   if (FLAGS_bg_page_fixer_log_io_uring) {
+      readLogRecords(ctx, ctx.to_redo.data(), ctx.to_redo.size());
+   }
+   for (const u64 idx : ctx.to_redo) {
+      const page_info& info = ctx.to_fix_pids[idx];
+      const PID location = ctx.fix_locations[idx];
+      BufferFrame& bf = ctx.buf_pages[idx];
+      redoPage(ctx, idx);
+      if (FLAGS_compression_zero_free_space) {
+         reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->zeroFreeSpace();
+      }
+      if (ctx.packer->full()) {
+         flushPacker(ctx);
+      }
+      ru_epoch_t written_ru_epoch;
+      const PID new_location = ctx.packer->add(bf.page, /* compress */ true, location, written_ru_epoch);
+      bf.page.ru_epoch = written_ru_epoch;
+      bm.countPackedPage(bf.page);
+      ctx.moved.push_back({info.pid, location, new_location, written_ru_epoch, true, info.last_lsn});
+      bf.reset();
+   }
+   ctx.to_redo.clear();
+   ctx.to_fix_pids.clear();
+   setPhase(ctx, phase);
 }
 // -------------------------------------------------------------------------------------
 // Pre: bf was found through the parent swip of pid, src is the copy of pid at location read from the reclaimed RU epoch.
@@ -1018,7 +1058,8 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
 // Whoever changes the location of a cached page (or rewrites an uncompressed one in place) holds is_being_written_back:
 // once it is held, the copy at location is still the current one iff the page map points to it and its block is still
 // in the reclaimed RU epoch.
-RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryMoveHotPage(ThreadContext& ctx, BufferFrame& bf, PID pid, PID location, const u8* src)
+RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryMoveHotPage(ThreadContext& ctx, u64 idx, BufferFrame& bf, PID pid, PID location,
+                                                                     const u8* src)
 {
    CompressedSpace& space = *bm.compressed_space;
    jumpmuTry()
@@ -1047,11 +1088,11 @@ RUBackgroundPageFixer::HotPage RUBackgroundPageFixer::tryMoveHotPage(ThreadConte
       ru_epoch_t written_ru_epoch;
       PID new_location;
       if (bf.isDirty()) {
-         // As tryWriteBackHotPage() does, the copy replaces the one read from the block in buf_pages[0].
+         // As tryWriteBackHotPage() does, the copy replaces the one read from the block in buf_pages[idx].
          bm.prepareDirtyWriteBack(bf);
          ensure_equal(bf.page.magic_debugging_number, pid);
          ++bf.page.write_back_count;
-         BufferFrame::Page& copy = ctx.buf_pages[0].page;
+         BufferFrame::Page& copy = ctx.buf_pages[idx].page;
          DTRegistry::global_dt_registry.checkpoint(bf.page.dt_id, bf, copy);
          auto& node = *reinterpret_cast<btree::BTreeNode*>(copy.dt);
          if (FLAGS_compression_zero_free_space) {
@@ -1113,6 +1154,7 @@ void RUBackgroundPageFixer::retryDeferredPages(ThreadContext& ctx)
       }
       ctx.retried_pages.clear();
       setPhase(ctx, Phase::RETRY);
+      fixQueuedPages(ctx);
       flushPacker(ctx);
       COUNTERS_BLOCK(gc) { GCCounters::myCounters().batch_retry_rounds++; }
       if (!ctx.deferred_pages.empty()) {
@@ -1507,6 +1549,7 @@ void RUBackgroundPageFixer::prepLogBlockRead(ThreadContext& ctx, u64 idx, u32 i,
 {
    ensure(lsn != INVALID_LSN);
    ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+   ensure_lt(idx * ctx.log_slots_per_page + i, ctx.log_slots);
    struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.l_ring);
    ensure(sqe != nullptr);
    // A log record never crosses a 4 KiB boundary (see Logging::walEnsureEnoughSpace()).
