@@ -106,8 +106,9 @@ u8* threadLocalBlockBuffer();
 class CompressedSpace
 {
   public:
-   // The logical pages may outnumber the physical blocks, we assume a compression ratio of up to 2.
-   static constexpr u64 LOGICAL_PAGES_FACTOR = 2;
+   // A block holds up to FLAGS_compression_max_pages_per_block pages, so the logical pages may outnumber the physical
+   // blocks by that factor. Compile time upper bound of the flag.
+   static constexpr u32 MAX_PAGES_PER_BLOCK = 4;
    CompressedSpace(u64 blocks_count, u64 logical_pages, u32 writers_count);
    ~CompressedSpace();
    // -------------------------------------------------------------------------------------
@@ -191,7 +192,8 @@ class CompressedSpace
 };
 // -------------------------------------------------------------------------------------
 // Packs the compressed pages of a writer into blocks, the caller writes them out after seal().
-// All the blocks of a batch stay open until seal(), a page goes to the fullest block it fits in (best fit).
+// All the blocks of a batch stay open until seal(), a page goes to the fullest block it fits in (best fit) that holds
+// fewer than FLAGS_compression_max_pages_per_block pages.
 class LBAChain;  // Forward declaration
 class BlockPacker
 {
@@ -239,13 +241,16 @@ class BlockPacker
    std::vector<u64> block_ids;
    // Per slot: bytes packed so far, the next page goes at this offset.
    std::vector<u32> used;
+   // Per slot: number of pages packed so far, at most FLAGS_compression_max_pages_per_block.
+   std::vector<u32> pages;
    // Per slot: the block is rewritten in place, it is already sealed.
    std::vector<bool> in_place;
    // Per slot, with an LBA chain: the RU epoch returned when the block got recorded.
    std::vector<ru_epoch_t> block_ru_epochs;
    // Records the block of the slot in the LBA chain, if any.
    void recordBlock(u64 slot);
-   // Copies the length bytes of scratch to the fullest open block they fit in, a new one if none, returns its location.
+   // Copies the length bytes of scratch to the fullest open block they fit in (page count permitting), a new one if
+   // none, returns its location.
    PID place(u32 length, ru_epoch_t& ru_epoch);
    // PAGE_SIZE buffer the page is compressed into before being copied to its block.
    std::unique_ptr<u8[]> scratch;

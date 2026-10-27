@@ -144,5 +144,6 @@ DEFINE_bool(fdp_count_gc_events, false, "Count the device GC events (FDP Media R
 // -------------------------------------------------------------------------------------
 DEFINE_bool(compress_pages, false, "Experimental: compress pages on write back and pack them out-of-place into 4 KiB blocks (no crash recovery)");
 DEFINE_int32(compression_level, 1, "zstd compression level used with compress_pages");
+DEFINE_uint32(compression_max_pages_per_block, 2, "Maximum number of logical pages packed into a 4 KiB block, also the ratio of logical pages to physical blocks (at most CompressedSpace::MAX_PAGES_PER_BLOCK)");
 DEFINE_bool(compression_zero_free_space, true, "Zero the free space of a B-Tree node before compressing it");
 DEFINE_string(compression_space_map_file, "./compression_space_map.bin", "Where the live bytes of the compressed blocks are persisted to and recovered from");

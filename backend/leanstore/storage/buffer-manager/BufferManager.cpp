@@ -60,12 +60,16 @@ BufferManager::BufferManager(s32 ssd_fd, const SSDLayout& ssd_layout, u32 max_op
   max_open_ru_epochs(max_open_ru_epochs),
   persistant_ru_state_offset(ssd_layout.persistant_ru_state_offset),
   max_pid(ssd_layout.dbPages()),
-  pid_space(FLAGS_compress_pages ? ssd_layout.dbPages() * CompressedSpace::LOGICAL_PAGES_FACTOR : ssd_layout.dbPages())
+  pid_space(FLAGS_compress_pages ? ssd_layout.dbPages() * FLAGS_compression_max_pages_per_block : ssd_layout.dbPages())
 {
    // PIDs are used as raw page offsets on ssd_fd.
    ensure(ssd_layout.db_start == 0);
    if (FLAGS_bg_page_fixer_variant != 1 && FLAGS_bg_page_fixer_variant != 2) {
       SetupFailed("bg_page_fixer_variant must be 1 or 2");
+   }
+   if (FLAGS_compress_pages &&
+       (FLAGS_compression_max_pages_per_block == 0 || FLAGS_compression_max_pages_per_block > CompressedSpace::MAX_PAGES_PER_BLOCK)) {
+      SetupFailed("compression_max_pages_per_block must be in [1, " + std::to_string(CompressedSpace::MAX_PAGES_PER_BLOCK) + "]");
    }
    // -------------------------------------------------------------------------------------
    // Init DRAM pool

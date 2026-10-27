@@ -311,7 +311,7 @@ void CompressedSpace::recover(const std::string& path, const std::vector<u64>& r
       SetupFailed("The compression space map " + path + " was written by an older build, please load the database again");
    }
    if (header[1] != blocks_count || header[2] != logical_pages) {
-      SetupFailed("The compression space map was written for a database of a different size");
+      SetupFailed("The compression space map was written for a database of a different size or compression_max_pages_per_block");
    }
    const u64 next = header[3];
    const PID pids_end = header[4];
@@ -358,6 +358,7 @@ BlockPacker::BlockPacker(CompressedSpace& space, u8* blocks, u64 max_blocks, LBA
       max_blocks(max_blocks),
       block_ids(max_blocks),
       used(max_blocks),
+      pages(max_blocks),
       in_place(max_blocks),
       block_ru_epochs(max_blocks),
       scratch(std::make_unique<u8[]>(PAGE_SIZE))
@@ -383,6 +384,7 @@ PID BlockPacker::add(const u8* page, bool compress, PID current_location, ru_epo
       const u64 slot = blocks_count++;
       block_ids[slot] = cpid::block(current_location);
       used[slot] = PAGE_SIZE;
+      pages[slot] = 1;
       in_place[slot] = true;
       recordBlock(slot);
       std::memcpy(block(slot), page, PAGE_SIZE);
@@ -419,7 +421,7 @@ PID BlockPacker::place(u32 length, ru_epoch_t& ru_epoch)
 {
    u64 slot = blocks_count;
    for (u64 b_i = 0; b_i < blocks_count; b_i++) {
-      if (used[b_i] + length <= PAGE_SIZE && (slot == blocks_count || used[b_i] > used[slot])) {
+      if (used[b_i] + length <= PAGE_SIZE && pages[b_i] < FLAGS_compression_max_pages_per_block && (slot == blocks_count || used[b_i] > used[slot])) {
          slot = b_i;
       }
    }
@@ -427,6 +429,7 @@ PID BlockPacker::place(u32 length, ru_epoch_t& ru_epoch)
       ensure(!full());
       block_ids[slot] = space.allocateBlock();
       used[slot] = 0;
+      pages[slot] = 0;
       in_place[slot] = false;
       recordBlock(slot);
       blocks_count++;
@@ -443,6 +446,7 @@ PID BlockPacker::place(u32 length, ru_epoch_t& ru_epoch)
    std::memcpy(block(slot) + used[slot], scratch.get(), length);
    const PID pid = cpid::make(blockOffset(slot) + used[slot], length);
    used[slot] += length;
+   pages[slot]++;
    space.written_pages.fetch_add(1, std::memory_order_relaxed);
    space.written_compressed_bytes.fetch_add(length, std::memory_order_relaxed);
    return pid;

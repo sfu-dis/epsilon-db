@@ -131,5 +131,6 @@ DECLARE_bool(fdp_count_gc_events);
 // -------------------------------------------------------------------------------------
 DECLARE_bool(compress_pages);
 DECLARE_int32(compression_level);
+DECLARE_uint32(compression_max_pages_per_block);
 DECLARE_bool(compression_zero_free_space);
 DECLARE_string(compression_space_map_file);
