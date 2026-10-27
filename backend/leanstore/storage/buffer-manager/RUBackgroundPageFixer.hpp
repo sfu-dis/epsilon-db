@@ -146,6 +146,14 @@ class RUBackgroundPageFixer
    void redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 data);
    // The redo part, maps the page to the open RU epoch for its write back.
    void redoPage(ThreadContext& ctx, u64 idx);
+   // FLAGS_bg_page_fixer_log_io_uring: reads the log records of the pages queued in to_redo, then redoes and writes them back.
+   void redoBatch(ThreadContext& ctx);
+   // FLAGS_bg_page_fixer_log_io_uring: reads the log records of the registered pages at idxs into their log blocks, with
+   // batched io_uring reads.
+   void readLogRecords(ThreadContext& ctx, const u64* idxs, u64 count);
+   void prepLogBlockRead(ThreadContext& ctx, u64 idx, u32 i, LID lsn);
+   // Where redoPage() finds a log record: in the log blocks read for the page, or in the mmap'ed log.
+   cr::WALEntry* logRecord(ThreadContext& ctx, u64 idx, u32 i, LID lsn);
    void ackFixedPage(ThreadContext& ctx, io_uring_cqe* cqe);
    // Write back of the pages of the reclaimed log that are cached (hot).
    void fixHotPages(ThreadContext& ctx);

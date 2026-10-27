@@ -100,6 +100,7 @@ DECLARE_uint32(bg_page_fixer_variant);
 DECLARE_bool(bg_page_fixer_tree_lookup);
 DECLARE_bool(bg_page_fixer_tree_lookup_state_filter);
 DECLARE_bool(discard_state_paranoid);
+DECLARE_bool(bg_page_fixer_log_io_uring);
 DECLARE_uint32(lba_chain_buffer_blocks);
 DECLARE_bool(lba_chain_verify);
 DECLARE_uint32(max_log_records_to_discard);

@@ -58,6 +58,7 @@ struct page_info {
 // -------------------------------------------------------------------------------------
 struct RUBackgroundPageFixer::ThreadContext {
    // FIXME(mfd): Temporely set it large enough
+   // Probably the batch is quite large when we use the bg page fixer variant 2.
    static constexpr u32 batch_size = 256;
    // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
    // written with. The blocks a batch frees make the pool of the next one.
@@ -106,6 +107,15 @@ struct RUBackgroundPageFixer::ThreadContext {
    std::vector<DeferredPage> deferred_pages;
    std::vector<DeferredPage> retried_pages;
    u64 total_clean_copied = 0;  // in the current RU epoch
+   // -------------------------------------------------------------------------------------
+   // FLAGS_bg_page_fixer_log_io_uring: the 4 KiB log blocks holding the log records of the pages to fix, log_slots_per_page
+   // (bm.max_pending_lsn) slots per page indexed like buf_pages, and the ring they are read with.
+   std::unique_ptr<u8, decltype(&std::free)> log_blocks{nullptr, &std::free};
+   u32 log_slots_per_page = 0;
+   struct io_uring l_ring;
+   // Pages of the current batch whose log records are to be read before their redo, indexes into buf_pages.
+   std::vector<u64> to_redo;
+   u8* logBlock(u64 idx, u32 i) { return log_blocks.get() + (idx * log_slots_per_page + i) * PAGE_SIZE; }
    // -------------------------------------------------------------------------------------
    // Jobs of to_gc_epochs already picked up, and those left to collect.
    u64 picked_up_jobs = 0;
@@ -218,6 +228,17 @@ void RUBackgroundPageFixer::run(u32 gc_id)
       ensure(ctx.read_blocks != nullptr && ctx.packer_blocks != nullptr);
       ctx.packer = std::make_unique<BlockPacker>(*bm.compressed_space, ctx.packer_blocks.get(), ThreadContext::compressed_batch_blocks,
                                                  bm.lba_chain.get());
+   }
+   if (FLAGS_bg_page_fixer_log_io_uring) {
+      ensure(bm.max_pending_lsn > 0);
+      ctx.log_slots_per_page = bm.max_pending_lsn;
+      const u64 slots = u64(ThreadContext::batch_size) * ctx.log_slots_per_page;
+      ctx.log_blocks.reset(static_cast<u8*>(std::aligned_alloc(PAGE_SIZE, slots * PAGE_SIZE)));
+      ensure(ctx.log_blocks != nullptr);
+      // Every log record of a batch is read in one submission (the log chain walk aside).
+      const int rc = io_uring_queue_init(slots, &ctx.l_ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+      posix_check(rc == 0);
+      ctx.to_redo.reserve(ThreadContext::batch_size);
    }
    while (bm.bg_threads_keep_running) {
       setPhase(ctx, Phase::IDLE);
@@ -393,10 +414,12 @@ void RUBackgroundPageFixer::mapRUEpochLog(ThreadContext& ctx, cr::Logging& loggi
       std::this_thread::sleep_for(std::chrono::microseconds(100));
    }
 
-   set.mmaped_log = mmap(nullptr, logging.wal_lsn_counter, PROT_READ, MAP_PRIVATE, bm.log_fd, logging.log_segment_start);
-   if (set.mmaped_log == MAP_FAILED) {
-      perror("mmap");
-      raise(SIGTRAP);
+   if (!FLAGS_bg_page_fixer_log_io_uring) {
+      set.mmaped_log = mmap(nullptr, logging.wal_lsn_counter, PROT_READ, MAP_PRIVATE, bm.log_fd, logging.log_segment_start);
+      if (set.mmaped_log == MAP_FAILED) {
+         perror("mmap");
+         raise(SIGTRAP);
+      }
    }
    set.log_segment_start = logging.log_segment_start;
    set.log_segment_size = logging.wal_lsn_counter;
@@ -446,7 +469,7 @@ void RUBackgroundPageFixer::finishRUEpoch(ThreadContext& ctx, u64 seconds_taken)
    const u64 fixed_pages_in_ru = set.total_fixed.load();
    const bool log_already_reclaimed = set.log_reclaimed.load();
    set.m.lock();
-   if (!log_already_reclaimed) {
+   if (!log_already_reclaimed && !FLAGS_bg_page_fixer_log_io_uring) {
       const int rc = munmap(set.mmaped_log, ctx.cur_log_segment_size);
       ensure_equal(rc, 0);
       set.mmaped_log = nullptr;
@@ -484,9 +507,11 @@ void RUBackgroundPageFixer::finishRUEpochLogReclaim(ThreadContext& ctx, u64 seco
    auto& logging = cr::LogManager::getLog(ctx.current_gc_epoch);
    const u64 fixed_pages_in_ru = set.total_fixed.load();
    set.m.lock();
-   const int rc = munmap(set.mmaped_log, ctx.cur_log_segment_size);
-   ensure_equal(rc, 0);
-   set.mmaped_log = nullptr;
+   if (!FLAGS_bg_page_fixer_log_io_uring) {
+      const int rc = munmap(set.mmaped_log, ctx.cur_log_segment_size);
+      ensure_equal(rc, 0);
+      set.mmaped_log = nullptr;
+   }
    set.afterLogReclaim();
    stats.cur_epoch.store(-1, std::memory_order_relaxed);
    logging.reset(/* keep_redirecting */ true);
@@ -627,9 +652,14 @@ void RUBackgroundPageFixer::fixLBAChainBatchInTree(ThreadContext& ctx, const PID
    setPhase(ctx, Phase::LOOKUP);
    for (u64 idx = 0; idx < to_read; ++idx) {
       if (lookUpPageInTree(ctx, idx) == TreeLookup::FIX) {
-         redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
+         if (FLAGS_bg_page_fixer_log_io_uring) {
+            ctx.to_redo.push_back(idx);
+         } else {
+            redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
+         }
       }
    }
+   redoBatch(ctx);
    waitForFixedPagesWriteBack(ctx);
    ctx.to_fix_pids.clear();
 }
@@ -949,6 +979,10 @@ void RUBackgroundPageFixer::movePage(ThreadContext& ctx, PID pid, PID location, 
    } else if (outcome == TreeLookup::FIX) {
       setPhase(ctx, Phase::FIX);
       const LID last_lsn = ctx.to_fix_pids[0].last_lsn;
+      if (FLAGS_bg_page_fixer_log_io_uring) {
+         const u64 idx = 0;
+         readLogRecords(ctx, &idx, 1);
+      }
       redoPage(ctx, 0);
       if (FLAGS_compression_zero_free_space) {
          reinterpret_cast<btree::BTreeNode*>(bf.page.dt)->zeroFreeSpace();
@@ -1376,6 +1410,7 @@ void RUBackgroundPageFixer::fixPages(ThreadContext& ctx, u64 pages_to_fix)
          ensure_equal(i, remaining);
          io_uring_cq_advance(&ctx.r_ring, remaining);
       }
+      redoBatch(ctx);
       waitForFixedPagesWriteBack(ctx);
    }
    ctx.to_fix_pids.clear();
@@ -1437,7 +1472,97 @@ void RUBackgroundPageFixer::fixPage(ThreadContext& ctx, struct io_uring_cqe* cqe
       }
       return;
    }
+   if (FLAGS_bg_page_fixer_log_io_uring) {
+      // Fixed by redoBatch() once every page of the batch is read.
+      ctx.to_redo.push_back(idx);
+      return;
+   }
    redoAndWriteBack(ctx, idx, data);
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::redoBatch(ThreadContext& ctx)
+{
+   if (ctx.to_redo.empty()) {
+      return;
+   }
+   readLogRecords(ctx, ctx.to_redo.data(), ctx.to_redo.size());
+   for (const u64 idx : ctx.to_redo) {
+      redoAndWriteBack(ctx, idx, (idx << 48) | ctx.to_fix_pids[idx].pid);
+   }
+   ctx.to_redo.clear();
+}
+// -------------------------------------------------------------------------------------
+// The i-th log record read for the page at idx: the i-th of its LSN list, or the i-th of the backward walk of the log
+// chain from its last LSN when it has no list.
+cr::WALEntry* RUBackgroundPageFixer::logRecord(ThreadContext& ctx, u64 idx, u32 i, LID lsn)
+{
+   ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+   if (FLAGS_bg_page_fixer_log_io_uring) {
+      return reinterpret_cast<cr::WALEntry*>(ctx.logBlock(idx, i) + lsnOffset(lsn) % PAGE_SIZE);
+   }
+   return reinterpret_cast<cr::WALEntry*>(&ctx.log_records[lsnOffset(lsn)]);
+}
+// -------------------------------------------------------------------------------------
+void RUBackgroundPageFixer::prepLogBlockRead(ThreadContext& ctx, u64 idx, u32 i, LID lsn)
+{
+   ensure(lsn != INVALID_LSN);
+   ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
+   struct io_uring_sqe* sqe = io_uring_get_sqe(&ctx.l_ring);
+   ensure(sqe != nullptr);
+   // A log record never crosses a 4 KiB boundary (see Logging::walEnsureEnoughSpace()).
+   const u64 off = utils::downAlign(cr::LogManager::global->LSN2DevOffset(lsn), PAGE_SIZE);
+   io_uring_prep_read(sqe, bm.log_fd, ctx.logBlock(idx, i), PAGE_SIZE, off);
+   io_uring_sqe_set_data64(sqe, lsn);
+}
+// -------------------------------------------------------------------------------------
+// The log of the RU epoch is persisted (see mapRUEpochLog()) and sealed, so the device holds every log record to read.
+// The pages with an LSN list get all their log records read at once. The others walk the log chain backwards from their
+// last LSN, one log record per round as the next LSN is the prev_lsn of the record just read.
+void RUBackgroundPageFixer::readLogRecords(ThreadContext& ctx, const u64* idxs, u64 count)
+{
+   ensure_lte(count, ThreadContext::batch_size);
+   LID walk_lsn[ThreadContext::batch_size];
+   u32 to_read = 0;
+   for (u64 k = 0; k < count; ++k) {
+      const u64 idx = idxs[k];
+      const page_info& info = ctx.to_fix_pids[idx];
+      ensure(info.nb_log_records > 0 && info.nb_log_records <= ctx.log_slots_per_page);
+      if (info.lsn_list != nullptr) {
+         for (u8 i = 0; i < info.nb_log_records; ++i) {
+            prepLogBlockRead(ctx, idx, i, info.lsn_list[i]);
+         }
+         to_read += info.nb_log_records;
+      } else {
+         walk_lsn[k] = info.last_lsn;
+         prepLogBlockRead(ctx, idx, 0, walk_lsn[k]);
+         ++to_read;
+      }
+   }
+   for (u32 round = 1; to_read > 0; ++round) {
+      const int s = io_uring_submit_and_wait(&ctx.l_ring, to_read);
+      ensure_equal(s, static_cast<int>(to_read));
+      struct io_uring_cqe* cqe;
+      u32 head;
+      u32 completed = 0;
+      io_uring_for_each_cqe(&ctx.l_ring, head, cqe)
+      {
+         ensure_equal(cqe->res, static_cast<s32>(PAGE_SIZE));
+         ++completed;
+      }
+      ensure_equal(completed, to_read);
+      io_uring_cq_advance(&ctx.l_ring, to_read);
+      to_read = 0;
+      for (u64 k = 0; k < count; ++k) {
+         const u64 idx = idxs[k];
+         const page_info& info = ctx.to_fix_pids[idx];
+         if (info.lsn_list != nullptr || round >= info.nb_log_records) {
+            continue;
+         }
+         walk_lsn[k] = logRecord(ctx, idx, round - 1, walk_lsn[k])->prev_lsn;
+         prepLogBlockRead(ctx, idx, round, walk_lsn[k]);
+         ++to_read;
+      }
+   }
 }
 // -------------------------------------------------------------------------------------
 void RUBackgroundPageFixer::redoAndWriteBack(ThreadContext& ctx, u64 idx, u64 data)
@@ -1469,6 +1594,8 @@ void RUBackgroundPageFixer::redoPage(ThreadContext& ctx, u64 idx)
    const auto& page_to_fix_info = ctx.to_fix_pids[idx];
 
 #if DEBUG_BACKWARD_LOG_CHAIN_TRAVERSE
+   // Walks the mmap'ed log past the log records read for the page.
+   ensure(!FLAGS_bg_page_fixer_log_io_uring);
    ensure(page_to_fix_info.nb_log_records > 0);
    while (lsn != INVALID_LSN) {
       ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
@@ -1507,9 +1634,7 @@ void RUBackgroundPageFixer::redoPage(ThreadContext& ctx, u64 idx)
       // Only the last LSN is known, the others are in the parent.
       for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
          ensure(lsn != INVALID_LSN);
-         ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
-         u64 off = lsnOffset(lsn);
-         auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
+         auto* entry = logRecord(ctx, idx, i, lsn);
 
          bool ok = bm.logRecordSanityCheck(entry, page, lsn);
          ensure(ok);
@@ -1521,9 +1646,7 @@ void RUBackgroundPageFixer::redoPage(ThreadContext& ctx, u64 idx)
    } else {
       for (u8 i = 0; i < page_to_fix_info.nb_log_records; ++i) {
          LID lsn = page_to_fix_info.lsn_list[i];
-         ensure_equal(lsnLogID(lsn), ctx.currently_reclaiming_log_id);
-         u64 off = lsnOffset(lsn);
-         auto* entry = reinterpret_cast<cr::WALEntry*>(&ctx.log_records[off]);
+         auto* entry = logRecord(ctx, idx, i, lsn);
 
          bool ok = bm.logRecordSanityCheck(entry, page, lsn);
          ensure(ok);

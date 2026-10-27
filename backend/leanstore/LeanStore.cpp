@@ -558,6 +558,9 @@ void LeanStore::verifyFlags()
          SetupFailed("compress_pages only supports the Default placement policy, all the blocks go to the default RUH");
       }
    }
+   if (FLAGS_bg_page_fixer_log_io_uring && FLAGS_bg_page_fixer_variant != 2) {
+      SetupFailed("bg_page_fixer_log_io_uring requires bg_page_fixer_variant 2");
+   }
    if (FLAGS_lba_chain_verify && (!FLAGS_compress_pages || FLAGS_bg_page_fixer_variant != 2)) {
       SetupFailed("lba_chain_verify requires compress_pages and bg_page_fixer_variant 2");
    }

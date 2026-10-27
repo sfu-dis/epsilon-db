@@ -111,6 +111,8 @@ DEFINE_bool(bg_page_fixer_tree_lookup_state_filter, false, "bg_page_fixer_tree_l
             "before they are read, a clean page or one discarded into another log is neither read nor looked up");
 DEFINE_bool(discard_state_paranoid, false, "bg_page_fixer_tree_lookup: the page state is maintained (and allocated) only to check it "
             "against the parent swip, the parent alone is needed otherwise");
+DEFINE_bool(bg_page_fixer_log_io_uring, false, "bg_page_fixer_variant 2: the bg page fixer does not mmap the log of the RU epoch, it reads "
+            "the log records of the pages to fix with batched io_uring reads of 4 KiB log blocks");
 DEFINE_uint32(lba_chain_buffer_blocks, 1024, "bg_page_fixer_variant 2: 4 KiB blocks of the in memory ring the writers record their LBAs into");
 DEFINE_bool(lba_chain_verify, false, "bg_page_fixer_variant 2 with compress_pages: checks at startup and shutdown that every page on the SSD "
             "is listed in the LBA chain of its RU epoch");
