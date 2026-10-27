@@ -270,6 +270,25 @@ void CompressedSpace::releaseBlock(u64 block)
    free_blocks.fetch_add(1, std::memory_order_relaxed);
 }
 // -------------------------------------------------------------------------------------
+void CompressedSpace::releaseBlocks(const u64* blocks, u64 n)
+{
+   std::unique_lock guard(shared_free_list.mutex);
+   shared_free_list.blocks.insert(shared_free_list.blocks.end(), blocks, blocks + n);
+}
+// -------------------------------------------------------------------------------------
+void CompressedSpace::trimFreeList(u64 max_blocks)
+{
+   ensure(tls_writer_thread_id >= 0 && static_cast<u32>(tls_writer_thread_id) < writers_count);
+   auto& mine = writer_free_lists[tls_writer_thread_id];
+   std::unique_lock guard(mine.mutex);
+   if (mine.blocks.size() <= max_blocks) {
+      return;
+   }
+   // allocateBlock() takes from the front, the most recently freed blocks at the back are the ones given away.
+   releaseBlocks(mine.blocks.data() + max_blocks, mine.blocks.size() - max_blocks);
+   mine.blocks.resize(max_blocks);
+}
+// -------------------------------------------------------------------------------------
 u64 CompressedSpace::usedBlocks()
 {
    return std::min(next_unused_block.load(), blocks_count) - free_blocks.load();

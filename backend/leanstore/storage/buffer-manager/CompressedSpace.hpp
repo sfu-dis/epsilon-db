@@ -142,9 +142,12 @@ class CompressedSpace
    // BufferManager::countBlockWrite()). A freed block keeps its RU epoch until it is written again.
    ru_epoch_t blockRUEpoch(u64 block) const { return block_ru_epochs[block].load(std::memory_order_acquire); }
    ru_epoch_t exchangeBlockRUEpoch(u64 block, ru_epoch_t ru_epoch) { return block_ru_epochs[block].exchange(ru_epoch, std::memory_order_acq_rel); }
-   // Tops up the free list of the calling writer to n blocks, so that it reuses its own freed blocks first
-   // (allocateBlock() pops the most recently freed one). Pre: called by a writer.
+   // Tops up the free list of the calling writer to n blocks, so that it reuses its own freed blocks first.
+   // Pre: called by a writer.
    void reserveBlocks(u64 n);
+   // Moves the free blocks of the calling writer beyond the first max_blocks to the shared free list, so that a writer
+   // that frees more than it allocates (the bg page fixers) does not hoard them. Pre: called by a writer.
+   void trimFreeList(u64 max_blocks);
    // Frees the copy of a page that got rewritten elsewhere or deleted, no-op if the page is not on the SSD.
    void free(PID pid);
    // -------------------------------------------------------------------------------------
@@ -163,6 +166,8 @@ class CompressedSpace
 
   private:
    void releaseBlock(u64 block);
+   // Hands a batch of free blocks to the shared free list under a single lock.
+   void releaseBlocks(const u64* blocks, u64 n);
    // -------------------------------------------------------------------------------------
    struct alignas(CACHE_LINE_SIZE) BlockFreeList {
       // Only contended at shutdown, where more threads than writers flush the buffer pool.

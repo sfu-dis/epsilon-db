@@ -295,8 +295,9 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
 
    if (FLAGS_compress_pages) {
       // The GC threads split the blocks of the LBA chain in batches. The pool of blocks the moved pages are written to
-      // is the free list of the thread: the blocks a batch frees are the first ones reused, which invalidates their
-      // copy in this RU epoch on the SSD. What is left of the pool carries over to the next RU epoch.
+      // is the free list of the thread: the blocks a batch frees are reused in queue FILO fashion,
+      // which invalidates their copy on SSD of freed RU epochs one at a time in the order in which they got freed.
+      // What is left of the pool carries over to the next RU epoch.
       bm.compressed_space->reserveBlocks(ThreadContext::compressed_batch_blocks);
       const u64 entries = set.lba_chain_entries.size();
       while (true) {
@@ -354,6 +355,10 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start);
    set.total_fixed.fetch_add(ctx.total_fixed);
    set.total_clean_copied.fetch_add(ctx.total_clean_copied);
+   if (FLAGS_compress_pages) {
+      // The blocks freed by the fixers accumulate in the free list of this thread, keep an RU worth of them.
+      bm.compressed_space->trimFreeList(BufferManager::RU_SIZE/FLAGS_ru_gc_threads);
+   }
    if (set.done_gc.fetch_sub(1) == 1) {
       setPhase(ctx, Phase::FINISH);
       if (ctx.log_only) {
