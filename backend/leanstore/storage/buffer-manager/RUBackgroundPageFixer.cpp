@@ -704,8 +704,17 @@ RUBackgroundPageFixer::TreeLookup RUBackgroundPageFixer::lookUpPageInTree(Thread
    page_info& info = ctx.to_fix_pids[idx];
    const PID pid = info.pid;
    BufferFrame::Page& page = ctx.buf_pages[idx].page;
-   ensure_equal(page.magic_debugging_number, pid);
    COUNTERS_BLOCK(gc) { GCCounters::myCounters().tree_lookups++; }
+   if (location == 0 && page.magic_debugging_number != pid) {
+      // Deleted since and its pid recycled for an LBA chain block (LBAChain::allocateBlock()), which no LBA chain lists:
+      // not a page anymore.
+      const auto& chain_block = reinterpret_cast<const LBAChainBlock&>(page);
+      ensure_equal(chain_block.magic, LBAChainBlock::MAGIC);
+      ensure_equal(chain_block.pid, pid);
+      COUNTERS_BLOCK(gc) { GCCounters::myCounters().dead_pages++; }
+      return TreeLookup::SKIP;
+   }
+   ensure_equal(page.magic_debugging_number, pid);
    if (page.ru_epoch != ctx.current_gc_epoch) {
       // Newer: written back again since. Older: the write back to this RU epoch is still in flight, the page is cached
       // and not discarded. Either way not discarded into this log.
