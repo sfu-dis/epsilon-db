@@ -15,6 +15,8 @@ struct CRCounters {
    atomic<u64> gct_phase_2_ms = 0;
    atomic<u64> gct_write_ms = 0;
    atomic<u64> gct_write_bytes = 0;
+   atomic<u64> gct_blocks = 0;       // Log device blocks written by the GCT
+   atomic<u64> gct_blocks_full = 0;  // Those that are full
    // -------------------------------------------------------------------------------------
    atomic<u64> gct_rounds = 0;
    atomic<u64> gct_committed_tx = 0;

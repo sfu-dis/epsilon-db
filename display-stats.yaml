@@ -90,6 +90,11 @@ columns:
     enabled: false
     source: cr
 
+  gct_block_full_pct:
+    field: "WAL full blk %"
+    enabled: true
+    source: cr
+
   failed_try_pop:
     field: "failed trypop"
     enabled: false

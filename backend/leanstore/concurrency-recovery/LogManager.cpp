@@ -295,6 +295,13 @@ void LogManager::add_pwrite(u32 log_i, u64 buffer_offset, u64 size, bool block_f
    {
       CRCounters::myCounters().gct_write_bytes += size;
    }
+   COUNTERS_BLOCK(gct_block_full)
+   {
+      // Only the last block of a write can be partially filled.
+      const u64 blocks = size / LOG_DEV_BLK_SIZE;
+      CRCounters::myCounters().gct_blocks += blocks;
+      CRCounters::myCounters().gct_blocks_full += block_full ? blocks : blocks - 1;
+   }
 }
 // -------------------------------------------------------------------------------------
 void LogManager::submitAndWait()

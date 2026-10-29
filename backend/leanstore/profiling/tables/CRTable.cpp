@@ -38,6 +38,7 @@ void CRTable::open()
    // -------------------------------------------------------------------------------------
    columns.emplace("gct_write_gib",
                    [&](Column& col) { col << (sum(CRCounters::cr_counters, &CRCounters::gct_write_bytes) * 1.0) / 1024.0 / 1024.0 / 1024.0; });
+   columns.emplace("gct_block_full_pct", [&](Column& col) { col << (gct_blocks ? 100.0 * gct_blocks_full / gct_blocks : 0.0); });
    // -------------------------------------------------------------------------------------
    columns.emplace("cc_versions_space_removed", [&](Column& col) { col << sum(CRCounters::cr_counters, &CRCounters::cc_versions_space_removed); });
    // -------------------------------------------------------------------------------------
@@ -82,6 +83,8 @@ void CRTable::next()
    p2 = sum(CRCounters::cr_counters, &CRCounters::gct_phase_2_ms);
    write = sum(CRCounters::cr_counters, &CRCounters::gct_write_ms);
    total = p1 + p2 + write;
+   gct_blocks = sum(CRCounters::cr_counters, &CRCounters::gct_blocks);
+   gct_blocks_full = sum(CRCounters::cr_counters, &CRCounters::gct_blocks_full);
    clear();
    for (auto& c : columns) {
       c.second.generator(c.second);
