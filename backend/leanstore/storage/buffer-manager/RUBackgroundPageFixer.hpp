@@ -108,8 +108,9 @@ class RUBackgroundPageFixer
    void finishRUEpochLogReclaim(ThreadContext& ctx, u64 seconds_taken);
    // FLAGS_bg_page_fixer_variant 2: reads the LBA chain of the RU epoch into the set.
    void loadLBAChain(RUEpochDiscardSet& set, ru_epoch_t ru_epoch, bool with_entries);
-   // Scans the next 4 KiB of the log and issues the reads of the discarded pages to fix.
-   u64 scanLogBatch(ThreadContext& ctx, u64& offset);
+   // Scans a 4 KiB batch of the log up to fix_up_to and issues the reads of the discarded pages to fix, at most
+   // batch_size of them per call.
+   u64 scanLogBatch(ThreadContext& ctx, u64& offset, u64 fix_up_to);
    // FLAGS_bg_page_fixer_variant 2: same for a batch of the PIDs listed in the LBA chain.
    u64 scanLBAChainBatch(ThreadContext& ctx, const PID* pids, u64 count);
    // FLAGS_bg_page_fixer_tree_lookup: reads every page of a batch of the LBA chain, finds the discarded ones through

@@ -57,8 +57,7 @@ struct page_info {
 };
 // -------------------------------------------------------------------------------------
 struct RUBackgroundPageFixer::ThreadContext {
-   // FIXME(mfd): Temporely set it large enough
-   // Probably the batch is quite large when we use the bg page fixer variant 2.
+   // Pages fixed per batch. The scans stop once a batch is full (see scanLogBatch()).
    static constexpr u32 batch_size = 32;
    // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
    // written with. The blocks a batch frees make the pool of the next one.
@@ -335,17 +334,21 @@ void RUBackgroundPageFixer::collectRUEpoch(ThreadContext& ctx, GCJob job)
          stats.chain_done.fetch_add(count, std::memory_order_relaxed);
       }
    } else {
-      // The GC threads split the log in batches of 4 KiB.
+      // The GC threads split the log in batches of 4 KiB. A batch may list more pages to fix than buf_pages holds, it
+      // is then fixed in rounds of at most batch_size pages.
       while (offset + sizeof(cr::WALEntry) < ctx.cur_log_segment_size) {
-         ctx.actually_fixed = 0;
          offset = set.offset_batch.fetch_add(4096);
-         setPhase(ctx, Phase::READ);
-         const u64 pages_to_fix = scanLogBatch(ctx, offset);
-         setPhase(ctx, Phase::FIX);
-         fixPages(ctx, pages_to_fix);
-         // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
-         setPhase(ctx, Phase::HOT);
-         fixHotPages(ctx);
+         const u64 fix_up_to = std::min<u64>(offset + 4096, ctx.cur_log_segment_size);
+         while (offset + sizeof(cr::WALEntry) < fix_up_to) {
+            ctx.actually_fixed = 0;
+            setPhase(ctx, Phase::READ);
+            const u64 pages_to_fix = scanLogBatch(ctx, offset, fix_up_to);
+            setPhase(ctx, Phase::FIX);
+            fixPages(ctx, pages_to_fix);
+            // At this point the bg page fixer thread no longer holds any IOFrame, nor any PageState locks.
+            setPhase(ctx, Phase::HOT);
+            fixHotPages(ctx);
+         }
       }
    }
    setPhase(ctx, Phase::DRAIN);
@@ -537,13 +540,14 @@ void RUBackgroundPageFixer::finishRUEpochLogReclaim(ThreadContext& ctx, u64 seco
    LOG_INFO(bm.logger, "GC full log of epoch %lu, time taken %lu seconds : Pages fixed = %lu", ctx.current_gc_epoch, seconds_taken, fixed_pages_in_ru);
 }
 // -------------------------------------------------------------------------------------
-u64 RUBackgroundPageFixer::scanLogBatch(ThreadContext& ctx, u64& offset)
+// Scans the log from offset up to fix_up_to, stops early once batch_size pages are to fix. offset is left at the first
+// entry not scanned.
+u64 RUBackgroundPageFixer::scanLogBatch(ThreadContext& ctx, u64& offset, u64 fix_up_to)
 {
    u64 pages_to_fix = 0;
    u64 submitted = 0;
-   const u64 fix_up_to = std::min<u64>(offset + 4096, ctx.cur_log_segment_size);
    cr::WALEntry* last_entry = nullptr;
-   while (offset + sizeof(cr::WALEntry) < fix_up_to) {
+   while (pages_to_fix < ThreadContext::batch_size && offset + sizeof(cr::WALEntry) < fix_up_to) {
       cr::WALEntry& entry = *reinterpret_cast<cr::WALEntry*>(&ctx.log_records[offset]);
       last_entry = &entry;
 
