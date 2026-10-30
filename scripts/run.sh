@@ -614,7 +614,21 @@ if [[ -z "$short" ]]; then
    short="$model"
 fi
 
-dir_name="${STATS_DIR}/${short}/${prefix}${benchmark}"
+if [[ ! -z "$prefix" ]]; then
+   prefix="${prefix}_"
+fi
+
+dir_name="${STATS_DIR}/${short}/${prefix}"
+
+if [[ "$benchmark" == "ycsb" ]]; then
+   dir_name="${dir_name}ycsb"
+else
+   if ((steady_tpcc)); then
+      dir_name="${dir_name}steady_tpcc"
+   else
+      dir_name="${dir_name}tpcc"
+   fi
+fi
 
 if [[ -z "${ru_size}" ]]; then
    ru_size="${RU_SIZE_MAP[$model]:-}"
