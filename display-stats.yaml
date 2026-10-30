@@ -143,7 +143,7 @@ columns:
 
   discard_state_peak_mem_usage:
     field: "GSPeak GiB"
-    enabled: true
+    enabled: false
     source: bm
 
   log_space_usage:
@@ -343,7 +343,7 @@ columns:
   # one letter per ru_gc thread: I idle, M map log, R read, L tree lookup, F fix, W wait write back, H hot pages, D drain deferred hot, B barrier (waits for the other GC threads), E finish, Y retry the deferred pages of a batch
   gc_phases:
     field: "GC phase"
-    enabled: true
+    enabled: false
     source: bm
 
   # longest time a busy ru_gc thread spent in its current phase
@@ -410,13 +410,13 @@ columns:
   # RU epoch being collected, -1 when none
   gc_epoch:
     field: "GC epoch"
-    enabled: true
+    enabled: false
     source: bm
 
   # seconds since its collection started
   gc_epoch_age_s:
     field: "GCep s"
-    enabled: true
+    enabled: false
     source: bm
 
   # entries of its LBA chain
@@ -428,19 +428,19 @@ columns:
   # of its LBA chain walked
   gc_chain_done_pct:
     field: "GCchn %"
-    enabled: true
+    enabled: false
     source: bm
 
   # IO frames held by the fixers, workers wanting these pages wait
   gc_io_frames_held:
     field: "GC IOF"
-    enabled: true
+    enabled: false
     source: bm
 
   # hot pages waiting to be written back before the log is reset
   gc_deferred_hot_now:
     field: "GC defer"
-    enabled: true
+    enabled: false
     source: bm
 
   # total RU epochs handed to the GC
@@ -458,18 +458,18 @@ columns:
   # per second, from here on
   gc_tree_lookups:
     field: "GC lkup"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_tree_retries:
     field: "GC retry"
-    enabled: true
+    enabled: false
     source: bm
 
   # of a single lookup
   gc_tree_max_retries:
     field: "GCmax retry"
-    enabled: true
+    enabled: false
     source: bm
 
   # copy written to another RU epoch
@@ -508,12 +508,12 @@ columns:
   # discarded pages claimed for fixing
   gc_tree_claimed:
     field: "GC claim"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_blocks_read:
     field: "GC blk R"
-    enabled: true
+    enabled: false
     source: bm
 
   gc_blocks_overwritten:
@@ -528,7 +528,7 @@ columns:
 
   gc_clean_copied:
     field: "GC clean cp"
-    enabled: true
+    enabled: false
     source: bm
 
   # cached pages moved within their batch: clean ones copied as is (part of GC clean cp), dirty ones written back
