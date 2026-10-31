@@ -425,6 +425,9 @@ void BMTable::open()
    columns.emplace("forced_gc_count", [this](Column& col) {
       col << bm.bm_stats.forced_gc_count.load(std::memory_order_acquire);
    });
+   columns.emplace("steady_gc_count", [this](Column& col) {
+      col << bm.bm_stats.steady_gc_count.load(std::memory_order_acquire);
+   });
    columns.emplace("device_gc_events", [this](Column& col) {
       col << bm.bm_stats.device_gc_events.load(std::memory_order_relaxed);
    });

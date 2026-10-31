@@ -105,6 +105,7 @@ DECLARE_uint32(lba_chain_buffer_blocks);
 DECLARE_bool(lba_chain_verify);
 DECLARE_uint32(max_log_records_to_discard);
 DECLARE_double(ru_gc_threshold);
+DECLARE_bool(steady_gc);
 DECLARE_uint32(overprovisioning_ru_epochs);
 DECLARE_double(overprovisioning_ratio);
 DECLARE_uint32(ru_force_gc_margin);

@@ -210,13 +210,25 @@ void RUEpochManager::dispatchOldestRUEpochToGC()
    const bool log_reclaimed = set.log_reclaimed.load(std::memory_order_relaxed);
    // Being forced is not consumed here, a failed enqueue is simply retried on the next tick.
    const bool forced = oldest < force_gc_up_to;
-   if (log_reclaimed || forced || set.shouldGC()) {
+   const bool threshold_met = log_reclaimed || forced || set.shouldGC();
+   // FLAGS_steady_gc: the bg page fixers are done with every RU epoch dispatched so far, the oldest one goes next
+   // even below the threshold. Only this one, the next is dispatched once it is reclaimed.
+   const bool steady = !threshold_met && FLAGS_steady_gc && steady_gc_started
+                       && bm.reclaimed_ru_epoch[DEFAULT_RUH].load(std::memory_order_acquire) + 1 >= oldest;
+   if (threshold_met || steady) {
       if (bm.lba_chain) {
          // The bg page fixers walk its chain.
          accountLBAChainBlocks(bm.lba_chain->sealUpTo(oldest));
       }
       if (bm.ru_bg_page_fixer->tryEnqueueRUEpoch(oldest)) {
          bm.oldest_uncollected_ru_epoch[DEFAULT_RUH]++;
+         if (steady) {
+            bm.bm_stats.steady_gc_count.fetch_add(1, std::memory_order_relaxed);
+            LOG_INFO(bm.logger, "Steady GC : dispatched RU epoch %ld below the threshold", oldest);
+         } else if (FLAGS_steady_gc && !steady_gc_started) {
+            LOG_INFO(bm.logger, "Steady GC : the bg page fixers kicked in with RU epoch %ld, the GC threads are kept busy from now on", oldest);
+         }
+         steady_gc_started = true;
       }
    }
 }

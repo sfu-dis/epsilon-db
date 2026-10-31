@@ -275,6 +275,7 @@ public:
       atomic<u64> discard_state_peak_mem_usage = 0;
       atomic<u64> estimated_gc_writes = 0;
       atomic<u64> forced_gc_count = 0;
+      atomic<u64> steady_gc_count = 0;  // RU epochs dispatched below the threshold by FLAGS_steady_gc
       atomic<u64> device_gc_events = 0;  // FDP Media Reallocated events, with fdp_count_gc_events
       atomic<s64> workers_waiting_fixer_io = 0;  // gauge: workers blocked on an IO frame of the bg page fixer
    } bm_stats;

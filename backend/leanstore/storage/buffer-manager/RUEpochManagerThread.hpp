@@ -33,6 +33,9 @@ class RUEpochManager
    // DEFAULT_RUH only: RU epochs below it are forced to GC regardless of their usage. A new batch is
    // only forced once every RU epoch of the previous one got reclaimed.
    ru_epoch_t force_gc_up_to = 0;
+   // FLAGS_steady_gc: set once the first RU epoch got dispatched to the bg page fixers (log_only jobs aside), the GC
+   // threads are kept busy from then on.
+   bool steady_gc_started = false;
    // DEFAULT_RUH with the LBA chain only: the last RU epoch whose opening got deferred, to warn once.
    ru_epoch_t deferred_ru_epoch = -1;
    // Threshold tracing: THRESHOLDS_DIR/threshold.txt holds the summary of all RUHs for every sample,

@@ -118,6 +118,8 @@ DEFINE_bool(lba_chain_verify, false, "bg_page_fixer_variant 2 with compress_page
             "is listed in the LBA chain of its RU epoch");
 DEFINE_uint32(max_log_records_to_discard, 7, "Limit discarding if log records to re-apply to a page exceed this threshold");
 DEFINE_double(ru_gc_threshold, 0.8, "Trigger GC of the RU if its usage exceeds this threshold");
+DEFINE_bool(steady_gc, true, "Once the bg page fixers kicked in for the first time, the oldest uncollected RU epoch is dispatched to GC "
+            "whenever the bg page fixers are done with the previous ones, even if it is below ru_gc_threshold");
 DEFINE_uint32(overprovisioning_ru_epochs, 0, "Force GC if the number of active RU epochs is less than max open by this value");
 DEFINE_double(overprovisioning_ratio, 0.05, "");
 DEFINE_uint32(ru_force_gc_margin, 2, "Start forcing GC this many free RU epochs before entering the over provisioning (rate limited) ones");
