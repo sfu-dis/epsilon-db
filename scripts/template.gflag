@@ -4,5 +4,6 @@
 --bg_page_fixer_variant=2
 --bg_page_fixer_tree_lookup
 --nobg_page_fixer_tree_lookup_state_filter
---btree_pin_inner_nodes
---bg_fixer_write_back_hot_pages
+--nobg_fixer_write_back_hot_pages
+--bg_page_fixer_log_io_uring
+

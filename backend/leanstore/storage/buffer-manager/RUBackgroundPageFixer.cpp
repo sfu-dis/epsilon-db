@@ -58,10 +58,10 @@ struct page_info {
 // -------------------------------------------------------------------------------------
 struct RUBackgroundPageFixer::ThreadContext {
    // Pages fixed per batch. The scans stop once a batch is full (see scanLogBatch()).
-   static constexpr u32 batch_size = 32;
+   static constexpr u32 batch_size = 16;
    // FLAGS_compress_pages: blocks of the LBA chain read per batch, also the capacity of the packer the moved pages are
    // written with. The blocks a batch frees make the pool of the next one.
-   static constexpr u32 compressed_batch_blocks = 8;
+   static constexpr u32 compressed_batch_blocks = 4;
    // A block holds at most FLAGS_compression_max_pages_per_block live pages, so every page of a batch gets a slot of
    // buf_pages.
    static_assert(compressed_batch_blocks * CompressedSpace::MAX_PAGES_PER_BLOCK <= batch_size);

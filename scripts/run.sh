@@ -837,6 +837,8 @@ cat "${common_flags}" >> "${run_flags}"
    echo "--zipf_factor=0"
 
    # echo "--fdp_placement_policy=${fdp_placement}"
+   # Temporary hack
+   echo "--nobtree_pin_inner_nodes"
 
 } >> "$load_flags"
 
@@ -847,6 +849,8 @@ cat "${common_flags}" >> "${run_flags}"
    echo "--wal_pwrite"
    echo "--bulk_insert"
    # echo "--fdp_placement_policy=FreezeNewlyAllocated"
+
+   echo "--btree_pin_inner_nodes"
 
    echo "--redo_log_file=${log_device}"
 

@@ -595,12 +595,6 @@ void LeanStore::verifyFlags()
       if (!FLAGS_redo_log_file.empty() && FLAGS_redo_log_file != FLAGS_ssd_path) {
          SetupFailed("redo_log_file must be empty (or equal to ssd_path) with log_same_namespace");
       }
-      if (!FLAGS_enable_fdp) {
-         SetupFailed("Sorry, we will disallow you from running with database pages and log traffic " \
-                     "on the same device without FDP isolation because this results in bad SSD WAF.\n" \
-                     "If you still want that for whatever reason, remove this line " \
-                     "and recompile at you own risks.");
-      }
       // Everyone that opens the log by path (e.g. the bg page fixer mmap) now opens the data device.
       FLAGS_redo_log_file = FLAGS_ssd_path;
    }
